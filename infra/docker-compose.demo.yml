@@ -1,0 +1,138 @@
+# OwnChart — public demo stack (demo.ownchart.me).
+#
+# Parallel deployment: own postgres volume, own redis, isolated
+# network, runs alongside the production stack on the same host.
+# Reverse proxy (NPM) routes demo.ownchart.me → host:9988 (web).
+#
+# Read-only enforcement is layered:
+#   1. API: OWNCHART_DEMO_MODE=true middleware rejects mutating
+#      requests outside the allowlist.
+#   2. Web: /api/instance/info.demo_mode triggers the persistent
+#      banner + disables write-action buttons.
+#   3. Sample data: ingested from infra/demo_data/sample_patient.json
+#      on first boot; demo user is demo@ownchart.me / MYHEALTHdata.
+#
+# Run from the repo root:
+#   docker compose -f infra/docker-compose.demo.yml \
+#                  --env-file infra/.env.demo \
+#                  --project-name ownchart-demo \
+#                  up -d --build
+
+name: ownchart-demo
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ownchart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in infra/.env.demo}
+      POSTGRES_DB: ${POSTGRES_DB:-ownchart_demo}
+    volumes:
+      - ../data-demo/postgres:/var/lib/postgresql/data
+    ports:
+      # Loopback only; distinct port from production stack (8802).
+      - "127.0.0.1:9982:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ownchart} -d ${POSTGRES_DB:-ownchart_demo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:9983:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ../api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      OWNCHART_ENV: prod
+      OWNCHART_DEBUG_PAYLOADS: "false"
+      OWNCHART_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ownchart}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ownchart_demo}
+      OWNCHART_REDIS_URL: redis://redis:6379/0
+      OWNCHART_SESSION_SECRET: ${SESSION_SECRET:?set in infra/.env.demo}
+      OWNCHART_DATA_DIR: /data
+      OWNCHART_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OWNCHART_ANTHROPIC_DEFAULT_MODEL: ${ANTHROPIC_DEFAULT_MODEL:-claude-opus-4-7}
+      OWNCHART_ANTHROPIC_VISION_MODEL: ${ANTHROPIC_VISION_MODEL:-claude-opus-4-7}
+      OWNCHART_TOKEN_DEK: ${OWNCHART_TOKEN_DEK:?set in infra/.env.demo}
+      # Public URL the demo answers on. NPM forwards demo.ownchart.me to
+      # host:9988; the API uses this for OAuth redirect_uri composition.
+      OWNCHART_PUBLIC_BASE_URL: ${OWNCHART_PUBLIC_BASE_URL:-https://demo.ownchart.me}
+      # The whole point of the demo deployment.
+      OWNCHART_DEMO_MODE: "true"
+      OWNCHART_DEMO_USER_EMAIL: ${OWNCHART_DEMO_USER_EMAIL:-demo@ownchart.me}
+      OWNCHART_DEMO_USER_PASSWORD: ${OWNCHART_DEMO_USER_PASSWORD:-MYHEALTHdata}
+      OWNCHART_DEMO_BUNDLE_PATH: /app/infra/demo_data/sample_patient.json
+      OWNCHART_CONNECTORS_SEED_PATH: /app/infra/connectors.seed.yaml
+      OWNCHART_CONFIG_PATH: /app/infra/config.yaml
+    volumes:
+      - ../data-demo:/data
+      - ./connectors.seed.yaml:/app/infra/connectors.seed.yaml:ro
+      - ./config.yaml:/app/infra/config.yaml:ro
+      - ./demo_data:/app/infra/demo_data:ro
+    ports:
+      - "127.0.0.1:9981:8000"
+    command:
+      - sh
+      - -c
+      - |
+        alembic upgrade head && exec uvicorn ownchart.main:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build:
+      context: ../api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      OWNCHART_ENV: prod
+      OWNCHART_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ownchart}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ownchart_demo}
+      OWNCHART_REDIS_URL: redis://redis:6379/0
+      OWNCHART_SESSION_SECRET: ${SESSION_SECRET:?set in infra/.env.demo}
+      OWNCHART_DATA_DIR: /data
+      OWNCHART_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OWNCHART_TOKEN_DEK: ${OWNCHART_TOKEN_DEK:?set in infra/.env.demo}
+      OWNCHART_DEMO_MODE: "true"
+      OWNCHART_CONFIG_PATH: /app/infra/config.yaml
+    volumes:
+      - ../data-demo:/data
+      - ./config.yaml:/app/infra/config.yaml:ro
+    command: ["arq", "ownchart.workers.vision_extract_job.WorkerSettings"]
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      OWNCHART_API_INTERNAL_URL: http://api:8000
+    ports:
+      # Public demo port — NPM forwards demo.ownchart.me here.
+      - "0.0.0.0:9988:3000"

@@ -1,0 +1,35 @@
+/* Design tokens — placeholder palette until the Design Tokens skill output
+ * replaces this file. Calm, evidence-aware. Avoid clinical-red alarm tones.
+ *
+ * Values are RGB triplets so Tailwind's <alpha-value> placeholder works
+ * (see tailwind.config.ts).
+ */
+
+:root {
+  --oc-bg: 250 249 246;        /* warm paper */
+  --oc-surface: 255 255 255;
+  --oc-ink: 28 30 34;          /* near-black, slightly cool */
+  --oc-muted: 110 116 128;
+  --oc-accent: 64 88 152;      /* slate blue — research, not alarm */
+  --oc-evidence: 132 117 78;   /* archive ochre */
+  --oc-caution: 178 110 56;    /* amber, never red */
+
+  --oc-font-sans: "Inter", "SF Pro Text";
+  --oc-font-serif: "Source Serif 4", "Georgia";
+  --oc-font-mono: "JetBrains Mono", "SF Mono";
+
+  --oc-radius: 10px;
+  --oc-shadow-1: 0 1px 2px rgb(0 0 0 / 0.04), 0 2px 8px rgb(0 0 0 / 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --oc-bg: 14 16 20;
+    --oc-surface: 22 25 30;
+    --oc-ink: 234 234 232;
+    --oc-muted: 145 152 165;
+    --oc-accent: 132 158 220;
+    --oc-evidence: 198 178 132;
+    --oc-caution: 220 156 100;
+  }
+}

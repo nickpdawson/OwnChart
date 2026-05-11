@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.next-build/
+out/
+.turbo/
+*.log
+.env
+.env.*
+README.md

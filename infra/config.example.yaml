@@ -1,0 +1,73 @@
+# OwnChart application config.
+#
+# Copy to infra/config.yaml and edit. All values are optional — every section
+# has a reasonable default. Secrets do NOT live here; they go in infra/.env
+# (see .env.example).
+#
+# Loaded at api startup via api/ownchart/core/app_config.py. The path can
+# be overridden with the OWNCHART_CONFIG_PATH env var.
+
+instance:
+  # Display name in the sidebar header and HTML <title>. Leave as "OwnChart"
+  # or rebrand for forks.
+  name: OwnChart
+  # Public URL where this instance is reachable. Used to compose the OAuth
+  # redirect_uri registered with EHRs (Epic, Athena, etc.). MUST match what
+  # you registered with each vendor.
+  public_base_url: https://your-instance.example.com
+  # Optional. Surfaced in /tos as the legal/abuse contact.
+  owner_contact: you@example.com
+
+auth:
+  # V1 is single-tenant by design. Flip true once you've added email
+  # verification (requires smtp.enabled=true).
+  allow_self_registration: false
+  require_email_verification: false
+  session_max_age_days: 14
+  session_cookie_name: ownchart_session
+
+smtp:
+  # When enabled=false (default), password reset, email verification, and
+  # alert flows are hidden in the UI and skipped on the backend. Solo
+  # self-hosters can run without an SMTP server.
+  enabled: false
+  # Required when enabled=true:
+  host: smtp.example.com
+  port: 587
+  use_tls: true
+  username: ownchart-bot@example.com
+  from_address: "OwnChart <ownchart@example.com>"
+  # Password sourced from OWNCHART_SMTP_PASSWORD env var (infra/.env).
+
+llm:
+  # Anthropic is the only provider in V1. Claude is a research partner;
+  # consent must be granted by the user before any byte ships.
+  provider: anthropic
+  default_model: claude-opus-4-7
+  vision_model: claude-opus-4-7
+  max_concurrent_calls: 4
+
+privacy:
+  # If true, raw request/response bodies may appear in logs. PHI risk.
+  # Operational override: setting OWNCHART_DEBUG_PAYLOADS=true env var
+  # also flips this on regardless of yaml.
+  debug_payloads_default: false
+  # V1.1 feature flag. Default off because lossless preservation is the
+  # current doctrine; redaction is an opt-in workflow.
+  exif_strip_gps_default: false
+
+ingest:
+  # Per-attachment cap when fetching FHIR Binary content
+  max_attachment_bytes: 52428800  # 50 MB
+  max_pdf_pages: 200
+  # Toggle to globally disable Claude Vision extraction without redeploying.
+  # Per-source consent gate still applies.
+  vision_extraction_enabled: true
+  # /sources/[id] surfaces a "this will use ~$X" hint when page count exceeds.
+  cost_warning_pages: 20
+
+retention:
+  # OwnChart's doctrine is "patient-owned, kept forever" — most retention
+  # values are intentionally not parameterized. The exception is transient
+  # OAuth state.
+  oauth_state_ttl_minutes: 10

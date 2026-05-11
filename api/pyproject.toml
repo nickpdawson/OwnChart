@@ -1,0 +1,70 @@
+[project]
+name = "ownchart-api"
+version = "0.1.0"
+description = "OwnChart API — patient-owned longitudinal health intelligence"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "pydantic[email]>=2.9",
+  "email-validator>=2.2",
+  "pydantic-settings>=2.6",
+  "sqlalchemy[asyncio]>=2.0.36",
+  "asyncpg>=0.30",
+  "alembic>=1.14",
+  "pgvector>=0.3.6",
+  "argon2-cffi>=23.1",
+  "itsdangerous>=2.2",
+  "python-multipart>=0.0.20",
+  "anthropic>=0.40",
+  "arq>=0.26",
+  "redis>=5.2",
+  "pyyaml>=6.0",
+  "structlog>=24.4",
+  "httpx>=0.27",
+  "lxml>=5.3",
+  "pymupdf>=1.24",
+  # Image ingestion: JPEG/PNG/GIF/TIFF native via Pillow; HEIC via pillow-heif.
+  "pillow>=11.0",
+  "pillow-heif>=0.20",
+  # Tesseract bindings — OCR for fax_pdf pages without a text layer.
+  "pytesseract>=0.3.13",
+  # AES-256-GCM for OAuth token at-rest encryption.
+  "cryptography>=43.0",
+]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.8",
+  "mypy>=1.13",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "types-pyyaml",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC"]
+ignore = ["S101"]  # asserts in tests are fine
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/*" = ["E501"]
+"tests/*" = ["S"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ownchart"]

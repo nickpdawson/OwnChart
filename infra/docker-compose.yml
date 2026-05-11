@@ -1,0 +1,143 @@
+# OwnChart — Phase 1 stack.
+#
+# Public surface: only port 8800 (web). Postgres and Redis bind to loopback
+# only so a misconfigured firewall can't expose them. The api binds to
+# loopback as well; browsers reach it via the web container's same-origin
+# /api/* rewrite (see web/next.config.mjs).
+#
+# Run from the repo root:
+#   docker compose -f infra/docker-compose.yml --env-file infra/.env up -d --build
+
+name: ownchart
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ownchart}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in infra/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-ownchart}
+    volumes:
+      - ../data/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:8802:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ownchart} -d ${POSTGRES_DB:-ownchart}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:8803:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ../api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      OWNCHART_ENV: ${OWNCHART_ENV:-prod}
+      OWNCHART_DEBUG_PAYLOADS: ${OWNCHART_DEBUG_PAYLOADS:-false}
+      OWNCHART_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ownchart}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ownchart}
+      OWNCHART_REDIS_URL: redis://redis:6379/0
+      OWNCHART_SESSION_SECRET: ${SESSION_SECRET:?set in infra/.env}
+      OWNCHART_DATA_DIR: /data
+      OWNCHART_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OWNCHART_ANTHROPIC_DEFAULT_MODEL: ${ANTHROPIC_DEFAULT_MODEL:-claude-opus-4-7}
+      OWNCHART_ANTHROPIC_VISION_MODEL: ${ANTHROPIC_VISION_MODEL:-claude-opus-4-7}
+      OWNCHART_TOKEN_DEK: ${OWNCHART_TOKEN_DEK:?set in infra/.env}
+      OWNCHART_PUBLIC_BASE_URL: ${OWNCHART_PUBLIC_BASE_URL:-http://localhost:8080}
+      # Bearer token for the Health Auto Export iOS app's REST push.
+      # Configure the iOS app's Automations → REST API tab with the
+      # same token. When unset, /api/auto-export/push returns 503.
+      OWNCHART_AUTO_EXPORT_TOKEN: ${OWNCHART_AUTO_EXPORT_TOKEN:-}
+      # Demo mode forces read-only at the API; pairs with the front-end
+      # demo banner. See infra/docker-compose.demo.yml.
+      OWNCHART_DEMO_MODE: ${OWNCHART_DEMO_MODE:-false}
+      # Single Epic registration covers federated patient-app launches
+      # across every Epic-on-FHIR organization the user authorizes.
+      OWNCHART_EPIC_CLIENT_ID: ${OWNCHART_EPIC_CLIENT_ID:-}
+      OWNCHART_EPIC_CLIENT_ID_SANDBOX: ${OWNCHART_EPIC_CLIENT_ID_SANDBOX:-}
+      OWNCHART_ATHENA_CLIENT_ID: ${OWNCHART_ATHENA_CLIENT_ID:-}
+      OWNCHART_CONNECTORS_SEED_PATH: /app/infra/connectors.seed.yaml
+      OWNCHART_CONFIG_PATH: /app/infra/config.yaml
+    volumes:
+      - ../data:/data
+      # Connector seed read by api startup; bind-mounting (vs COPY) means
+      # editing infra/connectors.seed.yaml doesn't require a rebuild.
+      - ./connectors.seed.yaml:/app/infra/connectors.seed.yaml:ro
+      # App config (non-secret declarative). Optional — defaults apply if
+      # the file isn't present. See config.example.yaml for the shape.
+      - ./config.yaml:/app/infra/config.yaml:ro
+    ports:
+      - "127.0.0.1:8801:8000"
+    # Run migrations on container start, then exec uvicorn.
+    command:
+      - sh
+      - -c
+      - |
+        alembic upgrade head && exec uvicorn ownchart.main:app --host 0.0.0.0 --port 8000
+
+  # Arq worker for long-running tasks (Claude vision extraction over
+  # multi-page PDFs). Same image as api, same env, but runs the arq
+  # process instead of uvicorn. Migrations are owned by the api
+  # container — this one waits for them before starting consumers.
+  worker:
+    build:
+      context: ../api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      OWNCHART_ENV: ${OWNCHART_ENV:-prod}
+      OWNCHART_DEBUG_PAYLOADS: ${OWNCHART_DEBUG_PAYLOADS:-false}
+      OWNCHART_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ownchart}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ownchart}
+      OWNCHART_REDIS_URL: redis://redis:6379/0
+      OWNCHART_SESSION_SECRET: ${SESSION_SECRET:?set in infra/.env}
+      OWNCHART_DATA_DIR: /data
+      OWNCHART_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OWNCHART_ANTHROPIC_DEFAULT_MODEL: ${ANTHROPIC_DEFAULT_MODEL:-claude-opus-4-7}
+      OWNCHART_ANTHROPIC_VISION_MODEL: ${ANTHROPIC_VISION_MODEL:-claude-opus-4-7}
+      OWNCHART_TOKEN_DEK: ${OWNCHART_TOKEN_DEK:?set in infra/.env}
+      OWNCHART_CONFIG_PATH: /app/infra/config.yaml
+    volumes:
+      - ../data:/data
+      - ./config.yaml:/app/infra/config.yaml:ro
+    command: ["arq", "ownchart.workers.vision_extract_job.WorkerSettings"]
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      OWNCHART_API_INTERNAL_URL: http://api:8000
+    ports:
+      # ONLY public port. A reverse proxy (Nginx Proxy Manager, Caddy,
+      # Traefik, etc.) should terminate TLS and forward here.
+      - "0.0.0.0:8800:3000"

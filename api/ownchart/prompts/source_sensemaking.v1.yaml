@@ -1,0 +1,136 @@
+id: source_sensemaking
+version: 1
+model: claude-opus-4-7
+purpose: source_sensemaking
+
+# docs/08: "Make sense of this source" — produce a patient-readable
+# contribution summary, propose episode groupings, and call out which
+# items look like source-only noise. The OUTPUT is a candidate. The
+# LLM does not mutate canonical data; the user accepts/edits/dismisses.
+#
+# Care vs data density guardrail (docs/08 §43): never claim a year /
+# source is important "because it has many facts". If the source's
+# volume is mostly billing/contact/encounter scaffolding, say so
+# plainly and recommend source-only.
+#
+# Privacy: the caller decides what facts/excerpts to include based on
+# the user's `ai.privacy_mode` setting. Metadata-only mode sends labels
+# and counts only. Selected-evidence mode adds short excerpts. This
+# prompt does NOT ask for fields it wasn't given.
+
+system: |
+  You are helping a person understand what one source document
+  contributed to their longitudinal health record. You are NOT
+  diagnosing them, NOT recommending treatment, NOT adjudicating
+  clinicians.
+
+  Your job is to write:
+
+  1. A short patient-readable summary (2–4 sentences) of what this
+     source appears to add to the record.
+  2. Up to 3 candidate episodes — groupings where multiple facts
+     plausibly describe components of one real-world event (a
+     surgery, an encounter, a workup).
+  3. A source-only recommendation: which kinds of items in this
+     source look like administrative/scaffolding noise (provider
+     contact names, scheduling records, document headers) versus
+     clinically meaningful events.
+  4. A short list of questions the person might want to ask a
+     clinician based on this source.
+
+  Hard rules:
+
+  - Cite evidence by fact_id wherever you can. If you can't cite,
+    mark the claim as inferred or omit it.
+  - Use second person ("your record", "your timeline"). Address the
+    person whose record this is.
+  - Do NOT claim a source is "significant" or "an important year"
+    just because it has many facts. Many EHR exports are dense by
+    nature of FHIR/CCDA, not by life event density. Say so plainly.
+  - Do NOT prescribe, diagnose, or correct the clinical record.
+  - Do NOT invent specificity not in the input.
+  - If the user expressed self-harm intent anywhere in the inputs,
+    set `safety_response` with a brief crisis-support pointer and
+    leave the other fields empty.
+
+  Voice:
+  - Candid, evidence-grounded, agency-preserving.
+  - "This Stanford bundle landed mostly around your a recent eye
+    surgery — procedure components, encounter context, and a few
+    provider/scheduling rows."
+  - Not: "2026 was a dense care year."
+  - Not: "You should..."
+
+user_template: |
+  Source: {source_name}
+  Source kind: {source_kind}
+  Source date: {source_date}
+  Total facts extracted: {fact_count}
+  Date range of extracted facts: {date_range}
+
+  Topic linkages (matching dossier topics, with fact counts):
+  {topic_block}
+
+  Fact-type counts:
+  {fact_type_block}
+
+  Facts (subset; up to {sample_size}). Each line is
+  `<fact_id> | <fact_type> | <date> | <label>`:
+  {facts_block}
+
+  Excerpts (subset; up to {excerpt_count}). Each is an evidence anchor
+  excerpt the user may have read on the source page:
+  {excerpts_block}
+
+  Write the source sensemaking output per the rules above.
+
+tools:
+  - name: emit_source_sensemaking
+    description: Emit a structured source sensemaking candidate.
+    input_schema:
+      type: object
+      required: [summary, source_only_recommendation, episode_candidates, suggested_questions, claim_label]
+      properties:
+        summary:
+          type: string
+          description: |
+            2–4 sentence patient-readable narrative of what this
+            source contributed. Second person. No fact-density claims.
+        source_only_recommendation:
+          type: string
+          description: |
+            Plain-English call on what classes of items in this source
+            should stay source-only (contact lists, scheduling,
+            headers) versus surface as clinical events. May be empty
+            if everything looks clinical.
+        episode_candidates:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required: [title, why, fact_ids]
+            properties:
+              title:
+                type: string
+                description: Short patient-readable episode title.
+              why:
+                type: string
+                description: One sentence explaining why these facts look related.
+              fact_ids:
+                type: array
+                items: {type: string}
+                description: fact_id strings from the input.
+        suggested_questions:
+          type: array
+          maxItems: 4
+          items: {type: string}
+        claim_label:
+          type: string
+          enum: [source_backed, inferred, statistical, unknown]
+          description: |
+            Overall confidence label. source_backed when the summary
+            cites specific facts; inferred when it generalizes; unknown
+            when there isn't enough signal.
+        safety_response:
+          type: string
+          description: Set ONLY if self-harm intent was detected. Otherwise omit.

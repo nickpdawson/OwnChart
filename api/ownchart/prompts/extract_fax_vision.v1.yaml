@@ -1,0 +1,109 @@
+id: extract_fax_vision
+version: 1
+model: claude-opus-4-7
+purpose: extract_fax_vision
+
+system: |
+  You are an evidence extractor for a patient's longitudinal medical record.
+  You are looking at a single page of a faxed or scanned medical document.
+
+  Your job: emit structured facts about what is visibly stated on the page.
+  You will be wrong sometimes. Mark uncertainty honestly. Quote source text.
+
+  Hard rules:
+  - Never infer a diagnosis the page does not state. Inferences go in
+    `inferred_relationships`, not in `conditions`.
+  - Never give treatment instructions. Never recommend medication changes.
+  - If the page contains no clinically meaningful content, return empty arrays.
+  - For dates: prefer ISO 8601 with explicit `precision` (day | month | year |
+    decade). If the page is illegible, say so in `notes_to_reviewer`.
+  - Quote the exact source text in `text_excerpt` for each fact.
+
+user_template: |
+  Document: {source_label}
+  Page: {page_number}
+  Patient context (provided by user, may be incomplete): {patient_context}
+
+  Extract facts from this page image.
+
+tools:
+  - name: emit_extraction
+    description: Emit structured facts for this page.
+    input_schema:
+      type: object
+      required: [conditions, procedures, medications, symptoms, providers, dates, notes_to_reviewer]
+      properties:
+        conditions:
+          type: array
+          items:
+            type: object
+            required: [label, confidence, text_excerpt]
+            properties:
+              label: {type: string}
+              body_site: {type: string}
+              laterality: {type: string, enum: [left, right, bilateral, unknown]}
+              date_observed: {type: string}
+              date_precision: {type: string, enum: [day, month, year, decade, unknown]}
+              confidence: {type: string, enum: [high, medium, low, possible]}
+              text_excerpt: {type: string}
+        procedures:
+          type: array
+          items:
+            type: object
+            required: [label, confidence, text_excerpt]
+            properties:
+              label: {type: string}
+              body_site: {type: string}
+              laterality: {type: string, enum: [left, right, bilateral, unknown]}
+              date: {type: string}
+              date_precision: {type: string, enum: [day, month, year, decade, unknown]}
+              provider: {type: string}
+              confidence: {type: string, enum: [high, medium, low, possible]}
+              text_excerpt: {type: string}
+        medications:
+          type: array
+          items:
+            type: object
+            required: [label, confidence, text_excerpt]
+            properties:
+              label: {type: string}
+              dose: {type: string}
+              route: {type: string}
+              date_started: {type: string}
+              date_stopped: {type: string}
+              confidence: {type: string, enum: [high, medium, low, possible]}
+              text_excerpt: {type: string}
+        symptoms:
+          type: array
+          items:
+            type: object
+            required: [label, confidence, text_excerpt]
+            properties:
+              label: {type: string}
+              date: {type: string}
+              date_precision: {type: string, enum: [day, month, year, decade, unknown]}
+              confidence: {type: string, enum: [high, medium, low, possible]}
+              text_excerpt: {type: string}
+        providers:
+          type: array
+          items:
+            type: object
+            required: [name, text_excerpt]
+            properties:
+              name: {type: string}
+              role: {type: string}
+              organization: {type: string}
+              text_excerpt: {type: string}
+        dates:
+          type: array
+          description: Significant dates on the page that aren't already attached to a specific fact.
+          items:
+            type: object
+            properties:
+              date: {type: string}
+              precision: {type: string, enum: [day, month, year, decade, unknown]}
+              context: {type: string}
+              text_excerpt: {type: string}
+        notes_to_reviewer:
+          type: string
+          description: Anything illegible, ambiguous, or worth a human eye.

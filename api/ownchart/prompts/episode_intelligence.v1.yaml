@@ -1,0 +1,179 @@
+id: episode_intelligence
+version: 1
+model: claude-opus-4-7
+purpose: episode_intelligence
+
+# docs/10 + Nick 2026-05-11 PM — the "Make Sense of This Event" /
+# "Episode Intelligence" pattern. Deterministic planner gathered the
+# evidence; this prompt synthesizes the seven-section cited answer.
+#
+# Voice + safety constraints match general_ask + dossier_brief: second
+# person, plain, candid, no treatment advice. The evidence_block is
+# JSON the planner produced — treat it as ground truth (cite by id;
+# do not invent).
+
+system: |
+  You are the user's research partner for one specific life moment —
+  an episode (typically a surgery, illness, injury, hospital stay, or
+  notable workup) plus the days around it.
+
+  The planner gathered everything OwnChart can deterministically know
+  about this episode. Your job is to synthesize a structured cited
+  answer following the seven sections below. Use the planner output
+  faithfully; cite by fact_id / source_id. Never invent.
+
+  Voice:
+  - Address them in second person ("your record", "you traveled").
+  - Plain, candid, evidence-grounded. A close friend who reads medical
+    records would talk like this.
+  - When data is missing, say so directly. "Your record doesn't
+    include an anesthesia note" is more useful than guessing.
+  - Compare with humility: "your HRV was lower than baseline" yes;
+    "your HRV was lower because of the surgery" no — that's causation
+    you can't prove.
+
+  Hard rules:
+  - Cite every substantive statement with fact_ids / source_ids.
+  - Do NOT give treatment advice or dosing recommendations.
+  - Do NOT present a correlation as causation.
+  - If the planner reports missing_anesthesia_record=true, the
+    anesthesia section says so plainly — don't fabricate meds.
+  - If self-harm intent appears in user inputs, set `safety_response`
+    and leave the other fields empty.
+
+user_template: |
+  Anchor:
+    fact_id: {anchor_fact_id}
+    label: {anchor_label}
+    date: {anchor_date}
+    match_confidence: {match_confidence}
+    match_explanation: {match_explanation}
+
+  Planner output (JSON):
+  {planner_json}
+
+  User's natural-language question (may be empty for batch runs):
+  {question}
+
+  Synthesize the structured Episode Intelligence answer per the
+  seven-section tool below.
+
+tools:
+  - name: emit_episode_intelligence
+    description: Emit a structured Episode Intelligence record.
+    input_schema:
+      type: object
+      required: [anchor_acknowledgment, what_happened, what_they_did, anesthesia, travel_and_life, body_response, interpretation, follow_up_questions, citations]
+      properties:
+        anchor_acknowledgment:
+          type: string
+          description: |
+            One sentence in second person acknowledging the match and
+            its confidence. Example: "I found one likely match: your
+            your example surgery
+            (high confidence)."
+        what_happened:
+          type: object
+          required: [summary]
+          properties:
+            summary:
+              type: string
+              description: |
+                Plain-English summary of the procedure / event,
+                surgeon/facility, related diagnoses, post-op
+                instructions where evident. 2-4 short paragraphs.
+            cited_fact_ids:
+              type: array
+              items: {type: string}
+        what_they_did:
+          type: object
+          required: [translation]
+          properties:
+            translation:
+              type: string
+              description: |
+                Patient-readable rendering of the procedural codes /
+                operative prose, with the original terms preserved
+                in parentheses where useful.
+            cited_fact_ids:
+              type: array
+              items: {type: string}
+        anesthesia:
+          type: object
+          required: [summary]
+          properties:
+            summary:
+              type: string
+              description: |
+                The anesthesia / intraoperative medication summary.
+                If the planner reported missing_anesthesia_record,
+                say so plainly and suggest where the user could
+                supply one.
+            cited_fact_ids:
+              type: array
+              items: {type: string}
+        travel_and_life:
+          type: object
+          required: [summary]
+          properties:
+            summary:
+              type: string
+              description: |
+                Calendar / travel / life context for the surrounding
+                ±21 days. "You appear to have traveled to X from Y on
+                Z" not "calendar data exists." When nothing is in
+                evidence, say so.
+            cited_fact_ids:
+              type: array
+              items: {type: string}
+        body_response:
+          type: object
+          required: [summary, window_observations]
+          properties:
+            summary:
+              type: string
+              description: |
+                One short paragraph describing the wearable / sleep /
+                activity changes across the standardized windows.
+            window_observations:
+              type: array
+              items:
+                type: object
+                required: [window, observation]
+                properties:
+                  window:
+                    type: string
+                    enum: [30d_baseline, 7d_before, day_of, 7d_after, 14d_after]
+                  observation:
+                    type: string
+        interpretation:
+          type: string
+          description: |
+            Plain-English interpretation with humility. Always pair
+            an observed change with a "consistent with X but cannot
+            prove causation" caveat. Avoid treatment language.
+        follow_up_questions:
+          type: array
+          maxItems: 6
+          items: {type: string}
+        citations:
+          type: array
+          description: |
+            Flat citation list backing the entire answer. Each entry
+            should be a fact_id or source_id from the planner output.
+          items:
+            type: object
+            required: [citation_type, subject_id]
+            properties:
+              citation_type:
+                type: string
+                enum: [fact, source, anchor, episode, candidate, event]
+              subject_id: {type: string}
+              claim_label:
+                type: string
+                enum: [source_backed, user_canonical, inferred, statistical, unknown]
+              note: {type: string}
+              excerpt: {type: string}
+        safety_response:
+          type: string
+          description: Set ONLY on self-harm intent. Otherwise omit.

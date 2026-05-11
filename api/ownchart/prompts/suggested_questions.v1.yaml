@@ -1,0 +1,84 @@
+id: suggested_questions
+version: 1
+purpose: home_suggested_questions
+
+# Q-D2 / V1.1 follow-up (Nick 2026-05-11 PM): the Home AI partner's
+# suggested questions used to be Python template strings buried in
+# routes/home_ai.py. Move them here so the phrasing can be revised
+# without a code deploy.
+#
+# Each entry has:
+#   id             — stable key for matching at runtime
+#   gate           — when this question can appear:
+#                      always       — included unconditionally
+#                      major_event  — included only when the record
+#                                     has a recent major_event /
+#                                     major_procedure fact; the
+#                                     visible/submitted strings can
+#                                     reference {event_label},
+#                                     {fact_type}, {phrase}, {iso_date}
+#                      top_topic    — included only when at least one
+#                                     dossier exists; references
+#                                     {topic_name}, {topic_slug}
+#   visible_text   — terse chip text (6-12 words)
+#   submitted_text — full prompt sent to /api/conversations or
+#                    /api/episodes/intelligence
+#   scope_hint     — whole_record | period | topic | episode | source
+#   scope_template — optional dict; values may reference template
+#                    vars. Resolved by home_ai.py before sending.
+
+questions:
+  # Episode-shaped — clicking routes to /api/episodes/intelligence
+  # via the ChatClient scope_hint='episode' branch.
+  - id: recent_major_episode
+    gate: major_event
+    visible_text: "Help me understand my {short_date} {fact_type} and recovery."
+    submitted_text: |-
+      I had a {fact_type} {phrase} ({event_label} on {iso_date}).
+      What can you tell me about that, the travel and calendar
+      around it, how it affected my HRV and sleep leading up and
+      after, and any intraoperative anesthesia or perioperative-
+      support meds?
+    scope_hint: episode
+    scope_template:
+      type: fact
+      anchor_fact_id: "{fact_id}"
+
+  # Dossier-shaped — opens a thread scoped to the dossier.
+  - id: top_topic_story
+    gate: top_topic
+    visible_text: "The story of my {topic_lower}."
+    submitted_text: |-
+      Tell me the story of my {topic_lower} across all sources on
+      my record. Cite by id, distinguish source-backed from
+      inferred, and surface what's missing or uncertain.
+    scope_hint: topic
+    scope_template:
+      type: topic
+      topic_slug: "{topic_slug}"
+
+  # Always useful, never wrong — literal phrasings.
+  - id: last_30_days
+    gate: always
+    visible_text: "What changed in the last 30 days?"
+    submitted_text: |-
+      What's new on my record in the last 30 days? Group by source,
+      highlight care-meaningful changes, and flag anything that
+      needs my review.
+    scope_hint: period
+    scope_template:
+      type: period
+      period:
+        from: "{iso_minus_30d}"
+        to: "{iso_now}"
+
+  - id: review_actionable
+    gate: always
+    visible_text: "What should I review now?"
+    submitted_text: |-
+      What's in my review queue right now that would actually
+      change my timeline, dossiers, or any of my answers? Group
+      medication-noise into patterns; cite by id.
+    scope_hint: whole_record
+    scope_template:
+      type: whole_record

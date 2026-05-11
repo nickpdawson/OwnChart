@@ -1,0 +1,220 @@
+# OwnChart settings registry.
+#
+# Each entry describes one configurable option per docs/09. The
+# registry drives the Settings UI, API validation, audit messages,
+# and config-file schema. Values live in the user_settings table
+# (or, for instance-scope, in this file or the deployment config).
+#
+# Field reference:
+#   key              dotted, e.g. ai.privacy_mode
+#   label            short label for the UI
+#   description      one-line explainer
+#   section          UI section: profile | privacy_ai | data_ingestion |
+#                    review_discovery | display | instance
+#   scope            user | person | instance
+#   storage          database | config_file | derived
+#   type             boolean | enum | integer | string
+#   default          shipped default value
+#   choices          for enum
+#   ui_writable      true if the Settings UI can edit it
+#   file_writable    true if config file can write it
+#   roles_allowed    list: owner / admin / member
+#   requires_restart true if a server restart is needed
+#   phi_sensitive    true if the setting governs PHI flow
+#   admin_lockable   true if admins can hard-lock the user's choice
+
+settings:
+  # -------- Privacy and AI ----------------------------------------
+  - key: ai.default_provider
+    label: Default AI provider
+    description: |
+      Which LLM provider should answer your conversations by default.
+      Settings → Providers lets you add API keys. Local-only forces
+      every call onto a self-hosted endpoint with no external requests.
+    section: privacy_ai
+    scope: user
+    storage: database
+    type: enum
+    choices: [anthropic, openai, gemini, local, auto]
+    default: auto
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: true
+    admin_lockable: true
+
+  - key: ai.privacy_mode
+    label: LLM privacy mode
+    description: |
+      How much of your record OwnChart may send to the LLM. Off blocks
+      every external call. Metadata-only sends labels, types, and
+      dates. Selected evidence adds short excerpts the job needs.
+      Full source allows complete OCR text and images.
+    section: privacy_ai
+    scope: user
+    storage: database
+    type: enum
+    choices: [off, metadata_only, selected_evidence, full_source]
+    default: selected_evidence
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: true
+    admin_lockable: true
+
+  - key: ai.import_time_sensemaking
+    label: Make sense at import time
+    description: |
+      When a new source is ingested, immediately run a short LLM pass
+      to propose a patient-readable summary, episode candidates, and
+      review-queue compression. Subject to the privacy mode above.
+    section: privacy_ai
+    scope: user
+    storage: database
+    type: boolean
+    default: false
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: true
+    admin_lockable: true
+
+  - key: ai.nightly_sensemaking
+    label: Nightly sensemaking
+    description: |
+      Run a small overnight pass that proposes new episode candidates,
+      duplicate groups, and review-queue cleanup. Produces a digest;
+      never mutates canonical data.
+    section: privacy_ai
+    scope: user
+    storage: database
+    type: boolean
+    default: false
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: true
+    admin_lockable: true
+
+  - key: ai.label_translation
+    label: Translate clinical labels
+    description: |
+      Allow the LLM to propose patient-readable display labels for
+      SNOMED/CPT-style clinical terms. Originals are never overwritten.
+    section: privacy_ai
+    scope: user
+    storage: database
+    type: boolean
+    default: true
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: true
+    admin_lockable: false
+
+  - key: ai.monthly_spend_ceiling_usd
+    label: Monthly LLM spend ceiling (USD)
+    description: |
+      Soft cap on outbound LLM cost per month. When exceeded,
+      sensemaking jobs refuse rather than queue. 0 means no cap.
+    section: privacy_ai
+    scope: user
+    storage: database
+    type: integer
+    default: 25
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: false
+    admin_lockable: true
+
+  # -------- Review and Discovery ----------------------------------
+  - key: review.show_source_only_in_inbox
+    label: Show source-only items in review inbox
+    description: |
+      By default, items marked "source-only" stay quiet on the source
+      page only. Turn this on if you want to see them in the main
+      Review inbox.
+    section: review_discovery
+    scope: user
+    storage: database
+    type: boolean
+    default: false
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: false
+    admin_lockable: false
+
+  - key: discover.digest_frequency
+    label: Discover digest frequency
+    description: |
+      How often OwnChart should email or surface a Discover digest.
+    section: review_discovery
+    scope: user
+    storage: database
+    type: enum
+    choices: [off, daily, weekly, monthly]
+    default: weekly
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: false
+    admin_lockable: false
+
+  # -------- Display ----------------------------------------------
+  - key: display.theme
+    label: Theme
+    description: System matches your OS appearance; light/dark force a mode.
+    section: display
+    scope: user
+    storage: database
+    type: enum
+    choices: [system, light, dark]
+    default: system
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: false
+    admin_lockable: false
+
+  - key: display.units
+    label: Measurement units
+    description: Affects weight, length, and lab-value rendering.
+    section: display
+    scope: user
+    storage: database
+    type: enum
+    choices: [imperial, metric]
+    default: imperial
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: false
+    admin_lockable: false
+
+  - key: display.timeline_density
+    label: Timeline density
+    description: How packed the timeline grid is by default.
+    section: display
+    scope: user
+    storage: database
+    type: enum
+    choices: [comfortable, compact]
+    default: comfortable
+    ui_writable: true
+    file_writable: false
+    roles_allowed: [owner, admin, member]
+    requires_restart: false
+    phi_sensitive: false
+    admin_lockable: false

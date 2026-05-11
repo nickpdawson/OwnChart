@@ -1,0 +1,26 @@
+# Provider connectors seed.
+#
+# DOCTRINE: The product shell should not encode any individual user's care
+# history. So this file no longer ships a "default list of providers."
+# Production connectors are discovered by the user via search against vendor
+# directories (Epic open.epic.com R4 endpoint listing, Athena, Cerner) and
+# materialized into provider_connectors rows by the user via /connectors.
+#
+# What stays seeded:
+#   - epic-sandbox (disabled)  → for QA flows in non-personal instances
+#
+# What does NOT stay seeded:
+#   - Any specific real-world provider. Existing rows in a deployed DB are
+#     NOT auto-deleted when removed from this file (the seeder only upserts
+#     by slug); use the UI's Delete button or a SQL one-shot to clean up.
+#
+# Loaded by api/ownchart/core/seed.py on startup. Idempotent upsert by slug.
+
+connectors:
+  - slug: epic-sandbox
+    name: Epic on FHIR Sandbox (R4)
+    ehr_vendor: epic
+    enabled: false
+    fhir_base: https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4/
+    client_id_env: OWNCHART_EPIC_CLIENT_ID_SANDBOX
+    scopes: openid fhirUser launch/patient patient/*.read
