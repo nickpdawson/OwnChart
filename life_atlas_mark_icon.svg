@@ -1,0 +1,240 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" viewBox="0 0 305.5 303.4">
+  <!-- Generator: Adobe Illustrator 30.4.0, SVG Export Plug-In . SVG Version: 2.1.4 Build 226)  -->
+  <defs>
+    <style>
+      .st0, .st1, .st2 {
+        fill: none;
+      }
+
+      .st3 {
+        fill: #d9e5df;
+      }
+
+      .st3, .st4, .st5, .st6, .st7, .st8, .st9, .st10 {
+        isolation: isolate;
+      }
+
+      .st3, .st4, .st5, .st9 {
+        opacity: .9;
+      }
+
+      .st11 {
+        font-family: AppleBraille-Outline6Dot, 'Apple Braille';
+      }
+
+      .st4 {
+        fill: #dfe2cc;
+      }
+
+      .st12 {
+        letter-spacing: 0em;
+      }
+
+      .st12, .st13 {
+        font-family: MyriadPro-Regular, 'Myriad Pro';
+      }
+
+      .st1 {
+        stroke: #a6967a;
+        stroke-linecap: round;
+        stroke-width: 2.2px;
+      }
+
+      .st5 {
+        fill: #e9d9b6;
+      }
+
+      .st6 {
+        fill: #2c2a24;
+        font-family: IowanOldStyle-Roman, 'Iowan Old Style';
+        font-size: 56px;
+        letter-spacing: 0em;
+      }
+
+      .st7 {
+        fill: #7a6e58;
+        font-family: IowanOldStyle-Italic, 'Iowan Old Style';
+        font-size: 17px;
+        font-style: italic;
+      }
+
+      .st14 {
+        fill: url(#linear-gradient1);
+      }
+
+      .st14, .st15 {
+        stroke: #d9cdb0;
+      }
+
+      .st14, .st15, .st2 {
+        stroke-width: .5px;
+      }
+
+      .st16 {
+        clip-path: url(#clippath-1);
+      }
+
+      .st8 {
+        fill: #f6efe0;
+        opacity: .6;
+      }
+
+      .st9 {
+        fill: #e2d1d8;
+      }
+
+      .st17 {
+        fill: #c28a3e;
+      }
+
+      .st15 {
+        fill: url(#linear-gradient);
+      }
+
+      .st18 {
+        opacity: .4;
+      }
+
+      .st19 {
+        fill: #4a7c74;
+      }
+
+      .st2 {
+        stroke: #c9b98f;
+      }
+
+      .st10 {
+        fill: #5f5c50;
+        font-size: 11px;
+      }
+
+      .st20 {
+        fill: #8fa277;
+      }
+
+      .st21 {
+        clip-path: url(#clippath);
+      }
+
+      .st22 {
+        fill: #6e4757;
+      }
+    </style>
+    <linearGradient id="linear-gradient" x1="-1176.1" y1="1037.1" x2="-1176.1" y2="1036.1" gradientTransform="translate(352973.4572 311140.4946) scale(300 -300)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f6efe0"/>
+      <stop offset="1" stop-color="#efe6d2"/>
+    </linearGradient>
+    <clipPath id="clippath">
+      <rect class="st0" x="2.1" y="3.4" width="300" height="300" rx="66" ry="66"/>
+    </clipPath>
+    <linearGradient id="linear-gradient1" x1="-1176.1" y1="1039" x2="-1176.1" y2="1038" xlink:href="#linear-gradient"/>
+    <clipPath id="clippath-1">
+      <rect class="st0" x="-16.6" y="-547.9" width="300" height="300" rx="26" ry="26"/>
+    </clipPath>
+  </defs>
+  <rect class="st15" x="2.1" y="3.4" width="300" height="300" rx="66" ry="66"/>
+  <g class="st21">
+    <g>
+      <g class="st18">
+        <line class="st2" x1="42.1" y1="153.4" x2="42.1" y2="161.4"/>
+        <line class="st2" x1="82.1" y1="153.4" x2="82.1" y2="161.4"/>
+        <line class="st2" x1="122.1" y1="153.4" x2="122.1" y2="161.4"/>
+        <line class="st2" x1="162.1" y1="153.4" x2="162.1" y2="161.4"/>
+        <line class="st2" x1="202.1" y1="153.4" x2="202.1" y2="161.4"/>
+        <line class="st2" x1="242.1" y1="153.4" x2="242.1" y2="161.4"/>
+        <line class="st2" x1="262.1" y1="153.4" x2="262.1" y2="161.4"/>
+      </g>
+      <line class="st1" x1="32.1" y1="153.4" x2="272.1" y2="153.4"/>
+      <g>
+        <circle class="st3" cx="72.1" cy="153.4" r="22"/>
+        <circle class="st19" cx="72.1" cy="153.4" r="14"/>
+      </g>
+      <g>
+        <circle class="st5" cx="142.1" cy="153.4" r="34"/>
+        <circle class="st17" cx="142.1" cy="153.4" r="24"/>
+        <circle class="st8" cx="142.1" cy="153.4" r="9"/>
+      </g>
+      <g>
+        <circle class="st4" cx="200.1" cy="153.4" r="20"/>
+        <circle class="st20" cx="200.1" cy="153.4" r="12"/>
+      </g>
+      <g>
+        <circle class="st9" cx="246.1" cy="153.4" r="17"/>
+        <circle class="st22" cx="246.1" cy="153.4" r="10"/>
+      </g>
+    </g>
+  </g>
+  <text class="st6" transform="translate(342.1 151.4)"><tspan x="0" y="0">OwnChart</tspan></text>
+  <text class="st7" transform="translate(344.1 187.4)"><tspan x="0" y="0">Your health life, with evidence.</tspan></text>
+  <g>
+    <g>
+      <circle class="st19" cx="2.1" cy="323.4" r="6"/>
+      <text class="st10" transform="translate(14.1 327.4)"><tspan class="st13" x="0" y="0">Clinical</tspan><tspan class="st11" x="33.1" y="0"> </tspan><tspan class="st13" x="36.8" y="0">records</tspan></text>
+    </g>
+    <g>
+      <circle class="st17" cx="132.1" cy="323.4" r="6"/>
+      <text class="st10" transform="translate(144.1 327.4)"><tspan class="st13" x="0" y="0">Documents</tspan><tspan class="st11" x="53.1" y="0"> </tspan><tspan class="st12" x="56.9" y="0">(event)</tspan></text>
+    </g>
+    <g>
+      <circle class="st20" cx="282.1" cy="323.4" r="6"/>
+      <text class="st10" transform="translate(294.1 327.4)"><tspan class="st13" x="0" y="0">Personal</tspan><tspan class="st11" x="39.4" y="0"> </tspan><tspan class="st13" x="43.1" y="0">data</tspan></text>
+    </g>
+    <g>
+      <circle class="st22" cx="412.1" cy="323.4" r="6"/>
+      <text class="st10" transform="translate(424.1 327.4)"><tspan class="st13" x="0" y="0">Life</tspan><tspan class="st11" x="16.5" y="0"> </tspan><tspan class="st12" x="20.2" y="0">context</tspan></text>
+    </g>
+  </g>
+  <rect class="st14" x="-16.6" y="-547.9" width="300" height="300" rx="26" ry="26"/>
+  <g class="st16">
+    <g>
+      <g class="st18">
+        <line class="st2" x1="23.4" y1="-397.9" x2="23.4" y2="-389.9"/>
+        <line class="st2" x1="63.4" y1="-397.9" x2="63.4" y2="-389.9"/>
+        <line class="st2" x1="103.4" y1="-397.9" x2="103.4" y2="-389.9"/>
+        <line class="st2" x1="143.4" y1="-397.9" x2="143.4" y2="-389.9"/>
+        <line class="st2" x1="183.4" y1="-397.9" x2="183.4" y2="-389.9"/>
+        <line class="st2" x1="223.4" y1="-397.9" x2="223.4" y2="-389.9"/>
+        <line class="st2" x1="243.4" y1="-397.9" x2="243.4" y2="-389.9"/>
+      </g>
+      <line class="st1" x1="13.4" y1="-397.9" x2="253.4" y2="-397.9"/>
+      <g>
+        <circle class="st3" cx="53.4" cy="-397.9" r="22"/>
+        <circle class="st19" cx="53.4" cy="-397.9" r="14"/>
+      </g>
+      <g>
+        <circle class="st5" cx="123.4" cy="-397.9" r="34"/>
+        <circle class="st17" cx="123.4" cy="-397.9" r="24"/>
+        <circle class="st8" cx="123.4" cy="-397.9" r="9"/>
+      </g>
+      <g>
+        <circle class="st4" cx="181.4" cy="-397.9" r="20"/>
+        <circle class="st20" cx="181.4" cy="-397.9" r="12"/>
+      </g>
+      <g>
+        <circle class="st9" cx="227.4" cy="-397.9" r="17"/>
+        <circle class="st22" cx="227.4" cy="-397.9" r="10"/>
+      </g>
+    </g>
+  </g>
+  <text class="st6" transform="translate(323.4 -399.9)"><tspan x="0" y="0">OwnChart</tspan></text>
+  <text class="st7" transform="translate(325.4 -363.9)"><tspan x="0" y="0">Your health life, with evidence.</tspan></text>
+  <g>
+    <g>
+      <circle class="st19" cx="-16.6" cy="-227.9" r="6"/>
+      <text class="st10" transform="translate(-4.6 -223.9)"><tspan class="st13" x="0" y="0">Clinical</tspan><tspan class="st11" x="33.1" y="0"> </tspan><tspan class="st13" x="36.8" y="0">records</tspan></text>
+    </g>
+    <g>
+      <circle class="st17" cx="113.4" cy="-227.9" r="6"/>
+      <text class="st10" transform="translate(125.4 -223.9)"><tspan class="st13" x="0" y="0">Documents</tspan><tspan class="st11" x="53.1" y="0"> </tspan><tspan class="st12" x="56.9" y="0">(event)</tspan></text>
+    </g>
+    <g>
+      <circle class="st20" cx="263.4" cy="-227.9" r="6"/>
+      <text class="st10" transform="translate(275.4 -223.9)"><tspan class="st13" x="0" y="0">Personal</tspan><tspan class="st11" x="39.4" y="0"> </tspan><tspan class="st13" x="43.1" y="0">data</tspan></text>
+    </g>
+    <g>
+      <circle class="st22" cx="393.4" cy="-227.9" r="6"/>
+      <text class="st10" transform="translate(405.4 -223.9)"><tspan class="st13" x="0" y="0">Life</tspan><tspan class="st11" x="16.5" y="0"> </tspan><tspan class="st12" x="20.2" y="0">context</tspan></text>
+    </g>
+  </g>
+</svg>
