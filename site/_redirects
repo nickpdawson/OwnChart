@@ -1,5 +1,12 @@
-# Cloudflare Pages _redirects
-# https://developers.cloudflare.com/pages/configuration/redirects/
+# Cloudflare Workers + Static Assets _redirects
+# https://developers.cloudflare.com/workers/static-assets/redirects/
+#
+# Source must be a relative path (starts with /). Destinations can be
+# absolute URLs to external sites.
+#
+# Apex-to-www redirect is NOT done here (the static-assets _redirects
+# format can't match by hostname). It's handled by a Cloudflare zone
+# Redirect Rule that fires before the request reaches the Worker.
 
 # Short paths for common destinations on the GitHub repo
 /github      https://github.com/nickpdawson/OwnChart                              302
@@ -12,9 +19,3 @@
 /epic        https://github.com/nickpdawson/OwnChart/blob/main/user-docs/EPIC_SETUP.md    302
 /athena      https://github.com/nickpdawson/OwnChart/blob/main/user-docs/ATHENA_SETUP.md  302
 /license     https://github.com/nickpdawson/OwnChart/blob/main/LICENSE            302
-
-# Apex → www
-# (configure DNS in Cloudflare so ownchart.me proxies to Pages, then this rule
-# normalizes the URL. Apex-to-www requires the apex CNAME to resolve through
-# Cloudflare Pages first; the rewrite happens at the Pages edge.)
-https://ownchart.me/*    https://www.ownchart.me/:splat    301
