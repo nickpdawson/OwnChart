@@ -1,0 +1,15 @@
+// Cloudflare Workers + Static Assets config for the OwnChart landing page.
+// https://developers.cloudflare.com/workers/static-assets/
+//
+// This is a pure-static deployment: no Worker code, just the contents of
+// site/ served at the edge. The _headers and _redirects files inside site/
+// continue to work (the same syntax is supported by Workers static assets
+// as by Pages).
+{
+  "name": "ownchart",
+  "compatibility_date": "2025-04-01",
+  "assets": {
+    "directory": "./site",
+    "not_found_handling": "404-page"
+  }
+}
