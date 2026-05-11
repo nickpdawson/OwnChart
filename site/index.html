@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OwnChart — Your health life, with evidence.</title>
+  <meta name="description" content="An AI-first, evidence-grounded, patient-owned research partner for health and life data. Self-hosted. Your records, your model, your rules." />
+  <meta name="theme-color" content="#F6EFE0" />
+
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="alternate icon" href="/favicon.ico" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+  <!-- Open Graph / social -->
+  <meta property="og:title" content="OwnChart — Your health life, with evidence." />
+  <meta property="og:description" content="An AI-first, evidence-grounded, patient-owned research partner for health and life data. Self-hosted." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://www.ownchart.me/" />
+  <meta property="og:image" content="https://www.ownchart.me/og-image.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="OwnChart — Your health life, with evidence." />
+  <meta name="twitter:description" content="AI-first, patient-owned health research partner. Self-hosted. Evidence-first." />
+  <meta name="twitter:image" content="https://www.ownchart.me/og-image.png" />
+
+  <link rel="canonical" href="https://www.ownchart.me/" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<header class="hero" aria-labelledby="hero-heading">
+  <div class="hero-inner">
+
+    <figure class="mark" aria-hidden="true">
+      <svg viewBox="0 0 360 240" xmlns="http://www.w3.org/2000/svg" class="mark-svg">
+        <defs>
+          <linearGradient id="ivory" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#F6EFE0"/>
+            <stop offset="100%" stop-color="#EFE6D2"/>
+          </linearGradient>
+          <clipPath id="iconClip">
+            <rect x="30" y="20" width="300" height="200" rx="56" ry="56"/>
+          </clipPath>
+        </defs>
+
+        <rect x="30" y="20" width="300" height="200" rx="56" ry="56" fill="url(#ivory)" stroke="#D9CDB0" stroke-width="0.6"/>
+
+        <g clip-path="url(#iconClip)">
+          <!-- tick marks -->
+          <g stroke="#C9B98F" stroke-width="0.5" opacity="0.45">
+            <line x1="78"  y1="120" x2="78"  y2="128"/>
+            <line x1="108" y1="120" x2="108" y2="128"/>
+            <line x1="138" y1="120" x2="138" y2="128"/>
+            <line x1="168" y1="120" x2="168" y2="128"/>
+            <line x1="198" y1="120" x2="198" y2="128"/>
+            <line x1="228" y1="120" x2="228" y2="128"/>
+            <line x1="258" y1="120" x2="258" y2="128"/>
+            <line x1="288" y1="120" x2="288" y2="128"/>
+          </g>
+
+          <!-- life path -->
+          <line x1="70" y1="120" x2="290" y2="120" stroke="#A6967A" stroke-width="2" stroke-linecap="round" class="lifepath"/>
+
+          <!-- nodes -->
+          <g class="node node-teal">
+            <circle cx="100" cy="120" r="22" fill="#D9E5DF" opacity="0.85"/>
+            <circle cx="100" cy="120" r="14" fill="#4A7C74"/>
+          </g>
+          <g class="node node-ochre">
+            <circle cx="170" cy="120" r="34" fill="#E9D9B6" opacity="0.85"/>
+            <circle cx="170" cy="120" r="24" fill="#C28A3E"/>
+            <circle cx="170" cy="120" r="9"  fill="#F6EFE0" opacity="0.55"/>
+          </g>
+          <g class="node node-sage">
+            <circle cx="228" cy="120" r="20" fill="#DFE2CC" opacity="0.85"/>
+            <circle cx="228" cy="120" r="12" fill="#8FA277"/>
+          </g>
+          <g class="node node-plum">
+            <circle cx="274" cy="120" r="17" fill="#E2D1D8" opacity="0.85"/>
+            <circle cx="274" cy="120" r="10" fill="#6E4757"/>
+          </g>
+        </g>
+      </svg>
+    </figure>
+
+    <h1 id="hero-heading" class="wordmark">OwnChart</h1>
+    <p class="tagline">Your health life, with evidence.</p>
+    <p class="subtitle">An AI-first, evidence-grounded, patient-owned research partner for health and life data. Self-hosted. Your records, your model, your rules.</p>
+
+    <div class="cta-row">
+      <a href="https://demo.ownchart.me/" class="cta cta-primary">
+        Try the demo
+        <span class="chip">coming soon</span>
+      </a>
+      <a href="https://github.com/nickpdawson/OwnChart" class="cta cta-secondary">
+        Read the philosophy <span aria-hidden="true">→</span>
+      </a>
+    </div>
+
+    <div class="hero-rule" aria-hidden="true"></div>
+  </div>
+</header>
+
+<main>
+
+<section class="prose" aria-labelledby="what-heading">
+  <h2 id="what-heading" class="serif">Closer to Cursor for health and life data than to MyChart for patients.</h2>
+  <p>OwnChart is not a record viewer. It is a research partner. You bring your data — every PDF, FHIR bundle, CCDA, HealthKit metric, faxed report, and personal note you can pull together — and OwnChart brings structure, memory, retrieval, citations, and AI-assisted reasoning. You ask questions of your own health life. OwnChart answers with evidence, cites every source, and admits what it doesn't know.</p>
+  <p>You stay the final authority on what anything means.</p>
+</section>
+
+<section class="doctrine" aria-labelledby="doctrine-heading">
+  <h2 id="doctrine-heading" class="serif center">The doctrine</h2>
+  <p class="section-lede">Six non-negotiables. Read them as constraints on every feature decision, not aspirations.</p>
+
+  <div class="grid">
+    <article class="card">
+      <span class="dot dot-teal" aria-hidden="true"></span>
+      <h3>The patient owns it</h3>
+      <p>Self-hosted on your hardware. No SaaS backend. No vendor telemetry. No institutional override. The patient is the user, the owner, and the canonical authority on their own story.</p>
+    </article>
+
+    <article class="card">
+      <span class="dot dot-ochre" aria-hidden="true"></span>
+      <h3>Raw sources are immutable</h3>
+      <p>Original PDFs, FHIR bundles, CCDA XML are stored content-addressed by SHA-256 and never modified. The source <em>is</em> the record. Everything else is a derivation.</p>
+    </article>
+
+    <article class="card">
+      <span class="dot dot-sage" aria-hidden="true"></span>
+      <h3>User correction is canonical</h3>
+      <p>When the source says one thing and you say another, your version becomes the displayed truth. The source is preserved as evidence, never erased.</p>
+    </article>
+
+    <article class="card">
+      <span class="dot dot-plum" aria-hidden="true"></span>
+      <h3>One consent gate, on egress</h3>
+      <p>No PHI leaves the host to any LLM provider — Claude, OpenAI, Gemini, local — without your explicit, scoped opt-in. The gate is uniform across providers.</p>
+    </article>
+
+    <article class="card">
+      <span class="dot dot-teal" aria-hidden="true"></span>
+      <h3>AI cites everything</h3>
+      <p>Every substantive AI statement is source-backed, user-canonical, inferred, statistical, or explicitly unknown. Every claim opens to "why do you think that?"</p>
+    </article>
+
+    <article class="card">
+      <span class="dot dot-ochre" aria-hidden="true"></span>
+      <h3>Significance over fact-count</h3>
+      <p>Source density is not meaning. A dense year of 1,200 extracted facts is not automatically a meaningful year. The product ranks by user-confirmable significance.</p>
+    </article>
+  </div>
+
+  <p class="center small">
+    <a href="https://github.com/nickpdawson/OwnChart/blob/main/PHILOSOPHY.md">Full philosophy on GitHub →</a>
+  </p>
+</section>
+
+<section class="ai-first" aria-labelledby="ai-heading">
+  <h2 id="ai-heading" class="serif center">AI as a first-class citizen</h2>
+  <ul class="features">
+    <li>
+      <strong>Multi-provider.</strong> Claude, OpenAI, Gemini, and local models (Ollama, llama.cpp). Pick a default; override per task. The consent gate is the same for all.
+    </li>
+    <li>
+      <strong>Conversations are saved.</strong> Ask and Make Sense threads are searchable, resumable, and pinnable to dossiers. Your conversation history becomes part of your longitudinal learning.
+    </li>
+    <li>
+      <strong>Every output is auditable.</strong> A <code>ModelRun</code> record captures provider, prompt version, inputs sent, consent mode, and your final action. "Why did OwnChart say this?" always has an answer.
+    </li>
+  </ul>
+</section>
+
+<section class="demo" aria-labelledby="demo-heading">
+  <div class="demo-card">
+    <h2 id="demo-heading" class="serif">See it for yourself</h2>
+    <p>A read-only demo instance with synthetic sample data. No real PHI; nothing you do persists.</p>
+    <a href="https://demo.ownchart.me/" class="cta cta-primary large">
+      Open the demo
+      <span class="chip">coming soon</span>
+    </a>
+    <p class="small muted">Or stand it up on your own hardware: <a href="https://github.com/nickpdawson/OwnChart">github.com/nickpdawson/OwnChart</a></p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <p class="footer-mark">
+      <span class="footer-dots" aria-hidden="true">
+        <span class="dot dot-teal"></span><span class="dot dot-ochre"></span><span class="dot dot-sage"></span><span class="dot dot-plum"></span>
+      </span>
+      <span class="serif">OwnChart</span>
+    </p>
+    <nav class="footer-nav" aria-label="Footer">
+      <a href="https://github.com/nickpdawson/OwnChart">GitHub</a>
+      <a href="https://github.com/nickpdawson/OwnChart/blob/main/PHILOSOPHY.md">Philosophy</a>
+      <a href="https://github.com/nickpdawson/OwnChart/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/nickpdawson/OwnChart/tree/main/user-docs">Setup guides</a>
+      <a href="https://github.com/nickpdawson/OwnChart/blob/main/LICENSE">License</a>
+    </nav>
+    <p class="small muted ack">
+      Rooted in Critical AI Health Literacy and the <a href="https://www.aipatients.org/">AI Patients</a> community.
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

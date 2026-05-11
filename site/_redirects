@@ -1,0 +1,20 @@
+# Cloudflare Pages _redirects
+# https://developers.cloudflare.com/pages/configuration/redirects/
+
+# Short paths for common destinations on the GitHub repo
+/github      https://github.com/nickpdawson/OwnChart                              302
+/code        https://github.com/nickpdawson/OwnChart                              302
+/repo        https://github.com/nickpdawson/OwnChart                              302
+/docs        https://github.com/nickpdawson/OwnChart#documents                    302
+/philosophy  https://github.com/nickpdawson/OwnChart/blob/main/PHILOSOPHY.md      302
+/security    https://github.com/nickpdawson/OwnChart/blob/main/SECURITY.md        302
+/setup       https://github.com/nickpdawson/OwnChart/tree/main/user-docs          302
+/epic        https://github.com/nickpdawson/OwnChart/blob/main/user-docs/EPIC_SETUP.md    302
+/athena      https://github.com/nickpdawson/OwnChart/blob/main/user-docs/ATHENA_SETUP.md  302
+/license     https://github.com/nickpdawson/OwnChart/blob/main/LICENSE            302
+
+# Apex → www
+# (configure DNS in Cloudflare so ownchart.me proxies to Pages, then this rule
+# normalizes the URL. Apex-to-www requires the apex CNAME to resolve through
+# Cloudflare Pages first; the rewrite happens at the Pages edge.)
+https://ownchart.me/*    https://www.ownchart.me/:splat    301

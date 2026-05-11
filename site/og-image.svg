@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="OwnChart — Your health life, with evidence.">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FBF7EC"/>
+      <stop offset="100%" stop-color="#EFE6D2"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- Lifepath -->
+  <line x1="220" y1="280" x2="980" y2="280" stroke="#A6967A" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Nodes -->
+  <g>
+    <circle cx="320" cy="280" r="48" fill="#D9E5DF" opacity="0.85"/>
+    <circle cx="320" cy="280" r="30" fill="#4A7C74"/>
+  </g>
+  <g>
+    <circle cx="510" cy="280" r="72" fill="#E9D9B6" opacity="0.85"/>
+    <circle cx="510" cy="280" r="52" fill="#C28A3E"/>
+    <circle cx="510" cy="280" r="20" fill="#F6EFE0" opacity="0.55"/>
+  </g>
+  <g>
+    <circle cx="680" cy="280" r="42" fill="#DFE2CC" opacity="0.85"/>
+    <circle cx="680" cy="280" r="26" fill="#8FA277"/>
+  </g>
+  <g>
+    <circle cx="820" cy="280" r="36" fill="#E2D1D8" opacity="0.85"/>
+    <circle cx="820" cy="280" r="22" fill="#6E4757"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="600" y="445" text-anchor="middle"
+        font-family="Iowan Old Style, Charter, Hoefler Text, Georgia, serif"
+        font-size="92" font-weight="500" fill="#2C2A24" letter-spacing="-2">OwnChart</text>
+
+  <!-- Tagline -->
+  <text x="600" y="500" text-anchor="middle"
+        font-family="Iowan Old Style, Charter, Hoefler Text, Georgia, serif"
+        font-style="italic" font-size="30" fill="#7A6E58">Your health life, with evidence.</text>
+
+  <!-- URL -->
+  <text x="600" y="560" text-anchor="middle"
+        font-family="-apple-system, system-ui, sans-serif"
+        font-size="18" fill="#5F5C50" letter-spacing="1">www.ownchart.me</text>
+</svg>
