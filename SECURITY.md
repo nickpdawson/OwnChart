@@ -33,24 +33,28 @@ Stated explicitly so you don't assume coverage that isn't there:
 
 ## 3. The consent gate is the egress checkpoint
 
-This is the load-bearing security control. All LLM calls in OwnChart pass through one function. Before that function assembles a payload, it checks:
+This is the load-bearing security control. All LLM calls in OwnChart — Anthropic, OpenAI, Gemini, **and local models** — pass through one function. Routing local-model calls through the same gate keeps the audit trail complete even though those payloads don't leave the host. Before the function assembles a payload, it checks:
 
 1. **Global LLM consent flag** — set by the user in Settings. Default off.
-2. **Per-source override** — any source can be flagged "never send to LLM" (v0.1b: schema in place; full UI in v0.2).
-3. **Privacy mode for this call** — one of:
+2. **Per-source override** — any source can be flagged "never send to LLM", "source-only context", "exclude from Discover", or "exclude from Ask". Schema and enforcement land in v0.1b; the full UI for managing per-source flags is in scope for the v0.1b final.
+3. **Per-person consent** — when an instance hosts multiple people (caregiver scenarios), each person has independent consent state.
+4. **Privacy mode for this call** — one of:
    - `off` — call is refused.
-   - `metadata` — only structured fields (dates, codes, categories). No free text. No images.
-   - `selected_evidence` — excerpts the user has scoped to a specific question.
-   - `full_source` — entire documents or images. Requires the user to be looking at an explicit "this will send the full source" affordance.
+   - `metadata_only` — only structured fields (dates, codes, categories). No free text. No images.
+   - `selected_evidence` — excerpts the user has scoped to a specific question. **This is the default for Make Sense jobs.**
+   - `full_source_allowed` — entire documents or images. Requires the user to be looking at an explicit "this will send the full source" affordance.
 
 If any check fails, the call is refused before any PHI is loaded into memory for serialization. The refusal is logged (with no PHI in the log) to `ModelRun` so audits can answer "did this call ever go out?"
 
+Pre-flight transparency: every AI job shows the user the scope, the privacy mode, and a summary of what evidence will be sent before execution. The user can change scope or privacy mode at the pre-flight, or cancel.
+
 Architectural commitments that back the gate:
 
-- **Single egress path.** The Anthropic client is the only LLM client in the codebase. Adding a second provider would require routing through the same gate.
+- **Single gate, multiple providers.** Adding a new LLM provider does not bypass consent — every provider client routes through the same gate. The gate is provider-agnostic.
 - **Prompts are externalized YAML.** Hardcoded prompts can hide intent. YAML prompts version-control intent.
-- **`ModelRun` audit record per call.** Includes model, prompt version, input source IDs and hashes, output hash, consent mode at call time, token usage, and what the user did with the result.
-- **No streaming of raw source bytes through the LLM client without an explicit privacy-mode flag.** This includes Vision OCR — Claude Vision is treated as an LLM call, gated identically.
+- **`ModelRun` audit record per call.** Provider, model, prompt version + SHA, job type, initiating user/admin, consent mode at call time, privacy mode, input source IDs and hashes, output hash, token usage, **estimated cost**, safety refusals (if any), and what the user did with the result. Two questions every audit answers: *"Why did OwnChart say this?"* and *"What did OwnChart send to the LLM?"*
+- **No streaming of raw source bytes through the LLM client without an explicit privacy-mode flag.** This includes Vision OCR — Claude Vision (and any other vision model) is treated as an LLM call, gated identically.
+- **Cost transparency.** Token usage and estimated cost are visible per call and per period. Optional monthly spend ceilings per user/instance.
 
 ## 4. Storage model
 
@@ -64,20 +68,34 @@ Architectural commitments that back the gate:
 
 Content-addressing: every original source is stored under `data/<sha256>/...` and looked up by its hash. Duplicate uploads dedupe to the same blob. If a file on disk has been tampered with, hash recomputation on access detects it.
 
-## 5. Authentication & sessions
+## 5. Authentication, roles, and sessions
 
-v0.1b:
+v0.1b auth:
 
-- Local password authentication only. Passwords hashed with **Argon2id**, parameters per OWASP 2023 guidance.
+- Local password authentication. Passwords hashed with **Argon2id**, parameters per OWASP 2023 guidance.
 - Sessions are server-side; the cookie is `httpOnly`, `SameSite=Lax`, `Secure` when `OWNCHART_ENV=prod`.
 - Default session max age: 14 days. Configurable in `infra/config.yaml`.
 - No password reset flow unless SMTP is configured (`smtp.enabled: true` in config). Solo self-hosters run without SMTP — recover by resetting in the DB directly.
-- No multi-user separation yet. v0.1b assumes one human per instance. Multi-user with caregiver delegation is on the roadmap.
+
+Role model (schema present in v0.1b; full UI maturing through 0.1b → 0.2):
+
+| Role | Capabilities |
+|---|---|
+| **Owner** | Full instance control: billing, secrets, config, user management, ownership transfer |
+| **Admin** | Manage users, connectors, settings, jobs, instance defaults (everything except ownership transfer) |
+| **Member** | Manage own profile, person records, data, consent, preferences |
+| **Caregiver / Delegate** | Scoped access to another person's record (with that person's consent) |
+| **Viewer** | Read-only access to demo or explicitly-shared records |
+| **Demo User** | Read-only sample data; safe for App Store review or public demo |
+
+**Person vs. user:** the schema separates the *user account* (authentication) from the *person whose record this is*. One user can have a record of their own *and* delegated caregiver access to a parent's or child's record. Each person has independent consent state — including independent LLM consent, per-source overrides, and provider preferences.
+
+Bootstrap behavior is configurable: by default the first user to create an account on a fresh instance becomes Owner; self-registration can then be closed.
 
 Roadmap:
 
 - **Authentik OIDC** as the recommended SSO front-end for households or caregivers.
-- **Per-record consent boundaries** when one server hosts multiple people (parent + child + parent's parent).
+- Mature **caregiver delegation UI** (the schema is in place in v0.1b; the management surface lands incrementally).
 
 ## 6. Secrets
 
@@ -89,7 +107,10 @@ Variables you must set before running anything against your real record:
 |---|---|
 | `POSTGRES_PASSWORD` | Postgres user password |
 | `SESSION_SECRET` | Random 48+ byte URL-safe token, generated locally |
-| `ANTHROPIC_API_KEY` | Your Anthropic API key, billed to you |
+| `OWNCHART_LLM_PROVIDER` | Default provider (`anthropic`, `openai`, `google`, `local`) |
+| At least one provider key | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or a `LOCAL_LLM_ENDPOINT` URL — whichever matches your default provider |
+
+Provider credentials can be admin-provided (set once in `.env`, available to all users on the instance), user-provided (each user enters their own key in Settings), or come from a provider OAuth login when supported. Mixed deployments are supported — the instance can offer a default model and let individual users override with their own key.
 
 Never:
 
@@ -167,7 +188,18 @@ OwnChart does not ship a backup system. You back up:
 
 A good drill: restore both `data/` and the Postgres dump to a clean OwnChart instance, log in, and verify a known-correct source still resolves with its user corrections intact.
 
-## 11. Reporting a vulnerability
+## 11. Safety boundary
+
+OwnChart's AI never provides medical advice. Concretely, the system is constrained to refuse and redirect on certain categories of request:
+
+- **Medication changes.** AI never instructs you to start, stop, change dose, or substitute a medication. It can explain a medication, summarize its history in your record, and help you frame questions for your clinician — but the action remains yours and your clinician's.
+- **Diagnostic verdicts.** AI does not deliver diagnoses. It can surface what the institutional record claims, what evidence supports or contradicts that, and what questions to ask — never "you have X."
+- **Self-harm intent.** If a user expresses self-harm intent, or asks for instructions or support for self-harm, the system responds with supportive, crisis-oriented guidance and a strong encouragement to reach out for immediate human help (988 Suicide & Crisis Lifeline in the US; appropriate regional services elsewhere). The system never provides instructions, planning support, or rationalization for self-harm.
+- **Correlation vs. causation.** When the system surfaces a pattern (e.g., "sleep dropped in the week before this surgery"), it labels it as correlation. It does not assert causal claims the data cannot support.
+
+These boundaries are enforced at the prompt level (system prompts explicitly instruct the model on refusal-and-redirect behavior) and at the audit level (`ModelRun.safety_refusal` records when the model refused, so audits can verify the boundary is holding).
+
+## 12. Reporting a vulnerability
 
 If you find a security issue in OwnChart, please **do not file a public issue**. Open a private GitHub Security Advisory at:
 
@@ -175,13 +207,13 @@ If you find a security issue in OwnChart, please **do not file a public issue**.
 
 Or email the project owner directly with the details and a proposed disclosure timeline. We will respond as fast as a one-person project can, which means within a few days, not minutes. If you've found something exploitable in the consent gate specifically, that's the highest-priority class — flag it as such.
 
-## 12. Known limitations in 0.1b
+## 13. Known limitations in 0.1b
 
 Documented honestly:
 
-- **Per-source "never send to LLM" override** — schema is in place, full UI is v0.2. The global consent gate is the load-bearing control today.
+- **Per-source override UI** — schema is in place and gate enforcement works in v0.1b; the management UI for setting source-level flags lands incrementally through 0.1b. The global consent gate is the load-bearing control today.
+- **Caregiver / multi-person UI** — schema present in v0.1b, full delegation UI matures through 0.1b → 0.2.
 - **No application-layer encryption.** Relies on host disk encryption. Application-layer encryption of `data/` is a candidate for v0.2.
-- **No multi-user isolation.** One human per instance.
 - **No automated PHI scanning** on outbound LLM calls (e.g., detecting that a free-text note contains an SSN before sending). The privacy modes constrain what categories of data go out; finer-grained content scanning is a roadmap item.
 - **Backups are operator-implemented.** A first-class backup tool is on the roadmap.
 - **Audit log is append-only by convention, not by storage primitive.** A tamper-evident audit log (hash-chained or external-anchored) is on the roadmap.
