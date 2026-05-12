@@ -148,9 +148,10 @@ export function ReviewClient({ initial }: { initial: FactDetail[] }) {
         <h2 className="font-serif text-xl">People & organizations</h2>
         <p className="mt-1 text-sm text-muted">
           Provider names, fax recipients, scheduling clerks, records
-          custodians. Typically vision-extracted from fax cover sheets and
-          rarely change the meaning of a clinical event. Use bulk actions to
-          clear these efficiently.
+          custodians — grouped by source. Confirm the real care-team
+          contacts, defer the noise (cover-sheet clerks, illegible
+          signatures), reject the wrong extractions. Use the per-source
+          group actions for trusted sources where every row is genuine.
         </p>
         <p className="mt-1 text-xs text-muted">
           {providers.length} item{providers.length === 1 ? "" : "s"}.
@@ -536,6 +537,14 @@ function ProviderLane({
         <button
           type="button"
           disabled={busy || selected.size === 0}
+          onClick={() => bulkRun([...selected], "confirm")}
+          className="rounded-md bg-accent px-3 py-1 text-xs text-surface disabled:opacity-50"
+        >
+          Confirm selected
+        </button>
+        <button
+          type="button"
+          disabled={busy || selected.size === 0}
           onClick={() => bulkRun([...selected], "annotate", "deferred")}
           className="rounded-md border border-muted/30 px-3 py-1 text-xs hover:bg-muted/5 disabled:opacity-50"
         >
@@ -586,6 +595,14 @@ function ProviderLane({
                   className="text-xs text-muted underline-offset-4 hover:underline"
                 >
                   {allSelected ? "Unselect group" : "Select group"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => bulkRun(ids, "confirm")}
+                  className="text-xs text-accent underline-offset-4 hover:underline disabled:opacity-50"
+                >
+                  Confirm all from this source
                 </button>
                 <button
                   type="button"
