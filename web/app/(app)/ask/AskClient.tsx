@@ -15,6 +15,7 @@ type AskResponse = {
   model_run_id: string | null;
   safety_response: string | null;
   error: string | null;
+  conversation_id?: string | null;
 };
 
 export function AskClient() {
@@ -104,6 +105,25 @@ export function AskClient() {
             <p className="rounded-md bg-caution/10 p-3 text-sm text-caution">
               LLM error — {answer.error}
             </p>
+          )}
+          {answer.conversation_id && (
+            <div className="flex flex-wrap items-center gap-3 rounded-md border border-accent/30 bg-accent/5 p-3 text-sm">
+              <span className="text-muted">
+                Want to keep this answer accessible?
+              </span>
+              <a
+                href={`/chat/${answer.conversation_id}`}
+                className="rounded-md border border-accent/40 px-3 py-1 text-accent hover:bg-accent/10"
+              >
+                Continue in chat
+              </a>
+              <a
+                href={`/chat/${answer.conversation_id}?save=dossier`}
+                className="rounded-md bg-accent px-3 py-1 text-surface hover:opacity-90"
+              >
+                Save as Dossier
+              </a>
+            </div>
           )}
           <p className="text-xs text-muted">
             Retrieved {answer.retrieved_fact_count} relevant fact{answer.retrieved_fact_count === 1 ? "" : "s"}.

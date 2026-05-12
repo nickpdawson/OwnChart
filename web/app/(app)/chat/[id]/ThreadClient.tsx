@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import type {
   CandidateRef,
   ConvCitation,
@@ -58,6 +58,17 @@ export function ThreadClient({
   const [conflictTopic, setConflictTopic] = useState<{slug: string} | null>(null);
 
   const hasAssistantReply = messages.some((m) => m.role === "assistant" && m.content);
+
+  // Deep-link from /ask: ?save=dossier auto-opens the modal so the
+  // "Save as Dossier" button on the Ask answer panel lands here ready
+  // to act. Only fires once on mount; user can close + reopen normally.
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    if (searchParams?.get("save") === "dossier" && hasAssistantReply) {
+      openSaveAsDossier();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const promotableEpisode = candidates.find(
     (c) => c.candidate_type === "episode" && c.disposition === "pending",
