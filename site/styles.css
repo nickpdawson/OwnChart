@@ -404,6 +404,81 @@ code {
 }
 
 /* ============================================================
+   SCREENSHOTS
+   ============================================================ */
+
+.screenshots {
+  padding: clamp(56px, 8vw, 88px) var(--pad-x);
+  background:
+    linear-gradient(180deg, var(--ivory-100) 0%, var(--ivory-200) 100%);
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.screenshots > * { max-width: var(--max-w); margin-left: auto; margin-right: auto; }
+
+.screenshots h2 {
+  font-size: clamp(26px, 3.6vw, 34px);
+  margin: 0 0 12px;
+}
+
+.phone-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: clamp(16px, 2.5vw, 28px);
+  margin-top: 36px;
+  align-items: start;
+}
+
+.phone {
+  margin: 0;
+  text-align: center;
+}
+
+.phone img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 22px;
+  border: 1px solid var(--hairline);
+  background: var(--ivory-200);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 8px 28px rgba(166, 150, 122, 0.18);
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease;
+}
+
+.phone:hover img {
+  transform: translateY(-3px);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 12px 36px rgba(166, 150, 122, 0.24);
+}
+
+.phone figcaption {
+  margin-top: 14px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 15px;
+  color: var(--ink-mute);
+  letter-spacing: 0.005em;
+}
+
+@media (max-width: 820px) {
+  .phone-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 24px;
+  }
+}
+
+@media (max-width: 460px) {
+  .phone figcaption {
+    font-size: 14px;
+    margin-top: 10px;
+  }
+}
+
+/* ============================================================
    DEMO CTA
    ============================================================ */
 
