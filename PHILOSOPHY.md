@@ -258,7 +258,7 @@ The config file is not a legacy escape hatch. It's a first-class administration 
 
 ## 19. The CAIHL lens
 
-OwnChart's design is rooted in **Critical AI Health Literacy** and the **AI Patients** tradition, particularly the work of [Hugo Campos](https://www.aipatients.org/) and the AI Patients community.
+OwnChart's design is rooted in **Critical AI Health Literacy** and the **AI Patients** tradition, particularly the work of [Hugo Campos](https://github.com/hugooc) and the [AI Patients](https://www.aipatients.org/) community.
 
 The product translation:
 
@@ -280,7 +280,16 @@ For every feature, the design checklist:
 
 This is the difference between an AI gimmick and a liberation-oriented patient tool.
 
-## 20. Doctrine travels with the fork
+## 20. Lineage
+
+OwnChart is not a clean-room invention. The doctrine here carries forward work from two people whose thinking informs the project at its load-bearing points:
+
+- **[Hugo Campos](https://github.com/hugooc)** — Critical AI Health Literacy as a design lens, and the long-running insistence that AI in healthcare can either silence patients or amplify them. OwnChart picks the second.
+- **[Josh Mandel](https://github.com/jmandel)** — SMART-on-FHIR as the patient-side data path, and [`health-record-mcp`](https://github.com/jmandel/health-record-mcp) as a working demonstration that FHIR-aware LLM tooling is achievable today, not a future paper. OwnChart's import surface and evidence-citation model owe a lot to that lineage.
+
+Crediting them up front; the implementation choices and mistakes here are the project maintainer's.
+
+## 21. Doctrine travels with the fork
 
 The MIT license covers the code. This document covers the project. A fork is welcome — please use it for whatever you want. But if you call your fork "patient-owned," these principles are the meaning of the phrase.
 
