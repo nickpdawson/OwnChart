@@ -123,7 +123,8 @@ export function ReviewClient({ initial }: { initial: FactDetail[] }) {
         <h2 className="font-serif text-xl">Clinical uncertainty</h2>
         <p className="mt-1 text-sm text-muted">
           Conditions, procedures, medications, encounters, and other facts
-          that affect timelines and dossiers. Triage one at a time.
+          that affect timelines and dossiers. Triage one at a time, or use
+          the multi-select toolbar to clear a batch.
         </p>
         <p className="mt-1 text-xs text-muted">
           {clinical.length} item{clinical.length === 1 ? "" : "s"}.
@@ -133,16 +134,12 @@ export function ReviewClient({ initial }: { initial: FactDetail[] }) {
             No clinical items pending review.
           </p>
         ) : (
-          <ul className="mt-4 space-y-2">
-            {clinical.map((f) => (
-              <ClinicalRow
-                key={f.id}
-                fact={f}
-                onApply={(at, ns) => applyToOne(f, at, ns)}
-                onRemove={() => removeIds(new Set([f.id]))}
-              />
-            ))}
-          </ul>
+          <ClinicalLane
+            clinical={clinical}
+            applyToOne={applyToOne}
+            applyToMany={applyToMany}
+            onRemove={removeIds}
+          />
         )}
       </section>
 
@@ -175,15 +172,144 @@ export function ReviewClient({ initial }: { initial: FactDetail[] }) {
 }
 
 // ---------------------------------------------------------------------------
+// Clinical lane — multi-select toolbar + per-row triage. Triage gestures are
+// per-row because each clinical fact carries a different burden of proof
+// (a confirmed condition reshapes the dossier; a rejected procedure
+// disappears from the timeline). The toolbar exists for the obvious bulk
+// case — "I scanned 30 rows from FOXHALL MRI, all look right, confirm
+// them all" — but defaults to nothing selected so you never apply a
+// disposition you didn't intend.
+// ---------------------------------------------------------------------------
+
+function ClinicalLane({
+  clinical,
+  applyToOne,
+  applyToMany,
+  onRemove,
+}: {
+  clinical: FactDetail[];
+  applyToOne: (
+    fact: FactDetail,
+    at: BulkAssertionType,
+    newReviewState?: string,
+  ) => Promise<void>;
+  applyToMany: (
+    factIds: string[],
+    at: BulkAssertionType,
+    newReviewState?: string,
+  ) => Promise<void>;
+  onRemove: (ids: Set<string>) => void;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function bulkRun(
+    at: BulkAssertionType,
+    newReviewState?: string,
+  ): Promise<void> {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await applyToMany(ids, at, newReviewState);
+      setSelected(new Set());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-muted/15 bg-bg/50 px-3 py-2 text-sm">
+        <span className="text-muted">
+          {selected.size} selected of {clinical.length}
+        </span>
+        <button
+          type="button"
+          disabled={busy || selected.size === 0}
+          onClick={() => bulkRun("confirm")}
+          className="rounded-md bg-accent px-3 py-1 text-xs text-surface disabled:opacity-50"
+        >
+          Confirm selected
+        </button>
+        <button
+          type="button"
+          disabled={busy || selected.size === 0}
+          onClick={() => bulkRun("annotate", "deferred")}
+          className="rounded-md border border-muted/30 px-3 py-1 text-xs hover:bg-muted/5 disabled:opacity-50"
+        >
+          Defer selected
+        </button>
+        <button
+          type="button"
+          disabled={busy || selected.size === 0}
+          onClick={() => bulkRun("reject")}
+          className="rounded-md border border-caution/40 px-3 py-1 text-xs text-caution hover:bg-caution/5 disabled:opacity-50"
+        >
+          Reject selected
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => setSelected(new Set(clinical.map((f) => f.id)))}
+          className="ml-auto rounded-md border border-muted/30 px-3 py-1 text-xs hover:bg-muted/5 disabled:opacity-50"
+        >
+          Select all
+        </button>
+        <button
+          type="button"
+          disabled={busy || selected.size === 0}
+          onClick={() => setSelected(new Set())}
+          className="rounded-md border border-muted/30 px-3 py-1 text-xs hover:bg-muted/5 disabled:opacity-50"
+        >
+          Clear
+        </button>
+      </div>
+      {error && <p className="mt-2 text-xs text-caution">{error}</p>}
+
+      <ul className="mt-4 space-y-2">
+        {clinical.map((f) => (
+          <ClinicalRow
+            key={f.id}
+            fact={f}
+            selected={selected.has(f.id)}
+            onToggleSelected={() => toggle(f.id)}
+            onApply={(at, ns) => applyToOne(f, at, ns)}
+            onRemove={() => onRemove(new Set([f.id]))}
+          />
+        ))}
+      </ul>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Clinical lane row — quick-triage buttons + collapsible field editor
 // ---------------------------------------------------------------------------
 
 function ClinicalRow({
   fact,
+  selected,
+  onToggleSelected,
   onApply,
   onRemove,
 }: {
   fact: FactDetail;
+  selected: boolean;
+  onToggleSelected: () => void;
   onApply: (
     assertionType: BulkAssertionType,
     newReviewState?: string,
@@ -210,8 +336,19 @@ function ClinicalRow({
   }
 
   return (
-    <li className="rounded-xl border border-muted/15 bg-surface px-4 py-3">
+    <li
+      className={`rounded-xl border bg-surface px-4 py-3 ${
+        selected ? "border-accent/60 ring-1 ring-accent/30" : "border-muted/15"
+      }`}
+    >
       <div className="flex flex-wrap items-baseline gap-2">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggleSelected}
+          aria-label={`Select ${fact.display_label ?? fact.label}`}
+          className="self-center"
+        />
         <span className="text-[10px] uppercase tracking-widest text-muted">
           {humanizeFactType(fact.fact_type)}
         </span>
