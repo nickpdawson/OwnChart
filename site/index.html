@@ -197,8 +197,25 @@
   </div>
 
   <p class="testflight-row">
-    <a href="https://testflight.apple.com/join/z8QemcTe" class="cta cta-secondary">
-      Join the iOS beta <span aria-hidden="true">→</span>
+    <a href="https://testflight.apple.com/join/z8QemcTe" class="cta cta-secondary cta-testflight">
+      <svg class="tf-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
+        <defs>
+          <linearGradient id="tf-bg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#28BCF9"/>
+            <stop offset="100%" stop-color="#0093D5"/>
+          </linearGradient>
+        </defs>
+        <rect width="24" height="24" rx="5.4" fill="url(#tf-bg)"/>
+        <g fill="#FFFFFF">
+          <path d="M 12 4.5 Q 14.2 8 12 12 Q 9.8 8 12 4.5 Z"/>
+          <path d="M 19.5 12 Q 16 14.2 12 12 Q 16 9.8 19.5 12 Z"/>
+          <path d="M 12 19.5 Q 14.2 16 12 12 Q 9.8 16 12 19.5 Z"/>
+          <path d="M 4.5 12 Q 8 14.2 12 12 Q 8 9.8 4.5 12 Z"/>
+          <circle cx="12" cy="12" r="0.9"/>
+        </g>
+      </svg>
+      Join the iOS beta
+      <span aria-hidden="true" class="cta-arrow">→</span>
     </a>
     <span class="testflight-note">Public TestFlight. No invite needed.</span>
   </p>
