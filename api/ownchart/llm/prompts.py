@@ -72,6 +72,13 @@ class PromptRegistry:
         for path in sorted(self.prompts_dir.glob("*.yaml")):
             with path.open("r", encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
+            # Skip non-chat-prompt YAMLs that live in the same dir
+            # (e.g. suggested_questions.v1.yaml is a question-template
+            # config consumed by llm/suggested_questions.py, not a
+            # chat prompt). Chat prompts always declare both `model`
+            # and `system`; anything else is a different schema.
+            if not isinstance(raw, dict) or "model" not in raw or "system" not in raw:
+                continue
             try:
                 prompt = Prompt.model_validate(raw)
             except Exception as e:  # noqa: BLE001

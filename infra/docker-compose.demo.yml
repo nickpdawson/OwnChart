@@ -72,6 +72,11 @@ services:
       OWNCHART_ANTHROPIC_DEFAULT_MODEL: ${ANTHROPIC_DEFAULT_MODEL:-claude-opus-4-7}
       OWNCHART_ANTHROPIC_VISION_MODEL: ${ANTHROPIC_VISION_MODEL:-claude-opus-4-7}
       OWNCHART_TOKEN_DEK: ${OWNCHART_TOKEN_DEK:?set in infra/.env.demo}
+      # Epic SMART-on-FHIR app registrations. Sandbox is the public R4
+      # tutorial app id, safe to pass through. Production id is only set
+      # when an operator wants to connect a real Epic tenant from the demo.
+      OWNCHART_EPIC_CLIENT_ID: ${OWNCHART_EPIC_CLIENT_ID:-}
+      OWNCHART_EPIC_CLIENT_ID_SANDBOX: ${OWNCHART_EPIC_CLIENT_ID_SANDBOX:-}
       # Public URL the demo answers on. NPM forwards demo.ownchart.me to
       # host:9988; the API uses this for OAuth redirect_uri composition.
       OWNCHART_PUBLIC_BASE_URL: ${OWNCHART_PUBLIC_BASE_URL:-https://demo.ownchart.me}
@@ -85,7 +90,10 @@ services:
       OWNCHART_CONFIG_PATH: /app/infra/config.yaml
     volumes:
       - ../data-demo:/data
-      - ./connectors.seed.yaml:/app/infra/connectors.seed.yaml:ro
+      # Demo-specific seed: enables the Epic FHIR sandbox connector so
+      # visitors can walk through the SMART-on-FHIR connect flow. Prod's
+      # connectors.seed.yaml keeps it disabled.
+      - ./connectors.seed.demo.yaml:/app/infra/connectors.seed.yaml:ro
       - ./config.yaml:/app/infra/config.yaml:ro
       - ./demo_data:/app/infra/demo_data:ro
     ports:

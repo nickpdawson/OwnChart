@@ -1,372 +1,375 @@
 {
   "resourceType": "Bundle",
-  "id": "ownchart-demo-bundle",
   "type": "collection",
+  "id": "camila-lopez-demo",
   "meta": {
-    "lastUpdated": "2026-05-11T17:00:00Z",
-    "tag": [
-      {
-        "system": "https://ownchart.me/tags",
-        "code": "demo-synthetic",
-        "display": "Synthetic demo data — not real PHI"
-      }
-    ]
+    "source": "Epic FHIR R4 sandbox — test patient Camila Maria Lopez. Reproduced verbatim from the published sandbox CCD for OwnChart's public demo at demo.ownchart.me. Not real PHI."
   },
   "entry": [
     {
-      "fullUrl": "Patient/demo-patient-001",
       "resource": {
         "resourceType": "Patient",
-        "id": "demo-patient-001",
-        "name": [{ "use": "official", "family": "Demo", "given": ["Sample"] }],
-        "gender": "unknown",
-        "birthDate": "1980-07-14",
-        "address": [{ "city": "Anytown", "state": "CA", "country": "US" }]
-      }
-    },
-    {
-      "fullUrl": "Encounter/demo-enc-pre-op",
-      "resource": {
-        "resourceType": "Encounter",
-        "id": "demo-enc-pre-op",
-        "status": "finished",
-        "class": {
-          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
-          "code": "AMB",
-          "display": "ambulatory"
-        },
-        "type": [{ "text": "Pre-operative surgical consult" }],
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "period": {
-          "start": "2026-04-22T15:00:00Z",
-          "end": "2026-04-22T15:45:00Z"
-        }
-      }
-    },
-    {
-      "fullUrl": "Encounter/demo-enc-2026-05-01",
-      "resource": {
-        "resourceType": "Encounter",
-        "id": "demo-enc-2026-05-01",
-        "status": "finished",
-        "class": {
-          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
-          "code": "AMB",
-          "display": "ambulatory"
-        },
-        "type": [
-          {
-            "text": "Outpatient surgical encounter",
-            "coding": [
-              {
-                "system": "http://snomed.info/sct",
-                "code": "33879002",
-                "display": "Outpatient surgical encounter"
-              }
-            ]
-          }
+        "id": "camila-lopez",
+        "name": [
+          {"use": "official", "family": "Lopez", "given": ["Camila", "Maria"]}
         ],
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "period": {
-          "start": "2026-05-01T07:00:00Z",
-          "end": "2026-05-01T13:00:00Z"
-        },
-        "serviceProvider": { "display": "Demo Health System" }
+        "gender": "female",
+        "birthDate": "1987-09-12",
+        "address": [
+          {"use": "home", "line": ["3268 W Johnson St Apt 117"], "city": "Garland", "state": "TX", "postalCode": "75043"}
+        ],
+        "telecom": [
+          {"system": "phone", "value": "469-888-8888", "use": "work"},
+          {"system": "phone", "value": "469-469-4321", "use": "mobile"},
+          {"system": "email", "value": "knixontestemail@epic.com"}
+        ],
+        "communication": [
+          {"language": {"text": "English"}, "preferred": true}
+        ],
+        "maritalStatus": {"text": "Married"}
       }
     },
     {
-      "fullUrl": "Procedure/demo-proc-001",
       "resource": {
-        "resourceType": "Procedure",
-        "id": "demo-proc-001",
-        "status": "completed",
-        "code": {
-          "text": "Laparoscopic cholecystectomy",
-          "coding": [
-            {
-              "system": "http://www.ama-assn.org/go/cpt",
-              "code": "47562",
-              "display": "Laparoscopy, surgical; cholecystectomy"
-            },
-            {
-              "system": "http://snomed.info/sct",
-              "code": "45595009",
-              "display": "Laparoscopic cholecystectomy"
-            }
-          ]
-        },
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "performedDateTime": "2026-05-01T08:20:00Z",
-        "encounter": { "reference": "Encounter/demo-enc-2026-05-01" },
-        "bodySite": [{ "text": "Gallbladder" }]
+        "resourceType": "Practitioner",
+        "id": "pcp-mustafa-z",
+        "identifier": [{"system": "http://hl7.org/fhir/sid/us-npi", "value": "1627363736"}],
+        "name": [{"family": "Z", "given": ["Mustafa"]}],
+        "address": [{"line": ["123 Anywhere Street"], "city": "Madison", "state": "WI", "postalCode": "53719"}],
+        "telecom": [{"system": "phone", "value": "555-555-5555", "use": "work"}]
       }
     },
     {
-      "fullUrl": "Procedure/demo-proc-002",
       "resource": {
-        "resourceType": "Procedure",
-        "id": "demo-proc-002",
-        "status": "completed",
-        "code": {
-          "text": "Intraoperative cholangiogram",
-          "coding": [
-            {
-              "system": "http://www.ama-assn.org/go/cpt",
-              "code": "74300",
-              "display": "Cholangiography and/or pancreatography; intraoperative, radiological supervision and interpretation"
-            }
-          ]
-        },
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "performedDateTime": "2026-05-01T08:50:00Z",
-        "encounter": { "reference": "Encounter/demo-enc-2026-05-01" }
+        "resourceType": "Organization",
+        "id": "org-emc-family-medicine",
+        "name": "EMC Family Medicine",
+        "address": [{"line": ["123 Anywhere Street"], "city": "Verona", "state": "WI", "postalCode": "53593-9179"}]
       }
     },
     {
-      "fullUrl": "Condition/demo-cond-001",
+      "resource": {
+        "resourceType": "Organization",
+        "id": "org-emh-main-or",
+        "name": "EMH Main Operating Room",
+        "address": [{"line": ["123 Anywhere Street"], "city": "Verona", "state": "WI", "postalCode": "53593-9179"}]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-surgery-appendectomy",
+        "status": "finished",
+        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "IMP", "display": "Inpatient"},
+        "type": [{"text": "Surgery: Appendectomy"}],
+        "subject": {"reference": "Patient/camila-lopez"},
+        "period": {"start": "2023-06-06T11:20:00-05:00", "end": "2023-06-06T12:35:00-05:00"},
+        "serviceProvider": {"reference": "Organization/org-emh-main-or"}
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-office-2023-06-02",
+        "status": "finished",
+        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "AMB", "display": "Ambulatory"},
+        "type": [{"text": "Office Visit"}],
+        "subject": {"reference": "Patient/camila-lopez"},
+        "period": {"start": "2023-06-02"},
+        "serviceProvider": {"reference": "Organization/org-emc-family-medicine"}
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-cardiology-2023-06-02",
+        "status": "finished",
+        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "AMB", "display": "Ambulatory"},
+        "type": [{"text": "Hospital Encounter — Cardiology Procedures"}],
+        "subject": {"reference": "Patient/camila-lopez"},
+        "period": {"start": "2023-06-02T15:49:00-05:00"}
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-xray-2023-06-02",
+        "status": "finished",
+        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "AMB", "display": "Ambulatory"},
+        "type": [{"text": "Hospital Encounter — X-Ray Imaging"}],
+        "subject": {"reference": "Patient/camila-lopez"},
+        "period": {"start": "2023-06-02T15:41:00-05:00"}
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-office-2023-05-21",
+        "status": "finished",
+        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "AMB", "display": "Ambulatory"},
+        "type": [{"text": "Office Visit"}],
+        "subject": {"reference": "Patient/camila-lopez"},
+        "period": {"start": "2023-05-21"},
+        "serviceProvider": {"reference": "Organization/org-emc-family-medicine"}
+      }
+    },
+    {
       "resource": {
         "resourceType": "Condition",
-        "id": "demo-cond-001",
-        "clinicalStatus": {
-          "coding": [
-            {
-              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
-              "code": "resolved"
-            }
-          ]
-        },
+        "id": "cond-polycystic-ovaries",
+        "clinicalStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-clinical", "code": "active"}]},
+        "verificationStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-ver-status", "code": "confirmed"}]},
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-category", "code": "problem-list-item"}]}],
         "code": {
-          "text": "Cholelithiasis (gallstones)",
-          "coding": [
-            {
-              "system": "http://snomed.info/sct",
-              "code": "266474003",
-              "display": "Cholelithiasis"
-            },
-            {
-              "system": "http://hl7.org/fhir/sid/icd-10-cm",
-              "code": "K80.20",
-              "display": "Calculus of gallbladder without obstruction"
-            }
-          ]
+          "coding": [{"system": "http://snomed.info/sct", "code": "69878008", "display": "Polycystic ovaries"}],
+          "text": "Polycystic ovaries"
         },
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "recordedDate": "2026-03-14"
+        "subject": {"reference": "Patient/camila-lopez"},
+        "onsetDateTime": "2005-09-20",
+        "recordedDate": "2005-09-20"
       }
     },
     {
-      "fullUrl": "Condition/demo-cond-002",
       "resource": {
         "resourceType": "Condition",
-        "id": "demo-cond-002",
-        "clinicalStatus": {
-          "coding": [
-            {
-              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
-              "code": "resolved"
-            }
-          ]
-        },
-        "code": {
-          "text": "Biliary colic",
-          "coding": [
-            {
-              "system": "http://snomed.info/sct",
-              "code": "70592003",
-              "display": "Biliary colic"
-            }
-          ]
-        },
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "recordedDate": "2026-03-14"
+        "id": "cond-pain-adl",
+        "clinicalStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-clinical", "code": "active"}]},
+        "verificationStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-ver-status", "code": "confirmed"}]},
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-category", "code": "encounter-diagnosis"}]}],
+        "code": {"text": "Pain aggravated by activities of daily living"},
+        "subject": {"reference": "Patient/camila-lopez"},
+        "encounter": {"reference": "Encounter/enc-office-2023-05-21"},
+        "onsetDateTime": "2023-05-21",
+        "recordedDate": "2023-05-21"
       }
     },
     {
-      "fullUrl": "MedicationRequest/demo-med-001",
       "resource": {
-        "resourceType": "MedicationRequest",
-        "id": "demo-med-001",
-        "status": "completed",
-        "intent": "order",
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "medicationCodeableConcept": {
-          "text": "Propofol 10 mg/mL injection",
-          "coding": [
-            {
-              "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
-              "code": "8782",
-              "display": "Propofol"
-            }
-          ]
-        },
-        "authoredOn": "2026-05-01"
-      }
-    },
-    {
-      "fullUrl": "MedicationRequest/demo-med-002",
-      "resource": {
-        "resourceType": "MedicationRequest",
-        "id": "demo-med-002",
-        "status": "completed",
-        "intent": "order",
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "medicationCodeableConcept": {
-          "text": "Ondansetron 4 mg IV",
-          "coding": [
-            {
-              "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
-              "code": "32937",
-              "display": "Ondansetron"
-            }
-          ]
-        },
-        "authoredOn": "2026-05-01"
-      }
-    },
-    {
-      "fullUrl": "MedicationRequest/demo-med-003",
-      "resource": {
-        "resourceType": "MedicationRequest",
-        "id": "demo-med-003",
+        "resourceType": "MedicationStatement",
+        "id": "med-yaz",
         "status": "active",
-        "intent": "order",
-        "subject": { "reference": "Patient/demo-patient-001" },
         "medicationCodeableConcept": {
-          "text": "Ibuprofen 600 mg oral tablet",
-          "coding": [
-            {
-              "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
-              "code": "5640",
-              "display": "Ibuprofen"
-            }
-          ]
+          "coding": [{"system": "http://www.nlm.nih.gov/research/umls/rxnorm", "code": "748856", "display": "drospirenone 3 MG / ethinyl estradiol 0.02 MG Oral Tablet"}],
+          "text": "drospirenone-ethinyl estradiol (YAZ) 3-0.02 MG per tablet"
         },
-        "authoredOn": "2026-05-01"
+        "subject": {"reference": "Patient/camila-lopez"},
+        "effectivePeriod": {"start": "2019-05-28"},
+        "dosage": [
+          {"text": "Take 1 tablet by mouth 1 (one) time each day.", "patientInstruction": "Take 1 tablet by mouth 1 (one) time each day."}
+        ]
       }
     },
     {
-      "fullUrl": "Observation/demo-obs-bp",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "imm-tdap",
+        "status": "completed",
+        "vaccineCode": {
+          "coding": [{"system": "http://hl7.org/fhir/sid/cvx", "code": "115", "display": "Tdap"}],
+          "text": "Tdap"
+        },
+        "patient": {"reference": "Patient/camila-lopez"},
+        "encounter": {"reference": "Encounter/enc-office-2023-05-21"},
+        "occurrenceDateTime": "2023-05-21"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "proc-appendectomy",
+        "status": "completed",
+        "code": {
+          "coding": [{"system": "http://snomed.info/sct", "code": "80146002", "display": "Removal of appendix"}],
+          "text": "Removal of appendix (appendectomy)"
+        },
+        "subject": {"reference": "Patient/camila-lopez"},
+        "encounter": {"reference": "Encounter/enc-surgery-appendectomy"},
+        "performedDateTime": "2023-06-06T08:56:00-05:00"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "proc-tte",
+        "status": "completed",
+        "code": {
+          "coding": [{"system": "http://www.ama-assn.org/go/cpt", "code": "93306", "display": "Transthoracic Echocardiogram, complete"}],
+          "text": "Transthoracic Echo (TTE) Complete"
+        },
+        "subject": {"reference": "Patient/camila-lopez"},
+        "encounter": {"reference": "Encounter/enc-cardiology-2023-06-02"},
+        "performedDateTime": "2023-06-02T15:50:00-05:00",
+        "reasonCode": [{"text": "Ischemic chest pain"}]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "proc-xr-chest",
+        "status": "completed",
+        "code": {
+          "coding": [{"system": "http://www.ama-assn.org/go/cpt", "code": "71046", "display": "Radiologic examination, chest; 2 views"}],
+          "text": "XR Chest 2 Views"
+        },
+        "subject": {"reference": "Patient/camila-lopez"},
+        "encounter": {"reference": "Encounter/enc-xray-2023-06-02"},
+        "performedDateTime": "2023-06-02T15:43:00-05:00"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "DiagnosticReport",
+        "id": "dr-tte",
+        "status": "final",
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0074", "code": "CV", "display": "Cardiovascular"}]}],
+        "code": {"text": "Transthoracic Echo (TTE) Complete"},
+        "subject": {"reference": "Patient/camila-lopez"},
+        "encounter": {"reference": "Encounter/enc-cardiology-2023-06-02"},
+        "effectiveDateTime": "2023-06-02T15:50:00-05:00",
+        "issued": "2023-07-25T08:27:00-05:00",
+        "conclusion": "Left ventricle ejection fraction is normal. Septal wall has abnormal motion consistent with post-operative status. Cavity is normal. End-diastolic volume appears mildly increased. Normal wall thickness observed. Mid-cavity obstruction is present. Shape is normal. Normal fractional shortening. Normal left ventricle diastolic function. The findings are consistent with dilated cardiomyopathy."
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "DiagnosticReport",
+        "id": "dr-xr-chest",
+        "status": "final",
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0074", "code": "RAD", "display": "Radiology"}]}],
+        "code": {"text": "XR Chest 2 Views"},
+        "subject": {"reference": "Patient/camila-lopez"},
+        "encounter": {"reference": "Encounter/enc-xray-2023-06-02"},
+        "effectiveDateTime": "2023-06-02T15:43:00-05:00",
+        "issued": "2023-07-25T08:27:00-05:00",
+        "conclusion": "No findings. Refer to cardiology. Patient presents with history of chest pain. No rib fractures or lesions found."
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "DiagnosticReport",
+        "id": "dr-pathology-tissue",
+        "status": "final",
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0074", "code": "LAB", "display": "Laboratory"}]}],
+        "code": {"text": "Pathology Tissue (Specimen to Pathology)"},
+        "subject": {"reference": "Patient/camila-lopez"},
+        "encounter": {"reference": "Encounter/enc-cardiology-2023-06-02"},
+        "effectiveDateTime": "2023-06-02T16:02:00-05:00",
+        "issued": "2023-06-02T16:02:00-05:00"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "DiagnosticReport",
+        "id": "dr-hba1c",
+        "status": "final",
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0074", "code": "LAB", "display": "Laboratory"}]}],
+        "code": {
+          "coding": [{"system": "http://loinc.org", "code": "4548-4", "display": "Hemoglobin A1c/Hemoglobin.total in Blood"}],
+          "text": "Hemoglobin A1C"
+        },
+        "subject": {"reference": "Patient/camila-lopez"},
+        "effectiveDateTime": "2019-05-28T09:22:00-05:00",
+        "issued": "2019-05-28T09:22:00-05:00",
+        "result": [{"reference": "Observation/obs-hba1c"}]
+      }
+    },
+    {
       "resource": {
         "resourceType": "Observation",
-        "id": "demo-obs-bp",
+        "id": "obs-hba1c",
         "status": "final",
-        "category": [
-          {
-            "coding": [
-              {
-                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
-                "code": "vital-signs"
-              }
-            ]
-          }
-        ],
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "laboratory"}]}],
         "code": {
-          "text": "Blood pressure",
-          "coding": [
-            {
-              "system": "http://loinc.org",
-              "code": "85354-9",
-              "display": "Blood pressure panel"
-            }
-          ]
+          "coding": [{"system": "http://loinc.org", "code": "4548-4", "display": "Hemoglobin A1c/Hemoglobin.total in Blood"}],
+          "text": "Hemoglobin A1C"
         },
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "effectiveDateTime": "2026-04-25T09:00:00Z",
+        "subject": {"reference": "Patient/camila-lopez"},
+        "effectiveDateTime": "2019-05-28T09:22:00-05:00",
+        "valueQuantity": {"value": 5.1, "unit": "%", "system": "http://unitsofmeasure.org", "code": "%"}
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "obs-bp",
+        "status": "final",
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
+        "code": {
+          "coding": [{"system": "http://loinc.org", "code": "85354-9", "display": "Blood pressure panel"}],
+          "text": "Blood pressure"
+        },
+        "subject": {"reference": "Patient/camila-lopez"},
+        "effectiveDateTime": "2021-02-04T15:43:00-06:00",
         "component": [
           {
-            "code": {
-              "coding": [{ "system": "http://loinc.org", "code": "8480-6" }]
-            },
-            "valueQuantity": { "value": 122, "unit": "mmHg" }
+            "code": {"coding": [{"system": "http://loinc.org", "code": "8480-6", "display": "Systolic blood pressure"}]},
+            "valueQuantity": {"value": 153, "unit": "mm[Hg]", "system": "http://unitsofmeasure.org", "code": "mm[Hg]"}
           },
           {
-            "code": {
-              "coding": [{ "system": "http://loinc.org", "code": "8462-4" }]
-            },
-            "valueQuantity": { "value": 78, "unit": "mmHg" }
+            "code": {"coding": [{"system": "http://loinc.org", "code": "8462-4", "display": "Diastolic blood pressure"}]},
+            "valueQuantity": {"value": 82, "unit": "mm[Hg]", "system": "http://unitsofmeasure.org", "code": "mm[Hg]"}
           }
         ]
       }
     },
     {
-      "fullUrl": "Observation/demo-obs-hrv-baseline",
       "resource": {
         "resourceType": "Observation",
-        "id": "demo-obs-hrv-baseline",
+        "id": "obs-pulse",
         "status": "final",
-        "category": [
-          {
-            "coding": [
-              {
-                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
-                "code": "vital-signs"
-              }
-            ]
-          }
-        ],
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
         "code": {
-          "text": "Heart rate variability (RMSSD)",
-          "coding": [
-            {
-              "system": "http://loinc.org",
-              "code": "80394-6",
-              "display": "Heart rate variability"
-            }
-          ]
+          "coding": [{"system": "http://loinc.org", "code": "8867-4", "display": "Heart rate"}],
+          "text": "Pulse"
         },
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "effectiveDateTime": "2026-04-20T07:00:00Z",
-        "valueQuantity": { "value": 48, "unit": "ms" }
+        "subject": {"reference": "Patient/camila-lopez"},
+        "effectiveDateTime": "2021-02-04T15:43:00-06:00",
+        "valueQuantity": {"value": 84, "unit": "/min", "system": "http://unitsofmeasure.org", "code": "/min"}
       }
     },
     {
-      "fullUrl": "Observation/demo-obs-hrv-postop",
       "resource": {
         "resourceType": "Observation",
-        "id": "demo-obs-hrv-postop",
+        "id": "obs-temp",
         "status": "final",
-        "category": [
-          {
-            "coding": [
-              {
-                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
-                "code": "vital-signs"
-              }
-            ]
-          }
-        ],
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
         "code": {
-          "text": "Heart rate variability (RMSSD)",
-          "coding": [
-            {
-              "system": "http://loinc.org",
-              "code": "80394-6",
-              "display": "Heart rate variability"
-            }
-          ]
+          "coding": [{"system": "http://loinc.org", "code": "8310-5", "display": "Body temperature"}],
+          "text": "Body temperature"
         },
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "effectiveDateTime": "2026-05-04T07:00:00Z",
-        "valueQuantity": { "value": 34, "unit": "ms" }
+        "subject": {"reference": "Patient/camila-lopez"},
+        "effectiveDateTime": "2021-01-11T14:33:00-06:00",
+        "valueQuantity": {"value": 37, "unit": "Cel", "system": "http://unitsofmeasure.org", "code": "Cel"}
       }
     },
     {
-      "fullUrl": "Encounter/demo-enc-followup",
       "resource": {
-        "resourceType": "Encounter",
-        "id": "demo-enc-followup",
-        "status": "finished",
-        "class": {
-          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
-          "code": "AMB",
-          "display": "ambulatory"
+        "resourceType": "Observation",
+        "id": "obs-weight",
+        "status": "final",
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
+        "code": {
+          "coding": [{"system": "http://loinc.org", "code": "29463-7", "display": "Body weight"}],
+          "text": "Body weight"
         },
-        "type": [{ "text": "Post-operative follow-up" }],
-        "subject": { "reference": "Patient/demo-patient-001" },
-        "period": {
-          "start": "2026-05-15T14:00:00Z",
-          "end": "2026-05-15T14:30:00Z"
-        }
+        "subject": {"reference": "Patient/camila-lopez"},
+        "effectiveDateTime": "2021-02-04T00:41:00-06:00",
+        "valueQuantity": {"value": 71.1, "unit": "kg", "system": "http://unitsofmeasure.org", "code": "kg"}
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "obs-height",
+        "status": "final",
+        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
+        "code": {
+          "coding": [{"system": "http://loinc.org", "code": "8302-2", "display": "Body height"}],
+          "text": "Body height"
+        },
+        "subject": {"reference": "Patient/camila-lopez"},
+        "effectiveDateTime": "2021-01-11T14:33:00-06:00",
+        "valueQuantity": {"value": 220, "unit": "cm", "system": "http://unitsofmeasure.org", "code": "cm"}
       }
     }
   ]

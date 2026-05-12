@@ -1,0 +1,19 @@
+# Demo-stack connector seed.
+#
+# Mirrors infra/connectors.seed.yaml but enables the Epic FHIR sandbox so
+# the public demo at demo.ownchart.me can actually walk a visitor through
+# the SMART-on-FHIR connect flow against Epic's public R4 sandbox. The
+# production seed keeps enabled=false because Nick doesn't want a fake-
+# patient sandbox row living alongside real PHI in his personal instance.
+#
+# Loaded by api/ownchart/core/seed.py on startup (mounted at
+# /app/infra/connectors.seed.yaml inside the demo api container).
+
+connectors:
+  - slug: epic-sandbox
+    name: Epic on FHIR Sandbox (R4)
+    ehr_vendor: epic
+    enabled: true
+    fhir_base: https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4/
+    client_id_env: OWNCHART_EPIC_CLIENT_ID_SANDBOX
+    scopes: openid fhirUser launch/patient patient/*.read

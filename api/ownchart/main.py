@@ -73,6 +73,7 @@ _DEMO_WRITE_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/episodes",
     "/api/sensemaking",
     "/api/home",
+    "/api/ask",  # free-form Ask page — read-only LLM query over facts
     "/api/facts/significance-backfill",  # admin task; user-scoped
 )
 
