@@ -6,10 +6,10 @@ Create Date: 2026-05-09
 
 Topic resolution was alias-substring-only: a fact joined a topic's
 dossier iff its label or description contained one of the topic's
-aliases. That misses anatomically-described facts (Nick's strabismus
+aliases. That misses anatomically-described facts (the example anatomy-based
 surgeries are recorded as "Left lateral rectus recession 5 mm" or
 "Anterior recession and anteriorization of right inferior oblique" —
-nothing in the label says "strabismus"). The result: the dossier
+nothing in the label says the topic alias). The result: the dossier
 showed 5 procedures but 10 actual operative entries existed in the DB.
 
 Systemic fix: every Topic also carries a list of `label_patterns`
@@ -65,7 +65,7 @@ def upgrade() -> None:
             'extraocular\s+muscle',
             'recession\s+and\s+anteriorization'
         ]
-        WHERE slug = 'strabismus'
+        WHERE slug = 'knee'
         """
     )
 

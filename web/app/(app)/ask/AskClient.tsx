@@ -19,11 +19,11 @@ type AskResponse = {
 
 export function AskClient() {
   // Home's "Questions to ask" chips deep-link with ?q=… — pre-fill
-  // the input on first mount when present. Falls back to the
-  // existing strabismus placeholder when ?q= is missing so the
-  // default Ask page still has a sensible starting prompt.
+  // the input on first mount when present. Falls back to a generic
+  // placeholder when ?q= is missing so the default Ask page still
+  // has a sensible starting prompt.
   const searchParams = useSearchParams();
-  const initialQ = searchParams?.get("q") ?? "Tell me the story of my strabismus.";
+  const initialQ = searchParams?.get("q") ?? "Tell me the story of my knee pain.";
   const [question, setQuestion] = useState(initialQ);
   const [answer, setAnswer] = useState<AskResponse | null>(null);
   const [busy, setBusy] = useState(false);

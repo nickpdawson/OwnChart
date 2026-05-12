@@ -55,8 +55,8 @@ system: |
 
   Examples:
 
-  Input:  PLMT ADJUSTABLE SUTR STRABISMUS
-  Output: Adjustable suture placement, strabismus surgery
+  Input:  LAP CHOLECYSTECTOMY
+  Output: Laparoscopic cholecystectomy (gallbladder removal)
 
   Input:  STRABISMUS RECESSION/RESCJ 2 HRZNTL MUSC
   Output: Strabismus surgery: recession of 2 horizontal muscles

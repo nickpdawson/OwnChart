@@ -57,10 +57,10 @@ OwnChart treats AI as the primary interaction surface, not a sidecar. Five inter
 
 | Mode | What it does | Examples |
 |---|---|---|
-| **Ask** | Natural-language questions across your record, with cited answers | "Tell me the story of my strabismus." "What changed after my May 1 surgery?" "What should I review before Friday's appointment?" |
+| **Ask** | Natural-language questions across your record, with cited answers | "Tell me the story of my knee pain." "What changed after my May 1 surgery?" "What should I review before Friday's appointment?" |
 | **Make Sense** | Organize a source, period, dossier, or review queue. Produces *candidates*, not silent mutations | "Make sense of this Stanford import." "Organize 2026." "Clean up this review queue." "Explain this episode." |
 | **Discover** | Proactive suggestions of things worth exploring, with evidence preview and signal strength | "These procedure rows may be one surgery." "Sleep and resting HR available before and after this surgery." |
-| **Explain** | Translate clinical language into plain English without flattening nuance. Original always preserved | `"PLMT ADJUSTABLE SUTR STRABISMUS"` → `"Adjustable-suture strabismus surgery"` |
+| **Explain** | Translate clinical language into plain English without flattening nuance. Original always preserved | `"LAP CHOLECYSTECTOMY"` → `"Laparoscopic gallbladder removal"` |
 | **Compare** | Deterministic statistics plus AI explanation for periods, signals, eras | "Before/after surgery." "Medication era vs. baseline." "Sleep around the injury." |
 
 ### Conversations are a first-class product object

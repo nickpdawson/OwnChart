@@ -2,7 +2,7 @@
 
 V1 retrieval is pg_trgm-based (fuzzy substring match across fact
 labels + descriptions). Embedding-driven semantic retrieval is a V1.1
-follow-up — we only need decent recall to populate the strabismus
+follow-up — we only need decent recall to populate the dossier
 demo, and trigram does that with no additional infra.
 
 Self-harm guard: input is keyword-screened; the system prompt also

@@ -75,6 +75,21 @@ _DEMO_WRITE_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/home",
     "/api/facts/significance-backfill",  # admin task; user-scoped
 )
+
+# Extra writes permitted ONLY when demo_mode + demo_allow_ingest are
+# both True. Used by the operator to SMART-on-FHIR connect a sandbox
+# account or upload sample data through the standard UI flow. Banner
+# stays visible so users still know it's a demo.
+_DEMO_INGEST_ALLOWED_PREFIXES: tuple[str, ...] = (
+    "/api/connectors",
+    "/api/sources",
+    "/api/healthkit",
+    "/api/auto-export",
+    "/api/facts",
+    "/api/topics",
+    "/api/settings",
+    "/api/llm-providers",
+)
 _DEMO_BLOCKED_METHODS: frozenset[str] = frozenset({"POST", "PATCH", "PUT", "DELETE"})
 
 
@@ -85,6 +100,10 @@ async def _demo_readonly_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     if any(path.startswith(p) for p in _DEMO_WRITE_ALLOWED_PREFIXES):
+        return await call_next(request)
+    if settings.demo_allow_ingest and any(
+        path.startswith(p) for p in _DEMO_INGEST_ALLOWED_PREFIXES
+    ):
         return await call_next(request)
     return JSONResponse(
         status_code=403,

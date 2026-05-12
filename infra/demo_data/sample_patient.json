@@ -20,8 +20,27 @@
         "id": "demo-patient-001",
         "name": [{ "use": "official", "family": "Demo", "given": ["Sample"] }],
         "gender": "unknown",
-        "birthDate": "1985-03-21",
+        "birthDate": "1980-07-14",
         "address": [{ "city": "Anytown", "state": "CA", "country": "US" }]
+      }
+    },
+    {
+      "fullUrl": "Encounter/demo-enc-pre-op",
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "demo-enc-pre-op",
+        "status": "finished",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [{ "text": "Pre-operative surgical consult" }],
+        "subject": { "reference": "Patient/demo-patient-001" },
+        "period": {
+          "start": "2026-04-22T15:00:00Z",
+          "end": "2026-04-22T15:45:00Z"
+        }
       }
     },
     {
@@ -50,7 +69,7 @@
         "subject": { "reference": "Patient/demo-patient-001" },
         "period": {
           "start": "2026-05-01T07:00:00Z",
-          "end": "2026-05-01T12:30:00Z"
+          "end": "2026-05-01T13:00:00Z"
         },
         "serviceProvider": { "display": "Demo Health System" }
       }
@@ -62,19 +81,24 @@
         "id": "demo-proc-001",
         "status": "completed",
         "code": {
-          "text": "Adjustable suture placement",
+          "text": "Laparoscopic cholecystectomy",
           "coding": [
             {
               "system": "http://www.ama-assn.org/go/cpt",
-              "code": "67335",
-              "display": "Placement of adjustable suture(s) during strabismus surgery"
+              "code": "47562",
+              "display": "Laparoscopy, surgical; cholecystectomy"
+            },
+            {
+              "system": "http://snomed.info/sct",
+              "code": "45595009",
+              "display": "Laparoscopic cholecystectomy"
             }
           ]
         },
         "subject": { "reference": "Patient/demo-patient-001" },
-        "performedDateTime": "2026-05-01T08:15:00Z",
+        "performedDateTime": "2026-05-01T08:20:00Z",
         "encounter": { "reference": "Encounter/demo-enc-2026-05-01" },
-        "bodySite": [{ "text": "Left eye" }]
+        "bodySite": [{ "text": "Gallbladder" }]
       }
     },
     {
@@ -84,19 +108,18 @@
         "id": "demo-proc-002",
         "status": "completed",
         "code": {
-          "text": "Recession of horizontal extraocular muscle",
+          "text": "Intraoperative cholangiogram",
           "coding": [
             {
               "system": "http://www.ama-assn.org/go/cpt",
-              "code": "67311",
-              "display": "Strabismus surgery, recession or resection procedure; one horizontal muscle"
+              "code": "74300",
+              "display": "Cholangiography and/or pancreatography; intraoperative, radiological supervision and interpretation"
             }
           ]
         },
         "subject": { "reference": "Patient/demo-patient-001" },
-        "performedDateTime": "2026-05-01T08:30:00Z",
-        "encounter": { "reference": "Encounter/demo-enc-2026-05-01" },
-        "bodySite": [{ "text": "Left eye" }]
+        "performedDateTime": "2026-05-01T08:50:00Z",
+        "encounter": { "reference": "Encounter/demo-enc-2026-05-01" }
       }
     },
     {
@@ -108,22 +131,27 @@
           "coding": [
             {
               "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
-              "code": "active"
+              "code": "resolved"
             }
           ]
         },
         "code": {
-          "text": "Esotropia",
+          "text": "Cholelithiasis (gallstones)",
           "coding": [
             {
               "system": "http://snomed.info/sct",
-              "code": "16596007",
-              "display": "Esotropia"
+              "code": "266474003",
+              "display": "Cholelithiasis"
+            },
+            {
+              "system": "http://hl7.org/fhir/sid/icd-10-cm",
+              "code": "K80.20",
+              "display": "Calculus of gallbladder without obstruction"
             }
           ]
         },
         "subject": { "reference": "Patient/demo-patient-001" },
-        "recordedDate": "2024-09-15"
+        "recordedDate": "2026-03-14"
       }
     },
     {
@@ -135,22 +163,22 @@
           "coding": [
             {
               "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
-              "code": "active"
+              "code": "resolved"
             }
           ]
         },
         "code": {
-          "text": "Mild seasonal allergies",
+          "text": "Biliary colic",
           "coding": [
             {
               "system": "http://snomed.info/sct",
-              "code": "367498001",
-              "display": "Seasonal allergic rhinitis"
+              "code": "70592003",
+              "display": "Biliary colic"
             }
           ]
         },
         "subject": { "reference": "Patient/demo-patient-001" },
-        "recordedDate": "2019-03-10"
+        "recordedDate": "2026-03-14"
       }
     },
     {
@@ -158,7 +186,7 @@
       "resource": {
         "resourceType": "MedicationRequest",
         "id": "demo-med-001",
-        "status": "active",
+        "status": "completed",
         "intent": "order",
         "subject": { "reference": "Patient/demo-patient-001" },
         "medicationCodeableConcept": {
@@ -204,16 +232,16 @@
         "intent": "order",
         "subject": { "reference": "Patient/demo-patient-001" },
         "medicationCodeableConcept": {
-          "text": "Loratadine 10 mg oral tablet",
+          "text": "Ibuprofen 600 mg oral tablet",
           "coding": [
             {
               "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
-              "code": "6094",
-              "display": "Loratadine"
+              "code": "5640",
+              "display": "Ibuprofen"
             }
           ]
         },
-        "authoredOn": "2019-03-10"
+        "authoredOn": "2026-05-01"
       }
     },
     {
@@ -249,13 +277,13 @@
             "code": {
               "coding": [{ "system": "http://loinc.org", "code": "8480-6" }]
             },
-            "valueQuantity": { "value": 118, "unit": "mmHg" }
+            "valueQuantity": { "value": 122, "unit": "mmHg" }
           },
           {
             "code": {
               "coding": [{ "system": "http://loinc.org", "code": "8462-4" }]
             },
-            "valueQuantity": { "value": 74, "unit": "mmHg" }
+            "valueQuantity": { "value": 78, "unit": "mmHg" }
           }
         ]
       }
@@ -288,7 +316,7 @@
         },
         "subject": { "reference": "Patient/demo-patient-001" },
         "effectiveDateTime": "2026-04-20T07:00:00Z",
-        "valueQuantity": { "value": 52, "unit": "ms" }
+        "valueQuantity": { "value": 48, "unit": "ms" }
       }
     },
     {
@@ -318,8 +346,8 @@
           ]
         },
         "subject": { "reference": "Patient/demo-patient-001" },
-        "effectiveDateTime": "2026-05-03T07:00:00Z",
-        "valueQuantity": { "value": 38, "unit": "ms" }
+        "effectiveDateTime": "2026-05-04T07:00:00Z",
+        "valueQuantity": { "value": 34, "unit": "ms" }
       }
     },
     {
@@ -336,8 +364,8 @@
         "type": [{ "text": "Post-operative follow-up" }],
         "subject": { "reference": "Patient/demo-patient-001" },
         "period": {
-          "start": "2026-05-08T14:00:00Z",
-          "end": "2026-05-08T14:45:00Z"
+          "start": "2026-05-15T14:00:00Z",
+          "end": "2026-05-15T14:30:00Z"
         }
       }
     }

@@ -1,4 +1,4 @@
-"""topic slug + claim text trigram + seed strabismus
+"""topic slug + claim text trigram + seed example topic
 
 Revision ID: 0003_topic_slug_and_indexes
 Revises: 0002_image_ingest_fields
@@ -7,7 +7,9 @@ Create Date: 2026-05-08
 - Adds `topics.slug` (unique) for clean dossier URLs.
 - Adds a pg_trgm GIN index on `extracted_claims.label` to support fuzzy
   retrieval in /ask without requiring embeddings yet.
-- Seeds the Strabismus topic.
+- Seeds a worked-example "Knee" topic so a fresh install shows the
+  dossier shape immediately. Delete it from /topics if it does not
+  apply.
 """
 from __future__ import annotations
 
@@ -47,11 +49,11 @@ def upgrade() -> None:
         INSERT INTO topics (id, name, slug, aliases, description, related_concepts, created_at, updated_at)
         VALUES (
             gen_random_uuid(),
-            'Strabismus',
-            'strabismus',
-            ARRAY['strabismus','esotropia','exotropia','lazy eye','crossed eyes','ocular misalignment'],
-            'Misalignment of the eyes; the V1 proof case.',
-            ARRAY['ophthalmology','eye muscle surgery','eye patching','amblyopia','diplopia','orthoptics'],
+            'Knee',
+            'knee',
+            ARRAY['knee pain','meniscus','ACL','knee injury','knee surgery'],
+            'A worked-example dossier topic shipped with fresh installs. Delete it from /topics if it does not apply to you.',
+            ARRAY['orthopedics','knee surgery','meniscectomy','ACL reconstruction','physical therapy'],
             now(),
             now()
         )
@@ -61,7 +63,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DELETE FROM topics WHERE slug = 'strabismus'")
+    op.execute("DELETE FROM topics WHERE slug = 'knee'")
     op.execute("DROP INDEX IF EXISTS ix_extracted_claims_description_trgm")
     op.execute("DROP INDEX IF EXISTS ix_extracted_claims_label_trgm")
     op.drop_index("ix_topics_slug", table_name="topics")

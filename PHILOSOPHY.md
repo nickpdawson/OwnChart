@@ -145,7 +145,7 @@ OwnChart is built around what users actually think about, in priority order:
 
 A common confusion worth being explicit about:
 
-- An **Episode** is a *system-proposed cluster of timeline events* (e.g., "May 2026 strabismus surgery + recovery" — the procedure date plus the post-op follow-up window).
+- An **Episode** is a *system-proposed cluster of timeline events* (e.g., "a recent surgery + recovery" — the procedure date plus the post-op follow-up window).
 - A **Dossier** is a *user-confirmed case file*: the whole longitudinal story of a topic (e.g., "Strabismus" — every event, every conversation, every annotation, from childhood through today).
 
 Episodes live on the timeline. Dossiers live in your research workspace.
