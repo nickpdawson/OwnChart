@@ -230,8 +230,27 @@ code {
   border-color: var(--hairline);
 }
 
+.hero-creds {
+  margin: 22px 0 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink-mute);
+}
+.hero-creds code {
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--hairline);
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
+
 .hero-rule {
-  margin: clamp(48px, 7vw, 72px) auto 0;
+  margin: clamp(36px, 6vw, 56px) auto 0;
   width: 60px;
   height: 1px;
   background: var(--rule);
