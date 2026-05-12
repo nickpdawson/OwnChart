@@ -98,8 +98,8 @@ async def seed_demo_data_if_needed(db: AsyncSession) -> int:
         hash=f"sha256:{blob.sha256}",
         mime_type="application/fhir+json",
         acquired_at=datetime.now(timezone.utc),
-        source_system="demo:epic-sandbox",
-        source_label="Epic FHIR sandbox (demo)",
+        source_system="demo:synthetic",
+        source_label="Synthetic patient bundle (demo)",
         raw_metadata={
             "demo_seed": True,
             "deduplicated": blob.already_existed,
@@ -109,10 +109,18 @@ async def seed_demo_data_if_needed(db: AsyncSession) -> int:
     )
     db.add(src)
     await db.flush()
+
+    # Extract individual ExtractedFact + EvidenceAnchor rows so the
+    # dossiers, timeline, and Episode Intelligence pages have
+    # something to render. Reuses the same helpers the live
+    # connector sync uses (lazy import — routes/ depends on core/,
+    # so core/ can't depend on routes/ statically).
+    facts_created = await _extract_facts_from_bundle(db, src, bundle)
     await db.commit()
     log.info("demo_data_seed_done",
              source_id=str(src.id),
-             entries=_entry_count(bundle))
+             entries=_entry_count(bundle),
+             facts_extracted=facts_created)
     return 1
 
 
@@ -121,3 +129,71 @@ def _entry_count(bundle: dict) -> int:
         return 0
     entries = bundle.get("entry")
     return len(entries) if isinstance(entries, list) else 0
+
+
+async def _extract_facts_from_bundle(
+    db: AsyncSession,
+    src: SourceDocument,
+    bundle: dict,
+) -> int:
+    """Reshape Bundle.entry[] → {resourceType: [resources]} (the same
+    `snap.fhir` shape the live SMART-on-FHIR fetcher produces), then
+    walk the connector's existing extraction loop. Returns the
+    number of ExtractedFact rows created.
+    """
+    snap_fhir: dict[str, list[dict]] = {}
+    for entry in bundle.get("entry", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        res = entry.get("resource")
+        if not isinstance(res, dict):
+            continue
+        rt = res.get("resourceType")
+        if not isinstance(rt, str):
+            continue
+        snap_fhir.setdefault(rt, []).append(res)
+
+    if not snap_fhir:
+        return 0
+
+    # Lazy imports — routes/connectors pulls in FastAPI deps. Doing
+    # this here avoids an import cycle at module-load time.
+    from ..ingest.fact_classifier import review_state_for_fhir
+    from ..routes.connectors import (
+        _FHIR_TO_CLAIM,
+        _build_encounter_date_index,
+        _date_for_with_fallback,
+        _label_for,
+    )
+
+    encounter_dates = _build_encounter_date_index(snap_fhir)
+    fact_count = 0
+    for rt, resources in snap_fhir.items():
+        fact_type = _FHIR_TO_CLAIM.get(rt)
+        if not fact_type:
+            continue
+        for res in resources:
+            anchor = EvidenceAnchor(
+                source_document_id=src.id,
+                anchor_type="fhir_resource",
+                section_path=f"{rt}/{res.get('id', '?')}",
+                text_excerpt=None,
+            )
+            db.add(anchor)
+            await db.flush()
+            ds, dp = _date_for_with_fallback(res, encounter_dates)
+            label = _label_for(res)
+            db.add(ExtractedFact(
+                fact_type=fact_type,
+                label=label,
+                description=None,
+                date_start=ds,
+                date_end=None,
+                date_precision=dp,
+                confidence=85,
+                review_state=review_state_for_fhir(label),
+                evidence_anchor_ids=[anchor.id],
+                extraction_method="fhir_resource",
+            ))
+            fact_count += 1
+    return fact_count
