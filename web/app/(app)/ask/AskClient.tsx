@@ -23,7 +23,11 @@ export function AskClient() {
   // placeholder when ?q= is missing so the default Ask page still
   // has a sensible starting prompt.
   const searchParams = useSearchParams();
-  const initialQ = searchParams?.get("q") ?? "Tell me the story of my knee pain.";
+  // Default to empty so the input doesn't seed a stale personal prompt
+  // (and never leaks PHI as a default in the demo / public-release).
+  // A placeholder gives the user a starting nudge without writing into
+  // the field. Home-chip deep-links still pre-fill via ?q=.
+  const initialQ = searchParams?.get("q") ?? "";
   const [question, setQuestion] = useState(initialQ);
   const [answer, setAnswer] = useState<AskResponse | null>(null);
   const [busy, setBusy] = useState(false);
