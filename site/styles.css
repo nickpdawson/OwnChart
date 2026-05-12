@@ -417,7 +417,25 @@ code {
   color: var(--ink-soft);
 }
 
-.demo-card .cta { margin-bottom: 18px; }
+.demo-card .cta { margin-bottom: 16px; }
+
+.demo-card .creds {
+  margin: 0 0 22px;
+  font-size: 14px;
+  color: var(--ink-mute);
+  font-family: var(--serif);
+  font-style: italic;
+}
+.demo-card .creds code {
+  font-family: var(--mono);
+  font-style: normal;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--hairline);
+  padding: 2px 8px;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+}
 
 .demo-card .small { margin: 0; }
 
