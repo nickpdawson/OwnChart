@@ -142,11 +142,24 @@ code {
 
 .wordmark {
   font-family: var(--serif);
-  font-size: clamp(48px, 8vw, 72px);
+  font-size: clamp(40px, 6vw, 58px);
   font-weight: 500;
   letter-spacing: -0.02em;
-  margin: 0 0 8px;
+  margin: 0 0 24px;
   line-height: 1;
+}
+
+.hero-lede {
+  /* The big emotional line under the wordmark. Serif, large, dark,
+     two-clause cadence — meant to read as a single declarative thought. */
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: clamp(28px, 4.6vw, 44px);
+  line-height: 1.18;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  max-width: 720px;
+  margin: 0 auto 28px;
 }
 
 .tagline {
@@ -247,6 +260,45 @@ code {
   border-radius: 4px;
   color: var(--ink);
   letter-spacing: 0.01em;
+}
+
+.hero-grounding {
+  /* Three-clause closer beneath demo creds. Each clause in its own
+     line on mobile; inline with bullet separators on wide screens.
+     The voice is declarative, almost a vow — italic serif, ink-soft. */
+  margin: 30px auto 0;
+  max-width: 600px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: clamp(16px, 1.9vw, 18px);
+  color: var(--ink-soft);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 18px;
+  line-height: 1.5;
+}
+.hero-grounding span {
+  display: inline-block;
+  position: relative;
+}
+.hero-grounding span + span::before {
+  content: "·";
+  color: var(--rule);
+  margin-right: 16px;
+  font-style: normal;
+  opacity: 0.6;
+}
+
+@media (max-width: 540px) {
+  .hero-grounding {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .hero-grounding span + span::before {
+    content: "";
+    margin: 0;
+  }
 }
 
 .hero-rule {
