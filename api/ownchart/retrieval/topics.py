@@ -268,11 +268,19 @@ async def search_facts(
 
     substr_facts: list[ExtractedFact] = []
     if filters:
+        # Most-recent first (was ASC). 2026-05-13: Nick asked "tell me
+        # about my broken fibula" and got back the 2005 ankle inversion
+        # but none of the 2023 fibula fractures — they exist in the DB
+        # and would have matched the token "fibula", but the oldest-first
+        # ordering pushed them past the 24-row cap. Patients ask about
+        # "my X" with recency bias 99% of the time; the LLM can still
+        # walk backward through history once the relevant decade is
+        # surfaced.
         sub_stmt = (
             select(ExtractedFact)
             .where(or_(*filters))
             .order_by(
-                ExtractedFact.date_start.asc().nullslast(),
+                ExtractedFact.date_start.desc().nullslast(),
                 ExtractedFact.created_at.desc(),
             )
             .limit(limit)

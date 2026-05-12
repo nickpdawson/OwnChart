@@ -107,7 +107,12 @@ async def ask(
 
     require_phi_consent(user)
 
-    facts = await search_facts(db, body.question, limit=24)
+    # 40 was the original search_facts default; ask.py used to override
+    # to 24 for prompt-context economy. After the 2026-05-13 ordering fix
+    # the cap rarely truncates anything load-bearing, but giving the LLM
+    # a bit more headroom on "tell me the story of X" queries is cheap
+    # and reduces "I don't see X in your record" misses where X is real.
+    facts = await search_facts(db, body.question, limit=40)
     prompt = get_registry().get("ask_query")
     result = await call_with_tool(
         db, user, prompt,
