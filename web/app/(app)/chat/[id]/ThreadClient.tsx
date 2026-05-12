@@ -40,6 +40,25 @@ export function ThreadClient({
   const [error, setError] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
 
+  // Save-as-Dossier modal state
+  type Suggestion = {
+    refuse: boolean;
+    refuse_reason: string | null;
+    name: string | null;
+    aliases: string[];
+    description: string | null;
+  };
+  const [dossierOpen, setDossierOpen] = useState(false);
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  const [suggLoading, setSuggLoading] = useState(false);
+  const [savingDossier, setSavingDossier] = useState(false);
+  const [dossierName, setDossierName] = useState("");
+  const [dossierAliases, setDossierAliases] = useState("");
+  const [dossierDescription, setDossierDescription] = useState("");
+  const [conflictTopic, setConflictTopic] = useState<{slug: string} | null>(null);
+
+  const hasAssistantReply = messages.some((m) => m.role === "assistant" && m.content);
+
   const promotableEpisode = candidates.find(
     (c) => c.candidate_type === "episode" && c.disposition === "pending",
   );
@@ -67,6 +86,74 @@ export function ThreadClient({
       setError((e as Error).message);
     } finally {
       setPromoting(false);
+    }
+  }
+
+  async function openSaveAsDossier() {
+    setDossierOpen(true);
+    setError(null);
+    setConflictTopic(null);
+    if (suggestion) return; // already loaded
+    setSuggLoading(true);
+    try {
+      const r = await fetch(
+        `/api/conversations/${encodeURIComponent(thread.id)}/suggest-topic`,
+        { method: "POST", credentials: "include" },
+      );
+      if (!r.ok) throw new Error(await r.text());
+      const s = (await r.json()) as Suggestion;
+      setSuggestion(s);
+      if (!s.refuse) {
+        setDossierName(s.name ?? "");
+        setDossierAliases((s.aliases ?? []).join(", "));
+        setDossierDescription(s.description ?? "");
+      }
+    } catch (e) {
+      setError(`Suggest failed: ${(e as Error).message}`);
+    } finally {
+      setSuggLoading(false);
+    }
+  }
+
+  async function saveAsDossier() {
+    if (!dossierName.trim()) {
+      setError("Topic name is required.");
+      return;
+    }
+    setSavingDossier(true);
+    setError(null);
+    setConflictTopic(null);
+    try {
+      const aliases = dossierAliases
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const r = await fetch(
+        `/api/conversations/${encodeURIComponent(thread.id)}/save-as-topic`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            name: dossierName.trim(),
+            aliases,
+            description: dossierDescription.trim() || null,
+          }),
+        },
+      );
+      if (!r.ok) throw new Error(await r.text());
+      const out = (await r.json()) as { topic_id: string; slug: string; conflict: boolean };
+      if (out.conflict) {
+        setConflictTopic({ slug: out.slug });
+        // Don't redirect automatically — let the user confirm they want
+        // to attach this chat to the pre-existing dossier.
+        return;
+      }
+      router.push(`/dossier/${out.slug}` as never);
+    } catch (e) {
+      setError(`Save failed: ${(e as Error).message}`);
+    } finally {
+      setSavingDossier(false);
     }
   }
 
@@ -133,6 +220,111 @@ export function ThreadClient({
           >
             {promoting ? "Saving…" : "Save as Episode"}
           </button>
+        </section>
+      )}
+
+      {hasAssistantReply && !dossierOpen && (
+        <section className="rounded-xl border border-muted/15 bg-surface p-4">
+          <p className="text-xs uppercase tracking-widest text-muted">
+            Long-running concern?
+          </p>
+          <p className="mt-1 text-sm">
+            Save this conversation as a Dossier — a topic that
+            accumulates related facts over time. You can keep chatting
+            inside the dossier and any new ingestion that matches the
+            topic will land there automatically.
+          </p>
+          <button
+            type="button"
+            onClick={openSaveAsDossier}
+            className="mt-3 rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/5"
+          >
+            Save as Dossier
+          </button>
+        </section>
+      )}
+
+      {dossierOpen && (
+        <section className="rounded-xl border border-accent/30 bg-accent/5 p-4">
+          <div className="flex items-baseline justify-between">
+            <p className="text-xs uppercase tracking-widest text-accent">
+              Save as Dossier
+            </p>
+            <button
+              type="button"
+              onClick={() => setDossierOpen(false)}
+              className="text-xs text-muted underline-offset-4 hover:underline"
+            >
+              Cancel
+            </button>
+          </div>
+          {suggLoading && (
+            <p className="mt-2 text-sm text-muted">Asking the model for a topic suggestion…</p>
+          )}
+          {suggestion?.refuse && (
+            <p className="mt-2 text-sm text-caution">
+              The model didn&apos;t think this chat warrants a new dossier:
+              <em className="ml-1">{suggestion.refuse_reason}</em>. You can still
+              save it manually below.
+            </p>
+          )}
+          {!suggLoading && (
+            <div className="mt-3 grid gap-3">
+              <label className="text-sm">
+                Name
+                <input
+                  type="text"
+                  value={dossierName}
+                  onChange={(e) => setDossierName(e.target.value)}
+                  placeholder="e.g. Right ankle fracture"
+                  className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+                />
+              </label>
+              <label className="text-sm">
+                Aliases <span className="text-xs text-muted">(comma-separated; substrings that match related facts)</span>
+                <input
+                  type="text"
+                  value={dossierAliases}
+                  onChange={(e) => setDossierAliases(e.target.value)}
+                  placeholder="ankle, fibula, malleolus, fracture"
+                  className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+                />
+              </label>
+              <label className="text-sm">
+                Description <span className="text-xs text-muted">(optional, &lt; 280 chars)</span>
+                <textarea
+                  value={dossierDescription}
+                  onChange={(e) => setDossierDescription(e.target.value)}
+                  rows={2}
+                  className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+                />
+              </label>
+              {conflictTopic && (
+                <p className="text-sm text-caution">
+                  A dossier with that name already exists. The conversation has
+                  been attached to it —{" "}
+                  <a
+                    href={`/dossier/${conflictTopic.slug}`}
+                    className="underline-offset-4 hover:underline"
+                  >
+                    open {conflictTopic.slug}
+                  </a>
+                  . Rename above and save again to create a separate dossier
+                  instead.
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={saveAsDossier}
+                  disabled={savingDossier || !dossierName.trim()}
+                  className="rounded-md bg-accent px-3 py-1.5 text-sm text-surface disabled:opacity-50"
+                >
+                  {savingDossier ? "Saving…" : "Create dossier"}
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       )}
 

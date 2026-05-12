@@ -25,6 +25,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session
+from ..llm import call_with_tool, get_registry
 from ..llm.conversations import (
     add_user_message_and_reply,
     create_conversation,
@@ -35,6 +36,7 @@ from ..models.conversation import (
     ConversationCitation,
     ConversationMessage,
 )
+from ..models.topic import Topic
 from ..models.user import User
 from .auth import get_current_user
 
@@ -401,3 +403,172 @@ async def list_conversation_candidates(
             ),
         ))
     return out_list
+
+
+# ---------------------------------------------------------------------------
+# Save-as-Dossier — promote a chat to a Topic the conversation lives under.
+# ---------------------------------------------------------------------------
+#
+# Pair of endpoints. `suggest-topic` runs an LLM to pre-fill the modal so the
+# user has a starting point. `save-as-topic` takes the user-edited form and
+# creates the Topic + re-scopes the conversation to it, so subsequent
+# messages retrieve topic-bounded facts via the existing scope handler in
+# llm/conversations.py.
+
+
+class TopicSuggestion(BaseModel):
+    refuse: bool = False
+    refuse_reason: str | None = None
+    name: str | None = None
+    aliases: list[str] = []
+    description: str | None = None
+
+
+class SaveAsTopicBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    aliases: list[str] = []
+    description: str | None = None
+
+
+class SaveAsTopicResponse(BaseModel):
+    topic_id: str
+    slug: str
+    conflict: bool = False
+
+
+@router.post("/{conv_id}/suggest-topic", response_model=TopicSuggestion)
+async def suggest_topic_route(
+    conv_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> TopicSuggestion:
+    """LLM-suggested Topic for promoting this chat to a Dossier.
+
+    Pulls the user's last question + the assistant's last answer, lists
+    existing topics so the model can avoid duplicates, returns a
+    `{name, aliases, description}` triple the frontend can pre-fill the
+    Save-as-Dossier modal with. The user is the final editor; this is
+    just a starting point.
+    """
+    conv = await db.get(Conversation, conv_id)
+    if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    msgs = list((await db.execute(
+        select(ConversationMessage)
+        .where(ConversationMessage.conversation_id == conv.id)
+        .order_by(ConversationMessage.created_at.asc())
+    )).scalars().all())
+    user_msg = next((m for m in msgs if m.role == "user"), None)
+    last_assistant = next(
+        (m for m in reversed(msgs) if m.role == "assistant" and m.content),
+        None,
+    )
+    if user_msg is None or last_assistant is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Conversation has no user question + assistant answer yet",
+        )
+
+    existing_topics = [
+        t.name for t in (await db.execute(
+            select(Topic).order_by(Topic.name)
+        )).scalars().all()
+    ]
+    existing_block = (
+        "\n".join(f"  - {n}" for n in existing_topics) if existing_topics
+        else "  (none yet)"
+    )
+
+    prompt = get_registry().get("suggest_topic_from_chat")
+    result = await call_with_tool(
+        db, user, prompt,
+        user_vars={
+            "existing_topics": existing_block,
+            "user_question": user_msg.content[:4000],
+            "assistant_answer": last_assistant.content[:6000],
+        },
+        purpose="suggest_topic_from_chat",
+        tool_name="emit_topic_suggestion",
+    )
+    if result.error and not result.tool_input:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"LLM call failed: {result.error}",
+        )
+    out = result.tool_input or {}
+    return TopicSuggestion(
+        refuse=bool(out.get("refuse", False)),
+        refuse_reason=out.get("refuse_reason"),
+        name=out.get("name"),
+        aliases=[a for a in (out.get("aliases") or []) if isinstance(a, str) and a.strip()],
+        description=out.get("description"),
+    )
+
+
+@router.post("/{conv_id}/save-as-topic", response_model=SaveAsTopicResponse,
+             status_code=status.HTTP_201_CREATED)
+async def save_as_topic_route(
+    conv_id: uuid.UUID,
+    body: SaveAsTopicBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> SaveAsTopicResponse:
+    """Create a Topic from this conversation and re-scope the chat to it.
+
+    After this, posting to /conversations/{conv_id}/messages retrieves
+    facts via topic_membership_clause, so the thread keeps living in the
+    new dossier. Frontend redirects to /dossier/<slug> on success.
+
+    Slug collision: return existing Topic id with `conflict=true` so the
+    UI can prompt "Add this conversation to your existing X dossier?"
+    rather than failing the save.
+    """
+    from .topics import _slugify  # local import; topics.py defines it
+
+    conv = await db.get(Conversation, conv_id)
+    if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    name = body.name.strip()
+    slug = _slugify(name)
+    aliases = [a.strip() for a in body.aliases if a and a.strip()]
+    description = body.description.strip() if body.description else None
+
+    existing = (await db.execute(
+        select(Topic).where(Topic.slug == slug)
+    )).scalar_one_or_none()
+    if existing is not None:
+        # Don't overwrite the existing topic — attach the conversation
+        # to it and return conflict=true so the UI can confirm.
+        conv.scope = {"type": "topic", "topic_slug": existing.slug}
+        conv.kind = "dossier_followup"
+        await db.commit()
+        return SaveAsTopicResponse(
+            topic_id=str(existing.id),
+            slug=existing.slug,
+            conflict=True,
+        )
+
+    topic = Topic(
+        name=name,
+        slug=slug,
+        aliases=aliases,
+        label_patterns=[],
+        description=description,
+        related_concepts=[],
+        created_by=user.id,
+    )
+    db.add(topic)
+    await db.flush()
+
+    conv.scope = {"type": "topic", "topic_slug": topic.slug}
+    conv.kind = "dossier_followup"  # match existing topic-conversation pattern
+    await db.commit()
+    await db.refresh(topic)
+
+    return SaveAsTopicResponse(
+        topic_id=str(topic.id),
+        slug=topic.slug,
+        conflict=False,
+    )

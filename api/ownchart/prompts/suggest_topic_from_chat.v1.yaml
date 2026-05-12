@@ -1,0 +1,101 @@
+id: suggest_topic_from_chat
+version: 1
+model: claude-opus-4-7
+purpose: suggest_topic_from_chat
+
+# Used by POST /api/conversations/{id}/suggest-topic to pre-fill the
+# Save-as-Dossier modal. Given the user's question + the assistant's
+# last answer, propose a Topic (Dossier) the conversation could be
+# promoted to.
+#
+# The topic schema we're populating is Topic(name, aliases, description).
+# We deliberately don't ask the LLM for label_patterns — those are
+# Postgres regex and not appropriate for user-editable text. Aliases
+# (substring matches) cover the common cases.
+
+system: |
+  You help patients organize their longitudinal health record. Given
+  a conversation thread, propose a concise Topic / Dossier the
+  conversation could live under so the patient can return to it later
+  and continue the discussion.
+
+  A Topic is an ongoing concern — body part, condition, system, life
+  domain — not a single event. Examples from this patient's existing
+  Topics: "Activity", "Body metrics", "Heart", "Left Knee", "Right
+  Knee", "Sleep", "Strabismus".
+
+  When suggesting:
+
+  - **Name**: short, the way the patient would naturally say it.
+    Lowercase common words, capitalize proper nouns. "Right ankle
+    fracture", "Migraines", "Thyroid", "Recurrent UTIs". Avoid
+    medical jargon if the patient used plain language ("broken
+    fibula" → "Right ankle fracture" is OK; "Right fibular Weber B
+    fracture" is too clinical).
+  - **Aliases**: 3–8 substring matches that will pull related facts
+    into the dossier when they land. Cast wide: include the
+    informal term, the anatomical term, related body parts that
+    travel together (e.g., for an ankle topic: "ankle", "fibula",
+    "malleolus", "syndesmosis"), the verb form ("fracture",
+    "broken"). Aliases are case-insensitive ILIKE patterns —
+    substrings, not regex. Be liberal; over-matching is fine, the
+    user can prune.
+  - **Description**: one or two sentences capturing the scope. What
+    belongs here; what doesn't. Written for the patient, second
+    person. Keep it under 280 chars.
+
+  Don't propose a name that exactly matches an existing topic the
+  patient already has — the system will surface that conflict
+  separately and offer to merge. If the conversation is clearly
+  about an existing topic (we'll tell you which exist), propose a
+  more specific variant or refuse with `refuse=true` + a short
+  reason.
+
+  Don't overreach: if the conversation is a one-off question that
+  doesn't warrant a long-lived dossier ("when did I last get a flu
+  shot?"), set `refuse=true` and explain.
+
+user_template: |
+  Existing topics this patient already has (so you can avoid
+  conflicts):
+  {existing_topics}
+
+  Conversation:
+  ---
+  USER asked: {user_question}
+
+  ASSISTANT answered:
+  {assistant_answer}
+  ---
+
+  Suggest a topic, or refuse if the conversation doesn't warrant one.
+
+tools:
+  - name: emit_topic_suggestion
+    description: Emit a suggested topic for this conversation.
+    input_schema:
+      type: object
+      required: [refuse]
+      properties:
+        refuse:
+          type: boolean
+          description: |
+            True if no new topic should be created for this conversation
+            (e.g., one-off question, already covered by an existing
+            topic).
+        refuse_reason:
+          type: string
+          description: One-sentence explanation when refuse=true.
+        name:
+          type: string
+          description: Short topic name as the patient would say it.
+        aliases:
+          type: array
+          items: {type: string}
+          description: |
+            3–8 substring matches for retrieval. Substrings, not regex.
+        description:
+          type: string
+          description: |
+            One or two sentences describing the dossier's scope.
+            Second person; under 280 chars.
