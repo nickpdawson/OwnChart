@@ -259,6 +259,10 @@ If any of those look wrong to you, open an issue. Better to fix the model before
 The doctrine and design of OwnChart carry forward work from several people whose thinking it builds on:
 
 - **[Hugo Campos](https://github.com/hugooc)** and the [AI Patients](https://www.aipatients.org/) community — for **Critical AI Health Literacy** as the lens through which every AI feature in OwnChart is evaluated. The "AI as research partner, not oracle" framing, the patient-agency-first product translation, and the test that every AI surface should *increase* the patient's capability are all rooted here.
-- **[Josh Mandel](https://github.com/jmandel)** and [`health-record-mcp`](https://github.com/jmandel/health-record-mcp) — for SMART-on-FHIR-aware LLM tooling and the Model Context Protocol approach to health records. OwnChart's import-side FHIR posture and the way evidence-citation maps to FHIR resource anchors owe a lot to this lineage.
+- **[Josh Mandel](https://github.com/jmandel)** — for SMART-on-FHIR-aware LLM tooling and the live demonstration that patient-side AI on real health records is achievable now. Two of Josh's projects parallel OwnChart's surfaces closely:
+  - [`health-record-mcp`](https://github.com/jmandel/health-record-mcp) — Model Context Protocol server bringing SMART-on-FHIR records into LLM workflows.
+  - [`health-skillz`](https://github.com/jmandel/health-skillz) — a Claude Skill for connecting to and analyzing personal health records via SMART on FHIR ([health-skillz.joshuamandel.com](https://health-skillz.joshuamandel.com)).
+
+OwnChart's import surface and evidence-citation model owe a lot to this lineage.
 
 The mistakes are the project maintainer's.

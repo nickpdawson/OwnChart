@@ -285,7 +285,7 @@ This is the difference between an AI gimmick and a liberation-oriented patient t
 OwnChart is not a clean-room invention. The doctrine here carries forward work from two people whose thinking informs the project at its load-bearing points:
 
 - **[Hugo Campos](https://github.com/hugooc)** — Critical AI Health Literacy as a design lens, and the long-running insistence that AI in healthcare can either silence patients or amplify them. OwnChart picks the second.
-- **[Josh Mandel](https://github.com/jmandel)** — SMART-on-FHIR as the patient-side data path, and [`health-record-mcp`](https://github.com/jmandel/health-record-mcp) as a working demonstration that FHIR-aware LLM tooling is achievable today, not a future paper. OwnChart's import surface and evidence-citation model owe a lot to that lineage.
+- **[Josh Mandel](https://github.com/jmandel)** — SMART-on-FHIR as the patient-side data path, plus a pair of open demonstrations that patient-AI-on-real-records is a now-thing, not a future paper: [`health-record-mcp`](https://github.com/jmandel/health-record-mcp) (Model Context Protocol server for SMART-on-FHIR records) and [`health-skillz`](https://github.com/jmandel/health-skillz) (a Claude Skill for analyzing personal health records via SMART on FHIR, at [health-skillz.joshuamandel.com](https://health-skillz.joshuamandel.com)). OwnChart's import surface and evidence-citation model owe a lot to that lineage.
 
 Crediting them up front; the implementation choices and mistakes here are the project maintainer's.
 
