@@ -94,20 +94,47 @@ async def run_episode_intelligence(
                 "error": job.error, "candidate": None,
                 "conversation_id": None}
 
-    planner_payload = await plan_episode_intelligence(
-        db,
-        fact_id=fact_id,
-        episode_id=episode_id,
-        natural_language=natural_language,
-        now=now,
-    )
-    if planner_payload is None:
+    try:
+        planner_payload = await plan_episode_intelligence(
+            db,
+            fact_id=fact_id,
+            episode_id=episode_id,
+            natural_language=natural_language,
+            now=now,
+        )
+    except Exception as e:  # noqa: BLE001
+        # Planner errors are diagnostic, not user-facing. Save the
+        # detail on the job for the audit trail; tell the user
+        # gracefully that we couldn't analyze yet.
+        log.warning(
+            "episode_intelligence_planner_failed",
+            error=f"{type(e).__name__}: {e}",
+        )
         job.status = "failed"
-        job.error = "could not resolve an anchor"
+        job.error = f"planner_error: {type(e).__name__}: {e}"
         job.completed_at = datetime.now(timezone.utc)
         await db.commit()
         return {"job_id": str(job.id), "status": "failed",
-                "error": job.error, "candidate": None,
+                "error": "OwnChart hit an error gathering the evidence for this question. Try a more specific anchor (a fact id) or check the API logs.",
+                "candidate": None,
+                "conversation_id": None}
+    if planner_payload is None:
+        # iOS asked us to make "no anchor resolved" a refused-shape
+        # response so the client doesn't retry-bounce. Reasoning:
+        # 'failed' implies a transient error; 'refused' is a
+        # deterministic "we can't answer this with what we have."
+        job.status = "refused"
+        job.error = "could not resolve an anchor"
+        job.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {"job_id": str(job.id), "status": "refused",
+                "error": (
+                    "OwnChart couldn't pin this question to a specific event "
+                    "on your record. Try linking it to a specific fact "
+                    "(open a moment and tap 'Ask about this'), or ingest "
+                    "more sources first."
+                ),
+                "candidate": None,
                 "conversation_id": None}
 
     anchor = planner_payload["anchor"]
@@ -141,6 +168,18 @@ async def run_episode_intelligence(
     # aggregates the planner already computed.
     payload_json = json.dumps(planner_payload, default=str)[:48_000]
 
+    # Build input_source_ids defensively — a malformed source_id in the
+    # planner payload mustn't blow up the whole call.
+    input_source_ids: list[uuid.UUID] = []
+    for s in (planner_payload.get("what_happened", {}).get("sources") or []):
+        sid = s.get("source_id") if isinstance(s, dict) else None
+        if not sid:
+            continue
+        try:
+            input_source_ids.append(uuid.UUID(str(sid)))
+        except (TypeError, ValueError):
+            continue
+
     result = await call_with_tool(
         db, user, prompt,
         user_vars={
@@ -153,11 +192,7 @@ async def run_episode_intelligence(
             "question": question or "(no explicit question — produce the full structured answer)",
         },
         purpose="episode_intelligence",
-        input_source_ids=[
-            uuid.UUID(s["source_id"])
-            for s in (planner_payload.get("what_happened", {}).get("sources") or [])
-            if s.get("source_id")
-        ],
+        input_source_ids=input_source_ids,
         tool_name="emit_episode_intelligence",
         provider=preferred if isinstance(preferred, str) else None,
     )
@@ -261,6 +296,18 @@ async def run_episode_intelligence(
         ))
 
     # Persist a SensemakingCandidate so the user can "Save as Episode."
+    # Defend the anchor UUID parse — historically a malformed anchor
+    # id 500'd the whole route.
+    anchor_fact_uuids: list[uuid.UUID] = []
+    anchor_fact_raw = anchor.get("fact_id")
+    if isinstance(anchor_fact_raw, str):
+        try:
+            anchor_fact_uuids.append(uuid.UUID(anchor_fact_raw))
+        except (TypeError, ValueError):
+            log.warning(
+                "episode_intelligence_anchor_uuid_invalid",
+                anchor_fact_id=anchor_fact_raw,
+            )
     candidate = SensemakingCandidate(
         user_id=user.id,
         job_id=job.id,
@@ -273,7 +320,7 @@ async def run_episode_intelligence(
             "follow_up_questions": structured.get("follow_up_questions") or [],
         },
         claim_label="source_backed",
-        fact_ids=[uuid.UUID(anchor["fact_id"])] if anchor.get("fact_id") else [],
+        fact_ids=anchor_fact_uuids,
         disposition="pending",
     )
     db.add(candidate)

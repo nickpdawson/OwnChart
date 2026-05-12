@@ -707,10 +707,64 @@ async def get_brief_thread(
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[BriefMessageReadout]:
-    """Return the conversation thread for this topic's dossier brief."""
+    """Return the conversation thread for this topic's dossier brief.
+
+    Legacy path retained for backward compatibility. New clients
+    should use POST /api/topics/{slug}/conversation to get a
+    docs/10 Conversation object scoped to this topic, then
+    interact through /api/conversations/{id}/messages.
+    """
     topic = await _resolve_topic_or_404(db, slug)
     msgs = await _thread_for_topic(db, topic.id)
     return [_msg_readout(m) for m in msgs]
+
+
+class TopicConversationOut(BaseModel):
+    conversation_id: str
+    created: bool
+
+
+@router.post("/{slug}/conversation", response_model=TopicConversationOut,
+             status_code=status.HTTP_201_CREATED)
+async def get_or_create_topic_conversation(
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> TopicConversationOut:
+    """Get-or-create the user's dossier-scoped Conversation for this
+    topic (iOS-asked migration target away from `/brief`).
+
+    Reuses the most recent non-archived Conversation whose
+    scope.topic_slug matches; otherwise creates a fresh one with
+    kind='dossier_followup' so subsequent /api/conversations/{id}
+    /messages calls land in a stable thread.
+    """
+    from ..llm.conversations import create_conversation
+    from ..models.conversation import Conversation
+    topic = await _resolve_topic_or_404(db, slug)
+
+    # Manual scope.topic_slug lookup — JSONB containment query.
+    from sqlalchemy import text as _text
+    row = (await db.execute(
+        select(Conversation)
+        .where(Conversation.user_id == user.id)
+        .where(Conversation.kind == "dossier_followup")
+        .where(Conversation.archived.is_(False))
+        .where(_text("scope->>'topic_slug' = :slug").bindparams(slug=topic.slug))
+        .order_by(Conversation.last_message_at.desc().nullslast(),
+                  Conversation.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if row is not None:
+        return TopicConversationOut(conversation_id=str(row.id), created=False)
+
+    conv = await create_conversation(
+        db, user,
+        kind="dossier_followup",
+        title=f"Dossier: {topic.name}",
+        scope={"type": "topic", "topic_slug": topic.slug},
+    )
+    return TopicConversationOut(conversation_id=str(conv.id), created=True)
 
 
 @router.post("/{slug}/ask")

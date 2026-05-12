@@ -12,26 +12,22 @@
 set -euo pipefail
 
 # Configure your deploy target via env vars or a local infra/deploy.env
-# file (gitignored). Defaults below are placeholders — set them before
-# running this script on a real host.
-REMOTE_USER="${OWNCHART_DEPLOY_USER:-}"
-REMOTE_HOST="${OWNCHART_DEPLOY_HOST:-}"
-REMOTE_DIR="${OWNCHART_DEPLOY_DIR:-/home/${REMOTE_USER}/ownchart}"
+# file (gitignored). Source the local file FIRST so its values take
+# precedence over any stale ones in the parent shell — and so the
+# REMOTE_DIR default below sees the resolved REMOTE_USER.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-# Pull additional deploy config from a local, gitignored file if present.
-# Useful spot for the host-specific values you don't want in env every time.
 if [[ -f "${REPO_ROOT}/infra/deploy.env" ]]; then
   # shellcheck disable=SC1091
   source "${REPO_ROOT}/infra/deploy.env"
-  REMOTE_USER="${REMOTE_USER:-${OWNCHART_DEPLOY_USER:-}}"
-  REMOTE_HOST="${REMOTE_HOST:-${OWNCHART_DEPLOY_HOST:-}}"
-  REMOTE_DIR="${REMOTE_DIR:-${OWNCHART_DEPLOY_DIR:-/home/${REMOTE_USER}/ownchart}}"
 fi
 
+REMOTE_USER="${OWNCHART_DEPLOY_USER:-}"
+REMOTE_HOST="${OWNCHART_DEPLOY_HOST:-}"
+REMOTE_DIR="${OWNCHART_DEPLOY_DIR:-/home/${REMOTE_USER}/ownchart}"
+
 if [[ -z "$REMOTE_USER" || -z "$REMOTE_HOST" ]]; then
-  echo "❌ Set OWNCHART_DEPLOY_USER and OWNCHART_DEPLOY_HOST" >&2
-  echo "   (export them, or drop them in infra/deploy.env)" >&2
+  echo "Set OWNCHART_DEPLOY_USER and OWNCHART_DEPLOY_HOST" >&2
+  echo "(export them, or drop them in infra/deploy.env)" >&2
   exit 1
 fi
 

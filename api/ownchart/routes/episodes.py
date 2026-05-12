@@ -77,11 +77,29 @@ async def run_intelligence_route(
             question=body.question,
         )
     except Exception as e:  # noqa: BLE001
-        log.warning("episode_intelligence_failed",
-                    error=f"{type(e).__name__}: {e}")
+        # Log loudly with traceback so the underlying cause is
+        # recoverable from container logs even when the response
+        # body stays terse for prod safety.
+        import traceback
+        tb = traceback.format_exc()
+        log.warning(
+            "episode_intelligence_failed",
+            error=f"{type(e).__name__}: {e}",
+            traceback=tb,
+        )
+        # In dev / debug builds, surface the real exception so the
+        # client (iOS, web) can show something actionable. Prod
+        # stays generic to avoid leaking stack traces to anonymous
+        # demo visitors.
+        from ..core.config import get_settings as _settings_now
+        s = _settings_now()
+        if s.env == "dev" or s.debug_payloads:
+            detail = f"Episode intelligence job failed: {type(e).__name__}: {e}"
+        else:
+            detail = "Episode intelligence job failed."
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Episode intelligence job failed",
+            detail=detail,
         ) from e
     return IntelligenceResponse(**out)
 

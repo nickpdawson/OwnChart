@@ -33,7 +33,7 @@ import statistics
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -424,19 +424,86 @@ async def _unreviewed_high_counts(db: AsyncSession) -> list[DiscoverItem]:
 
 @router.get("")
 async def get_discover(
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
     limit: int = Query(default=20, ge=1, le=100),
+    include_dismissed: bool = Query(default=False),
 ) -> DiscoverResponse:
-    """Return the deterministic V1 discovery feed."""
+    """Return the deterministic V1 discovery feed.
+
+    Items are computed on-read from the underlying facts/sources,
+    so there's no `discover_items` table; their IDs are content-
+    derived (e.g. `connected_episode:{date}:{source_id}`). Per-user
+    dismissals live in `audit_events`
+    (event_type='discover_dismissed', subject_type='discover_item').
+    """
     items: list[DiscoverItem] = []
     items.extend(await _connected_episodes(db))
     items.extend(await _dense_periods(db))
     items.extend(await _long_gaps(db))
     items.extend(await _unreviewed_high_counts(db))
 
-    # Cross-type sort: signal_strength first, then type-specific
-    # secondary ordering already applied within each helper.
     items.sort(key=lambda i: _STRENGTH_RANK[i.signal_strength])
 
+    if not include_dismissed:
+        from ..models.audit_event import AuditEvent as _AE
+        dismissed_ids = set((await db.execute(
+            select(_AE.subject_id)
+            .where(_AE.user_id == user.id)
+            .where(_AE.event_type == "discover_dismissed")
+            .where(_AE.subject_type == "discover_item")
+        )).scalars().all())
+        items = [i for i in items if i.id not in dismissed_ids]
+
     return DiscoverResponse(items=items[:limit])
+
+
+@router.post("/{item_id:path}/dismiss", status_code=204)
+async def dismiss_discover_item(
+    item_id: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """Persist a per-user dismiss for a discover item.
+
+    `item_id` is the content-derived string (e.g.
+    `connected_episode:2026-05-01:<source_uuid>`), so it can contain
+    colons — hence the `:path` converter. Idempotent: re-dismissing
+    is a no-op via the existing audit-row uniqueness check at read
+    time (we just write another row; the read-time filter dedupes).
+    """
+    from ..models.audit_event import AuditEvent
+    from datetime import timezone as _tz
+    db.add(AuditEvent(
+        user_id=user.id,
+        event_type="discover_dismissed",
+        subject_type="discover_item",
+        subject_id=item_id[:128],
+        detail={"item_id": item_id},
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    ))
+    await db.commit()
+
+
+@router.post("/{item_id:path}/undismiss", status_code=204)
+async def undismiss_discover_item(
+    item_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """Reverse a prior dismiss. Writes a 'discover_undismissed' audit
+    row that suppresses the dismiss at read time."""
+    from ..models.audit_event import AuditEvent
+    from sqlalchemy import delete
+    # Hard-delete the dismiss audit rows for this item — undismiss is
+    # rare, so cleaning up is preferable to layered tombstones.
+    await db.execute(
+        delete(AuditEvent)
+        .where(AuditEvent.user_id == user.id)
+        .where(AuditEvent.event_type == "discover_dismissed")
+        .where(AuditEvent.subject_type == "discover_item")
+        .where(AuditEvent.subject_id == item_id[:128])
+    )
+    await db.commit()
