@@ -19,3 +19,6 @@
 /epic        https://github.com/nickpdawson/OwnChart/blob/main/user-docs/EPIC_SETUP.md    302
 /athena      https://github.com/nickpdawson/OwnChart/blob/main/user-docs/ATHENA_SETUP.md  302
 /license     https://github.com/nickpdawson/OwnChart/blob/main/LICENSE            302
+
+# Privacy policy — local page, also reachable without the .html suffix
+/privacy     /privacy.html    301

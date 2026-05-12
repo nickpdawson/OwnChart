@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy — OwnChart</title>
+  <meta name="description" content="OwnChart's privacy commitment. The short version: the developer doesn't operate a service that receives your data." />
+  <meta name="theme-color" content="#F6EFE0" />
+  <meta name="robots" content="index,follow" />
+
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="canonical" href="https://www.ownchart.me/privacy.html" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/legal.css" />
+</head>
+<body class="legal">
+
+<header class="legal-header">
+  <a href="/" class="back-link" aria-label="Back to OwnChart home">
+    <span aria-hidden="true">←</span> OwnChart
+  </a>
+</header>
+
+<main class="legal-doc" aria-labelledby="title">
+
+  <h1 id="title" class="serif">Privacy</h1>
+  <p class="meta">Last updated <time datetime="2026-05-11">May 11, 2026</time></p>
+
+  <p class="lede">OwnChart is a self-hosted, patient-owned platform. The most important sentence in this policy:</p>
+
+  <blockquote class="headline">
+    The developer of OwnChart does not operate a service that receives your health data. The OwnChart iOS app and OwnChart server-side software talk only to a server you set up and control. Nothing about you, your record, or your activity reaches us — because there is no "us" running anything that could.
+  </blockquote>
+
+  <p>This page describes the narrow circumstances in which any data <em>is</em> handled by the project maintainer, and what is promised about it.</p>
+
+  <h2 class="serif">The short version</h2>
+
+  <ul>
+    <li><strong>The marketing site (<code>www.ownchart.me</code>)</strong>: static pages served from Cloudflare's edge. No analytics. No tracking pixels. No cookies set by us.</li>
+    <li><strong>The OwnChart iOS app</strong>: reads HealthKit data with your permission and sends it only to the OwnChart server URL you configure. We never receive it. There is no developer-operated backend.</li>
+    <li><strong>The OwnChart server software</strong>: runs on hardware you control. Your data stays on your disk. AI features are off by default and require explicit consent per call.</li>
+    <li><strong>The public demo at <code>demo.ownchart.me</code></strong>: operated by the project maintainer for App Store review and curious visitors. Preloaded with synthetic FHIR sandbox data — no real patient records. Web-server logs are kept ≤14 days for abuse prevention, then deleted.</li>
+  </ul>
+
+  <h2 class="serif">What the iOS app collects</h2>
+
+  <p>Nothing that reaches the developer.</p>
+
+  <p>The app does not contain:</p>
+  <ul>
+    <li>Analytics SDKs (no Mixpanel, Amplitude, Segment, Google Analytics, PostHog, or similar)</li>
+    <li>Crash reporters (no Crashlytics, Sentry, Bugsnag)</li>
+    <li>Advertising or attribution SDKs</li>
+    <li>Any networking other than to the server URL you configure</li>
+  </ul>
+
+  <p>When you grant HealthKit permission, the app reads the data classes you allowed and transmits them to your configured server. That is the only network destination.</p>
+
+  <h2 class="serif">What HealthKit data the app reads</h2>
+
+  <p>Only what you grant. Apple's HealthKit framework requires you to approve each data category individually. Common categories OwnChart can read when you enable them:</p>
+
+  <ul>
+    <li>Activity (steps, distance, active energy)</li>
+    <li>Heart (heart rate, HRV, resting heart rate, VO₂ max)</li>
+    <li>Sleep (analysis, duration, stages)</li>
+    <li>Workouts</li>
+    <li>Body measurements (weight, height, body composition)</li>
+    <li>Medications and symptoms logged in Apple Health</li>
+    <li>Mindfulness sessions</li>
+  </ul>
+
+  <p>Data is sent to your server on a schedule you control. The app maintains a local pending-upload queue if your server is offline; this queue is cleared on successful delivery and persists no longer than necessary.</p>
+
+  <h2 class="serif">What the server software handles (on your own hardware)</h2>
+
+  <p>Your medical records and HealthKit data live on disk on the server <em>you</em> operate. The project maintainer does not have access. The complete source of the server software is open at <a href="https://github.com/nickpdawson/OwnChart">github.com/nickpdawson/OwnChart</a>; the relevant doctrine and security model are documented in <a href="https://github.com/nickpdawson/OwnChart/blob/main/PHILOSOPHY.md">PHILOSOPHY.md</a> and <a href="https://github.com/nickpdawson/OwnChart/blob/main/SECURITY.md">SECURITY.md</a>.</p>
+
+  <p>When you enable AI features on your server:</p>
+
+  <ul>
+    <li>Your server may send the relevant portion of your record to an LLM provider you configure — Anthropic, OpenAI, Google, or a local-model endpoint you run yourself.</li>
+    <li>This requires your explicit, scoped consent before each call (the consent gate).</li>
+    <li>Each call creates a local audit record (<code>ModelRun</code>) on your server. We do not see it.</li>
+    <li>That LLM provider's privacy policy then governs whatever you sent. The project does not have a relationship with those providers on your behalf.</li>
+  </ul>
+
+  <h2 class="serif">What <code>demo.ownchart.me</code> handles</h2>
+
+  <p>This is the one surface where the project maintainer operates a service that touches user activity. It has been kept deliberately minimal:</p>
+
+  <ul>
+    <li>The demo server runs the same OwnChart software you would run yourself.</li>
+    <li>It is preloaded with synthetic FHIR-sandbox patient data. There is no real patient information.</li>
+    <li>The single shared <code>demo@ownchart.me</code> account is public; anyone may sign in.</li>
+    <li>Standard NGINX access logs are kept (IP address, timestamp, request path, user agent) for <strong>no more than 14 days</strong> for abuse mitigation. These logs are not joined to any identity, not analyzed for product purposes, not shared with third parties.</li>
+    <li>The demo server uses an LLM provider configured by the maintainer. AI features run against synthetic data with the standard consent gate.</li>
+  </ul>
+
+  <p><strong>Don't put real medical information into the demo.</strong> Anything you type into a form on the demo (e.g., the Ask box) is processed by the demo's LLM provider; because the underlying record is synthetic and the account is shared, your input may also be visible to other people using the demo account after you.</p>
+
+  <h2 class="serif">What this marketing site does</h2>
+
+  <p>A static site served from Cloudflare Pages. To make it work:</p>
+
+  <ul>
+    <li>Cloudflare's edge may set short-lived essential cookies (<code>__cf_bm</code>, <code>cf_clearance</code>) for bot protection. These are first-party, short-lived, required to defend the site from automated abuse, and do not identify you across other sites. We do not read them.</li>
+    <li>Cloudflare retains technical edge logs for its own bot-management purposes per its <a href="https://www.cloudflare.com/privacypolicy/">privacy policy</a>.</li>
+    <li>The site has no analytics scripts. No Google Analytics, no Plausible, no Fathom, no anything. We do not know when you visit.</li>
+    <li>The site embeds no third-party iframes, videos, or web fonts. All fonts are system fonts; all images are first-party.</li>
+  </ul>
+
+  <h2 class="serif">GitHub</h2>
+
+  <p>The source code lives on GitHub. When you view or interact with the repository there, <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub's privacy policy</a> applies. The project does not receive anything beyond what GitHub publicly shows (issue and pull request authorship, stars, etc.).</p>
+
+  <h2 class="serif">Children</h2>
+
+  <p>OwnChart is intended for adults managing their own (or a delegated person's) health record. The project does not knowingly collect data from anyone because it does not collect data at all. If a parent installs the iOS app on a child's device, the child's HealthKit data flows only to the parent's chosen server.</p>
+
+  <h2 class="serif">International data transfers</h2>
+
+  <p>Because no personal data is transferred to the project maintainer, this section is short. Cloudflare serves the marketing site from edge nodes worldwide. GitHub hosts the source on its own infrastructure. The demo server is located in the United States.</p>
+
+  <h2 class="serif">Your rights</h2>
+
+  <p>You can:</p>
+
+  <ul>
+    <li>Read every line of code that touches your data — the source is open.</li>
+    <li>Inspect every AI call your server made, with a full audit record.</li>
+    <li>Delete everything by tearing down your server.</li>
+    <li>Use the project under the MIT license — fork it, modify it, host it yourself.</li>
+  </ul>
+
+  <p>You do not need to request a data export from the developer because the developer does not have your data.</p>
+
+  <h2 class="serif">Changes to this policy</h2>
+
+  <p>Material changes to this policy appear in the git history of <code>site/privacy.html</code> and <code>PRIVACY.md</code> in the <a href="https://github.com/nickpdawson/OwnChart">public repository</a>. The current version is always at <a href="https://www.ownchart.me/privacy.html">www.ownchart.me/privacy.html</a>. The "Last updated" date at the top of this page reflects the most recent material change.</p>
+
+  <h2 class="serif">Contact</h2>
+
+  <p>For privacy questions, open an issue at <a href="https://github.com/nickpdawson/OwnChart/issues">github.com/nickpdawson/OwnChart/issues</a>. For sensitive disclosures, open a private GitHub Security Advisory at <a href="https://github.com/nickpdawson/OwnChart/security/advisories/new">github.com/nickpdawson/OwnChart/security/advisories/new</a>.</p>
+
+  <p class="footnote">OwnChart is not a medical device, does not provide medical advice, and is not a substitute for clinical judgment. AI outputs are research-partner suggestions, not diagnoses or treatment recommendations.</p>
+
+</main>
+
+<footer>
+  <div class="footer-inner">
+    <p class="footer-mark">
+      <span class="footer-dots" aria-hidden="true">
+        <span class="dot dot-teal"></span><span class="dot dot-ochre"></span><span class="dot dot-sage"></span><span class="dot dot-plum"></span>
+      </span>
+      <span class="serif">OwnChart</span>
+    </p>
+    <nav class="footer-nav" aria-label="Footer">
+      <a href="/">Home</a>
+      <a href="https://github.com/nickpdawson/OwnChart">GitHub</a>
+      <a href="https://github.com/nickpdawson/OwnChart/blob/main/PHILOSOPHY.md">Philosophy</a>
+      <a href="https://github.com/nickpdawson/OwnChart/blob/main/SECURITY.md">Security</a>
+      <a href="/privacy.html" aria-current="page">Privacy</a>
+      <a href="https://github.com/nickpdawson/OwnChart/blob/main/LICENSE">License</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

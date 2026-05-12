@@ -478,6 +478,30 @@ code {
   }
 }
 
+.testflight-row {
+  margin: 44px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.testflight-note {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+  color: var(--ink-mute);
+}
+
+@media (max-width: 460px) {
+  .testflight-row {
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 32px;
+  }
+}
+
 /* ============================================================
    DEMO CTA
    ============================================================ */

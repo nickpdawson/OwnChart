@@ -218,12 +218,24 @@ data/               PHI bind-mount target — gitignored
 > # web at http://localhost:8800, api at http://localhost:8801
 > ```
 
+## iOS app (public beta)
+
+A native iOS companion app — direct on-device HealthKit sync to your own self-hosted OwnChart server — is in public TestFlight beta:
+
+**Join the beta: [testflight.apple.com/join/z8QemcTe](https://testflight.apple.com/join/z8QemcTe)**
+
+Pair the app with the demo at `https://demo.ownchart.me` (creds `demo@ownchart.me` / `MYHEALTHdata`) for a synthetic walkthrough, or with your own self-hosted instance to start syncing your real HealthKit data.
+
 ## Connecting your records
 
 Most EHR connectors require you to register OwnChart with the vendor as a "patient app" — typically a 30-minute task done once per vendor. Setup guides under [`user-docs/`](./user-docs/):
 
 - [Registering an Epic FHIR app](./user-docs/EPIC_SETUP.md) — works for any health system on Epic (Kaiser, Stanford, Bozeman Health, OrthoVirginia, etc.) once registered.
 - [Getting an Athena developer account](./user-docs/ATHENA_SETUP.md) — for athenahealth-based providers.
+
+## Privacy
+
+The project doesn't operate a service that receives your data — the OwnChart iOS app and the OwnChart server software talk only to a server you control. Full privacy commitment: [PRIVACY.md](./PRIVACY.md) (or <https://www.ownchart.me/privacy.html>).
 
 ## License
 
