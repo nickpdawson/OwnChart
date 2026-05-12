@@ -235,7 +235,7 @@ Most EHR connectors require you to register OwnChart with the vendor as a "patie
 
 ## Privacy
 
-The project doesn't operate a service that receives your data — the OwnChart iOS app and the OwnChart server software talk only to a server you control. Full privacy commitment: [PRIVACY.md](./PRIVACY.md) (or <https://www.ownchart.me/privacy.html>).
+The project doesn't operate a service that receives your data — the OwnChart iOS app and the OwnChart server software talk only to a server you control. Full privacy commitment: [PRIVACY.md](./PRIVACY.md) (or <https://www.ownchart.me/privacy>).
 
 ## License
 

@@ -99,7 +99,7 @@ You do not need to request a data export from the developer because the develope
 
 ## Changes to this policy
 
-Material changes appear in the git history of `site/privacy.html` and `PRIVACY.md` in this public repository. The current version is always at <https://www.ownchart.me/privacy.html>. The *Last updated* date at the top of this document reflects the most recent material change.
+Material changes appear in the git history of `site/privacy.html` and `PRIVACY.md` in this public repository. The current version is always at <https://www.ownchart.me/privacy>. The *Last updated* date at the top of this document reflects the most recent material change.
 
 ## Contact
 

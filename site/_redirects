@@ -20,5 +20,6 @@
 /athena      https://github.com/nickpdawson/OwnChart/blob/main/user-docs/ATHENA_SETUP.md  302
 /license     https://github.com/nickpdawson/OwnChart/blob/main/LICENSE            302
 
-# Privacy policy — local page, also reachable without the .html suffix
-/privacy     /privacy.html    301
+# (No /privacy redirect needed — Workers Static Assets serves /privacy
+#  directly from privacy.html via its default html_handling. Adding a
+#  redirect creates a loop with the auto-strip-.html behavior.)
