@@ -34,3 +34,14 @@ async def enqueue_auto_export_processing(source_id: str) -> str:
     pool = await get_arq_pool()
     arq_job = await pool.enqueue_job("process_auto_export_push", source_id)
     return arq_job.job_id if arq_job is not None else ""
+
+
+async def enqueue_personal_photo_vision(source_id: str) -> str:
+    """Enqueue Claude-vision content extraction for a personal photo
+    upload. Worker enriches the photo's life_context_event fact with a
+    body-parts/devices/setting description and (when relevance is low)
+    flips the fact to source_only so casual photos don't pollute
+    clinical retrieval surfaces."""
+    pool = await get_arq_pool()
+    arq_job = await pool.enqueue_job("process_personal_photo", source_id)
+    return arq_job.job_id if arq_job is not None else ""

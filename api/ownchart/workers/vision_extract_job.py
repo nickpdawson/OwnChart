@@ -259,6 +259,135 @@ async def _reenqueue_stranded_jobs(ctx: dict[str, Any]) -> None:
                 )
 
 
+async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[str, Any]:
+    """Run Claude vision over a personal photo upload.
+
+    Distinct from the multi-page PDF extraction above — this is a
+    single one-shot call that enriches the existing life_context_event
+    fact created at upload time. Output:
+
+    - The fact's `description` is replaced/augmented with the vision-
+      derived clinical-lens description.
+    - `body_parts_visible` + `medical_devices` are appended to the
+      anchor's `text_excerpt` so search_facts retrieves the photo on
+      "tell me about my ankle" / "tell me about the brace" queries.
+    - The full structured output is persisted under
+      `source.raw_metadata['vision']` for the source detail page.
+    - Photos with `relevance_score < 30` get `significance='source_only'`
+      on their fact so they hide from clinical retrieval surfaces
+      (timeline / dossier) while staying in the evidence vault.
+    """
+    from pathlib import Path
+    from sqlalchemy import select
+
+    source_uuid = uuid.UUID(source_id)
+    async with SessionLocal() as db:
+        source = await db.get(SourceDocument, source_uuid)
+        if source is None:
+            log.warning("personal_photo_source_missing", source_id=source_id)
+            return {"error": "source missing"}
+        user = await db.get(User, source.owner_user_id)
+        if user is None:
+            log.warning("personal_photo_user_missing", source_id=source_id)
+            return {"error": "user missing"}
+        if source.source_type != "photo":
+            log.info("personal_photo_skip_non_photo",
+                     source_id=source_id, source_type=source.source_type)
+            return {"status": "skipped", "reason": "not a photo"}
+
+        # Resolve the on-disk path. storage.write_blob writes under
+        # OWNCHART_DATA_DIR/blobs/<sha-prefix>/<sha>.<suffix>; the
+        # storage_uri stored on the row is the full path.
+        image_path = Path(source.storage_uri)
+        if not image_path.is_absolute():
+            # Older or relative URIs — fall back to data_dir/blobs.
+            image_path = get_settings().data_dir / image_path
+
+        from ..extract.vision import extract_personal_photo
+        result = await extract_personal_photo(db, user, source, image_path)
+        if result.error:
+            log.warning("personal_photo_vision_failed",
+                        source_id=source_id, error=result.error)
+            return {"status": "failed", "error": result.error}
+        if result.safety_response:
+            log.warning("personal_photo_safety_decline",
+                        source_id=source_id, reason=result.safety_response)
+
+        # Find the life_context_event fact created at upload time
+        # (anchor_type='image_full'). There's at most one per photo,
+        # but we tolerate zero (uncaptioned + undated photos don't get a
+        # fact; they stay in the vault).
+        anchor_rows = (await db.execute(
+            select(EvidenceAnchor)
+            .where(EvidenceAnchor.source_document_id == source.id)
+            .where(EvidenceAnchor.anchor_type == "image_full")
+        )).scalars().all()
+        anchor = anchor_rows[0] if anchor_rows else None
+
+        fact = None
+        if anchor is not None:
+            fact = (await db.execute(
+                select(ExtractedFact)
+                .where(ExtractedFact.evidence_anchor_ids.op("&&")([anchor.id]))
+                .where(ExtractedFact.fact_type == "life_context_event")
+                .order_by(ExtractedFact.created_at.desc())
+                .limit(1)
+            )).scalars().first()
+
+        # Compose the rich description (user caption + vision text).
+        # User's words come first; vision is appended as observational
+        # context so the user's framing dominates the retrieval body.
+        parts: list[str] = []
+        if source.user_supplied_caption:
+            parts.append(source.user_supplied_caption.strip())
+        if result.description:
+            parts.append(result.description.strip())
+        if result.body_parts_visible:
+            parts.append("Body parts visible: " + ", ".join(result.body_parts_visible))
+        if result.medical_devices:
+            parts.append("Medical devices: " + ", ".join(result.medical_devices))
+        if result.recovery_signals:
+            parts.append("Recovery signals: " + ", ".join(result.recovery_signals))
+        rich_description = "\n\n".join(parts) if parts else None
+
+        if anchor is not None and rich_description:
+            anchor.text_excerpt = rich_description[:2000]
+
+        if fact is not None:
+            if rich_description:
+                fact.description = rich_description[:4000]
+            if result.relevance_score < 30:
+                # Hide casual photos from timeline / dossier retrieval
+                # without deleting them. Source detail page still shows.
+                fact.significance = "source_only"
+                fact.significance_source = "personal_photo_vision"
+                fact.significance_set_at = datetime.now(timezone.utc)
+
+        # Persist the full structured output for the source detail page
+        # and for future debugging.
+        raw = dict(source.raw_metadata or {})
+        raw["vision"] = {
+            "description": result.description,
+            "body_parts_visible": result.body_parts_visible,
+            "medical_devices": result.medical_devices,
+            "setting": result.setting,
+            "recovery_signals": result.recovery_signals,
+            "relevance_score": result.relevance_score,
+            "model_run_id": str(result.model_run_id) if result.model_run_id else None,
+            "safety_response": result.safety_response,
+        }
+        source.raw_metadata = raw
+
+        await db.commit()
+
+    log.info("personal_photo_extracted",
+             source_id=source_id,
+             relevance=result.relevance_score,
+             body_parts=len(result.body_parts_visible),
+             devices=len(result.medical_devices))
+    return {"status": "completed", "relevance_score": result.relevance_score}
+
+
 class WorkerSettings:
     """Arq config — `arq ownchart.workers.vision_extract_job.WorkerSettings`.
 
@@ -268,7 +397,7 @@ class WorkerSettings:
     behind a long vision extraction we'll split workers later.
     """
 
-    functions = [extract_pages_task, process_auto_export_push]
+    functions = [extract_pages_task, process_auto_export_push, process_personal_photo]
     on_startup = _reenqueue_stranded_jobs
     max_jobs = 2  # one extraction is plenty heavy; cap concurrency
     # Default Arq job_timeout is 300s, which is comically short for our

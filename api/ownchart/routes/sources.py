@@ -25,11 +25,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
 from ..core.logger import get_logger
+from ..core.upload_context import attach_nearby_clinical_events
 from ..ingest import auto_export as auto_export_ingest
 from ..ingest import ccda as ccda_ingest
 from ..ingest import images, pdf, storage
 from ..ingest.fact_classifier import review_state_for_fhir
-from ..core.arq_pool import enqueue_extraction_job
+from ..core.arq_pool import enqueue_extraction_job, enqueue_personal_photo_vision
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.extraction_job import ExtractionJob
@@ -203,8 +204,27 @@ async def upload_photo(
         )
         db.add(fact)
 
+    # Auto-association: pin nearby major clinical events onto the
+    # source so the source detail page can show "this photo is on the
+    # same day as your appendectomy / fibula fracture" without the
+    # user manually associating it. Runs synchronously — it's one DB
+    # query against confirmed facts in a ±7 day window.
+    nearby = await attach_nearby_clinical_events(db, user, src)
+
     await db.commit()
     await db.refresh(src)
+
+    # Fire-and-forget Claude vision over the photo. The worker enriches
+    # the photo's life_context_event fact with body-parts / devices /
+    # setting description and flips low-relevance photos to source_only
+    # so casual photos don't pollute clinical retrieval. Doesn't block
+    # the upload response — frontend can refetch source detail to see
+    # the vision output once the worker completes (~5-10s).
+    try:
+        await enqueue_personal_photo_vision(str(src.id))
+    except Exception as e:  # noqa: BLE001
+        log.warning("photo_vision_enqueue_failed",
+                    source_id=str(src.id), error=str(e))
 
     log.info(
         "photo_uploaded",
@@ -216,6 +236,7 @@ async def upload_photo(
         deduplicated=blob.already_existed,
         captioned=bool(caption),
         dated=bool(photo_date),
+        nearby_clinical_events=len(nearby),
     )
 
     return SourceDetail(
@@ -335,6 +356,8 @@ async def upload_note(
         extraction_method="patient_self_report",
     )
     db.add(fact)
+    # Auto-association — same pattern as photo upload.
+    nearby = await attach_nearby_clinical_events(db, user, src)
     await db.commit()
     await db.refresh(src)
 
@@ -344,6 +367,7 @@ async def upload_note(
         char_count=len(body),
         dated=bool(payload.event_date),
         titled=bool(payload.title),
+        nearby_clinical_events=len(nearby),
     )
 
     return SourceDetail(
@@ -457,6 +481,9 @@ async def upload_voice(
         )
         db.add(fact)
 
+    # Auto-association — same pattern as photo / note upload.
+    nearby = await attach_nearby_clinical_events(db, user, src)
+
     await db.commit()
     await db.refresh(src)
 
@@ -467,6 +494,7 @@ async def upload_voice(
         has_transcript=bool(transcript_text),
         transcript_chars=len(transcript_text),
         dated=bool(event_date),
+        nearby_clinical_events=len(nearby),
     )
 
     return SourceDetail(
