@@ -180,10 +180,68 @@ _REL_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Explicit calendar-date patterns. Caught during golden-path walk
+# 2026-05-13 PM: Nick asked about "eye surgery on may 1 2026" and the
+# anchor resolver fell back to "most recent major procedure" (low
+# confidence) because the regex above only handled relative dates.
+# Three formats supported (case-insensitive on month names):
+#   "May 1 2026", "May 1, 2026"     → groups: month_name, day, year?
+#   "2026-05-01" (ISO)              → groups: year, month_num, day
+#   "5/1/2026", "5/1/26"            → groups: month_num, day, year_short_or_full
+_MONTH_NAMES = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7,
+    "july": 7, "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12,
+    "december": 12,
+}
+_ABS_DATE_RE = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)\s+(\d{1,2})(?:[,\s]+(\d{4}))?"
+    r"|\b(\d{4})-(\d{1,2})-(\d{1,2})\b"
+    r"|\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_absolute_date(natural_language: str, *, now: datetime) -> datetime | None:
+    """Match an explicit calendar date (May 1 2026 / 2026-05-01 / 5/1/2026)
+    and return it as UTC midnight. Returns None if none found. When the
+    year is omitted ("May 1"), defaults to the current year — caller can
+    still build a ±N-day window around it. When the year is 2-digit
+    ("5/1/26"), expands as 2000+yy."""
+    m = _ABS_DATE_RE.search(natural_language or "")
+    if not m:
+        return None
+    try:
+        if m.group(1):  # "May 1 [2026]"
+            month = _MONTH_NAMES[m.group(1).lower()]
+            day = int(m.group(2))
+            year = int(m.group(3)) if m.group(3) else now.year
+        elif m.group(4):  # "2026-05-01"
+            year = int(m.group(4))
+            month = int(m.group(5))
+            day = int(m.group(6))
+        else:  # "5/1/2026" or "5/1/26"
+            month = int(m.group(7))
+            day = int(m.group(8))
+            year = int(m.group(9))
+            if year < 100:
+                year += 2000
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    except (ValueError, KeyError):
+        return None
+
 
 def _parse_relative_window(natural_language: str, *, now: datetime) -> tuple[datetime, datetime] | None:
-    """If the question contains a relative date reference, return a
-    (start, end) UTC window around the implied date. Otherwise None."""
+    """If the question contains a relative date reference OR an explicit
+    calendar date, return a (start, end) UTC window. Otherwise None."""
+    abs_date = _parse_absolute_date(natural_language, now=now)
+    if abs_date is not None:
+        # Tight ±3-day window — explicit dates are intent-confident, so
+        # we don't need to fish across weeks.
+        return (abs_date - timedelta(days=3), abs_date + timedelta(days=3))
     m = _REL_DATE_RE.search(natural_language or "")
     if not m:
         return None

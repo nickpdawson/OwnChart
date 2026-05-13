@@ -24,6 +24,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import re
+
 from ..core.db import get_session
 from ..llm import call_with_tool, get_registry
 from ..llm.conversations import (
@@ -175,6 +177,40 @@ async def list_providers(_user: User = Depends(get_current_user)) -> list[Provid
     return [ProviderShape(**p) for p in available_providers()]
 
 
+# Episode-shaped question detector. When a /ask question carries a
+# clinical-event word (surgery, fracture, hospitalization, …), it's
+# almost always a "tell me about [event]" question that the episode
+# planner is purpose-built for — it pulls same-day clinical facts,
+# anesthesia, travel/life context, and aggregates HRV/sleep/RHR across
+# ±21-day windows around the anchor. Routing it through general_ask
+# instead misses the wearable context entirely and depends on
+# substring matches between the user's natural language and the
+# medically-codified labels (which often don't share words: "eye
+# surgery" vs "STRABISMUS RECESSION/RESCJ 1 VER MUSC").
+#
+# Detection is intentionally narrow — false negatives just fall back
+# to general_ask, which is fine. Caught during golden-path walk
+# 2026-05-13 PM when Nick asked "I had eye surgery on may 1 2026,
+# how did that affect my recovery (HR HRV) the week before and after?"
+# and got "Your record doesn't show an eye surgery on May 1."
+_EPISODE_KEYWORDS = re.compile(
+    r"\b("
+    r"surgery|surgical|operation|operative|surgeon|"
+    r"procedure|operated|"
+    r"fracture|broken|"
+    r"hospitalization|hospitali[sz]ed|admitted|admission|"
+    r"diagnos(?:ed|is)|"
+    r"injury|injured|"
+    r"er\s+visit|emergency\s+room"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_episode_shaped(text: str) -> bool:
+    return bool(_EPISODE_KEYWORDS.search(text or ""))
+
+
 @router.post("", response_model=ConversationDetail,
              status_code=status.HTTP_201_CREATED)
 async def create_conversation_route(
@@ -182,6 +218,50 @@ async def create_conversation_route(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
+    # Auto-route episode-shaped /ask questions to Episode Intelligence.
+    # Only when the caller hasn't already chosen a scope (whole_record
+    # is the default for /ask). Existing dossier / source / episode-
+    # scoped flows are untouched.
+    scope_type = (body.scope or {}).get("type", "whole_record")
+    if (
+        body.first_message
+        and body.kind == "ask"
+        and scope_type == "whole_record"
+        and _is_episode_shaped(body.first_message)
+    ):
+        from ..llm.episode_intelligence import run_episode_intelligence
+        ei_out = await run_episode_intelligence(
+            db, user,
+            natural_language=body.first_message,
+            question=body.first_message,
+        )
+        # EI creates its own Conversation as a side effect — fetch it
+        # and return in the standard shape.
+        ei_conv_id = ei_out.get("conversation_id")
+        if ei_conv_id:
+            ei_conv = await db.get(Conversation, uuid.UUID(ei_conv_id))
+            if ei_conv is not None and ei_conv.user_id == user.id:
+                msgs = list((await db.execute(
+                    select(ConversationMessage)
+                    .where(ConversationMessage.conversation_id == ei_conv.id)
+                    .order_by(ConversationMessage.created_at.asc())
+                )).scalars().all())
+                messages_out: list[MessageOut] = []
+                for m in msgs:
+                    cits = list((await db.execute(
+                        select(ConversationCitation)
+                        .where(ConversationCitation.message_id == m.id)
+                        .order_by(ConversationCitation.ordinal)
+                    )).scalars().all())
+                    messages_out.append(_message_out(m, cits))
+                return ConversationDetail(
+                    **_summary(ei_conv).model_dump(),
+                    messages=messages_out,
+                )
+        # If EI didn't produce a conversation for any reason, fall
+        # through to the standard general_ask path below — degraded
+        # but not broken.
+
     conv = await create_conversation(
         db, user,
         kind=body.kind,
