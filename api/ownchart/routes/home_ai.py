@@ -78,12 +78,30 @@ class RecentEpisode(BaseModel):
     summary: str | None
 
 
+class HomeInsight(BaseModel):
+    body: str
+    question: str | None = None
+    related_fact_ids: list[str] = Field(default_factory=list)
+    generated_at: datetime
+
+
 class HomeAiPartnerResponse(BaseModel):
     suggested_questions: list[SuggestedQuestion] = Field(default_factory=list)
     recent_conversations: list[RecentConversation] = Field(default_factory=list)
     recent_episodes: list[RecentEpisode] = Field(default_factory=list)
     make_sense_targets: list[MakeSenseTarget] = Field(default_factory=list)
     providers: list[dict[str, Any]] = Field(default_factory=list)
+    # Proactive LLM-generated observation, ~2-4 sentences. None when
+    # the model declined (sparse record) or generation failed.
+    # Generated once per UTC day per user; cached in-process.
+    insight: HomeInsight | None = None
+
+
+# Insight cache: (user_id, YYYY-MM-DD) → HomeInsight | None. None
+# means "we tried today and the model declined / failed — don't
+# re-try until tomorrow". Single-process scope is fine for V1; if
+# the API scales horizontally we'd move this to Redis.
+_INSIGHT_CACHE: dict[tuple, HomeInsight | None] = {}
 
 
 @router.get("/ai-partner", response_model=HomeAiPartnerResponse)
@@ -315,4 +333,121 @@ async def get_home_ai_partner(
                 detail="Ingested but you haven't asked about it yet.",
             ))
 
+    # -----------------------------------------------------------------
+    # Proactive insight (LLM-generated, cached per UTC day per user).
+    # Fails closed: any exception is logged and the response just
+    # omits the insight, never breaks the Home page.
+    # -----------------------------------------------------------------
+    try:
+        out.insight = await _build_home_insight(db, user, now)
+    except Exception as e:  # noqa: BLE001
+        from ..core.logger import get_logger
+        get_logger("ownchart.routes.home_ai").warning(
+            "home_insight_failed", user_id=str(user.id), error=f"{type(e).__name__}: {e}",
+        )
+
     return out
+
+
+async def _build_home_insight(
+    db: AsyncSession, user: User, now: datetime,
+) -> HomeInsight | None:
+    """Run the home_insight prompt over recent record state and cache
+    the result for the rest of the UTC day. Returns None when the
+    cache says we already tried today, when the model declined, or
+    when we have no facts to consider.
+    """
+    key = (user.id, now.date().isoformat())
+    if key in _INSIGHT_CACHE:
+        return _INSIGHT_CACHE[key]
+
+    cutoff_90 = now - timedelta(days=90)
+    cutoff_30 = now - timedelta(days=30)
+
+    recent_major = list((await db.execute(
+        select(ExtractedFact)
+        .where(ExtractedFact.date_start.isnot(None))
+        .where(ExtractedFact.date_start >= cutoff_90)
+        .where(ExtractedFact.review_state.in_(("confirmed", "corrected")))
+        .where(ExtractedFact.significance.in_((
+            "major_event", "major_procedure", "major_diagnosis", "major_medication",
+        )))
+        .order_by(ExtractedFact.date_start.desc())
+        .limit(20)
+    )).scalars().all())
+
+    recent_all = list((await db.execute(
+        select(ExtractedFact)
+        .where(ExtractedFact.date_start.isnot(None))
+        .where(ExtractedFact.date_start >= cutoff_30)
+        .where(ExtractedFact.review_state.in_(("confirmed", "corrected")))
+        .order_by(ExtractedFact.date_start.desc())
+        .limit(40)
+    )).scalars().all())
+
+    topics_list = list((await db.execute(
+        select(Topic).order_by(Topic.created_at.asc())
+    )).scalars().all())
+
+    recent_convo_titles = list((await db.execute(
+        select(Conversation.title)
+        .where(Conversation.user_id == user.id)
+        .where(Conversation.archived.is_(False))
+        .where(Conversation.title.isnot(None))
+        .where(Conversation.created_at >= cutoff_30)
+        .order_by(Conversation.created_at.desc())
+        .limit(10)
+    )).scalars().all())
+
+    # If the record is too sparse to observe anything, don't even
+    # spend the LLM call. Marker None in cache so we don't re-check
+    # until tomorrow.
+    if len(recent_all) < 5 and len(recent_major) == 0:
+        _INSIGHT_CACHE[key] = None
+        return None
+
+    def _fmt_fact(f: ExtractedFact) -> str:
+        d = f.date_start.date().isoformat() if f.date_start else "?"
+        sig = f.significance or "background"
+        return f"  - {d} | id={f.id} | {sig} | {f.fact_type} | {(f.display_label or f.label)[:120]}"
+
+    user_vars = {
+        "today": now.date().isoformat(),
+        "recent_major_facts": "\n".join(_fmt_fact(f) for f in recent_major)
+            or "  (none)",
+        "recent_all_facts": "\n".join(_fmt_fact(f) for f in recent_all[:20])
+            or "  (none)",
+        "topics": "\n".join(f"  - {t.name}" for t in topics_list)
+            or "  (none yet)",
+        "recent_conversation_titles": "\n".join(
+            f"  - {t}" for t in recent_convo_titles
+        ) or "  (none)",
+    }
+
+    from ..llm import call_with_tool, get_registry
+    prompt = get_registry().get("home_insight")
+    result = await call_with_tool(
+        db, user, prompt,
+        user_vars=user_vars,
+        purpose="home_insight",
+        tool_name="emit_home_insight",
+    )
+    if result.error and not result.tool_input:
+        _INSIGHT_CACHE[key] = None
+        return None
+    out = result.tool_input or {}
+    if out.get("refuse") or not out.get("body"):
+        _INSIGHT_CACHE[key] = None
+        return None
+
+    insight = HomeInsight(
+        body=str(out.get("body", "")).strip(),
+        question=(str(out["question"]).strip() if out.get("question") else None),
+        related_fact_ids=[
+            str(fid) for fid in (out.get("related_fact_ids") or [])
+            if isinstance(fid, str)
+        ],
+        generated_at=now,
+    )
+    _INSIGHT_CACHE[key] = insight
+    return insight

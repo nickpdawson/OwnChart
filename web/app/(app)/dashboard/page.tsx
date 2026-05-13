@@ -151,6 +151,32 @@ export default async function DashboardPage() {
         </p>
       )}
 
+      {partner?.insight && (
+        <section className="mt-8 rounded-xl border border-accent/30 bg-accent/5 p-5">
+          <p className="text-xs uppercase tracking-widest text-accent">
+            Something I noticed
+          </p>
+          <p className="mt-2 font-serif text-base leading-relaxed text-ink">
+            {partner.insight.body}
+          </p>
+          {partner.insight.question && (
+            <a
+              href={`/ask?q=${encodeURIComponent(partner.insight.question)}`}
+              className="mt-3 inline-block rounded-md border border-accent/40 px-3 py-1 text-sm text-accent hover:bg-accent/10"
+            >
+              {partner.insight.question}
+            </a>
+          )}
+          <p className="mt-3 text-[10px] uppercase tracking-widest text-muted">
+            Generated{" "}
+            {new Date(partner.insight.generated_at).toLocaleDateString(undefined, {
+              month: "short", day: "numeric",
+            })}
+            {" · "}refreshes daily
+          </p>
+        </section>
+      )}
+
       {/* --- Continue exploring ----------------------------------------- */}
       {stats && stats.topics.length > 0 && (
         <section className="mt-10">

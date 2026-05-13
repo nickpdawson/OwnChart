@@ -890,6 +890,12 @@ export type HomeAiPartner = {
     detail: string | null;
   }>;
   providers: ProviderShape[];
+  insight?: {
+    body: string;
+    question: string | null;
+    related_fact_ids: string[];
+    generated_at: string;
+  } | null;
 };
 
 export async function getHomeAiPartner(): Promise<HomeAiPartner> {
