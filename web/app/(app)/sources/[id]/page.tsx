@@ -7,11 +7,13 @@ import {
   listFactsForSource,
   listSourceCandidates,
 } from "@/lib/api";
+import { AnalyzePhotoButton } from "./AnalyzePhotoButton";
 import { ContributionLead } from "./ContributionLead";
 import { ExtractFactsButton } from "./ExtractFactsButton";
 import { MakeSenseButton } from "./MakeSenseButton";
 import { PageGallery } from "./PageGallery";
 import { ReviewSummary } from "./ReviewSummary";
+import { SetEventDateForm } from "./SetEventDateForm";
 
 type Params = { id: string };
 type Search = { show?: string };
@@ -85,6 +87,22 @@ export default async function SourceDetailPage({
       )}
 
       <MakeSenseButton sourceId={src.id} initialCandidates={candidates} />
+
+      {/* "No date" hint — only for personal uploads (photo/note/voice)
+          that have neither EXIF captured_at nor user_supplied_event_date. */}
+      {(src.source_type === "photo" || src.source_type === "note" ||
+        src.source_type === "voice_memo") &&
+        !src.captured_at && !src.user_supplied_event_date && (
+        <SetEventDateForm sourceId={src.id} />
+      )}
+
+      {/* "Vision analysis pending" prompt — only for photos imported in
+          a batch_import=true upload (camera-roll bulk import). */}
+      {src.source_type === "photo" &&
+        (meta as { vision_pending?: boolean }).vision_pending === true &&
+        (meta as { vision?: unknown }).vision == null && (
+        <AnalyzePhotoButton sourceId={src.id} />
+      )}
 
       {Array.isArray((meta as { nearby_clinical_events?: unknown[] }).nearby_clinical_events) &&
         ((meta as { nearby_clinical_events?: unknown[] }).nearby_clinical_events?.length ?? 0) > 0 && (

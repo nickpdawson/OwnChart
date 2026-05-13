@@ -364,7 +364,9 @@ async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[st
                 fact.significance_set_at = datetime.now(timezone.utc)
 
         # Persist the full structured output for the source detail page
-        # and for future debugging.
+        # and for future debugging. Clear vision_pending so the UI can
+        # stop spinning on bulk-import photos that were just analyzed
+        # via /sources/{id}/analyze.
         raw = dict(source.raw_metadata or {})
         raw["vision"] = {
             "description": result.description,
@@ -376,6 +378,7 @@ async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[st
             "model_run_id": str(result.model_run_id) if result.model_run_id else None,
             "safety_response": result.safety_response,
         }
+        raw["vision_pending"] = False
         source.raw_metadata = raw
 
         await db.commit()

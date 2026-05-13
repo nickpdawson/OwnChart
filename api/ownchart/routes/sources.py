@@ -105,12 +105,26 @@ async def get_source(
     )
 
 
+# Photo upload safeguards (2026-05-13 PM):
+# - Files smaller than this are almost always thumbnails, icons, or
+#   accidental empty captures. Reject with a clear 415 rather than
+#   spending vision tokens on them.
+_PHOTO_MIN_BYTES = 8 * 1024  # 8 KB
+# - Bulk camera-roll imports should NOT auto-trigger Claude vision
+#   per photo. Vision spend on 200 vacation photos is wasted; user
+#   wants to opt in via an explicit "Analyze these" action. iOS sends
+#   batch_import=true when the photo came from a multi-pick gesture.
+# - Intentional single-photo uploads (camera button, "add a photo of
+#   …") keep auto-vision on the V1 path.
+
+
 @router.post("/photo", status_code=status.HTTP_201_CREATED)
 async def upload_photo(
     file: UploadFile = File(...),
     caption: str | None = Form(default=None),
     event_date: datetime | None = Form(default=None),
     source_label: str | None = Form(default=None),
+    batch_import: bool = Form(default=False),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
@@ -128,6 +142,15 @@ async def upload_photo(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Empty file",
+        )
+    if len(raw) < _PHOTO_MIN_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                f"Image is {len(raw)} bytes — too small to be a useful "
+                "health photo (likely a thumbnail or icon). Send the "
+                "full-resolution image, or upload as a note instead."
+            ),
         )
 
     # Persist raw bytes content-addressed.
@@ -167,6 +190,13 @@ async def upload_photo(
             "thumbnails": meta.thumbnails,
             "deduplicated": blob.already_existed,
             "size_bytes": blob.size_bytes,
+            # batch_import=true means iOS imported this from a multi-
+            # pick camera-roll gesture; defer auto-vision to an
+            # explicit "Analyze these" action via POST /sources/{id}/analyze.
+            # batch_import=false (default) keeps the intentional single-
+            # upload path on auto-vision.
+            "batch_import": batch_import,
+            "vision_pending": batch_import,  # true if vision is deferred
         },
         captured_at=meta.captured_at,
         exif_metadata=meta.exif or None,
@@ -214,17 +244,18 @@ async def upload_photo(
     await db.commit()
     await db.refresh(src)
 
-    # Fire-and-forget Claude vision over the photo. The worker enriches
-    # the photo's life_context_event fact with body-parts / devices /
-    # setting description and flips low-relevance photos to source_only
-    # so casual photos don't pollute clinical retrieval. Doesn't block
-    # the upload response — frontend can refetch source detail to see
-    # the vision output once the worker completes (~5-10s).
-    try:
-        await enqueue_personal_photo_vision(str(src.id))
-    except Exception as e:  # noqa: BLE001
-        log.warning("photo_vision_enqueue_failed",
-                    source_id=str(src.id), error=str(e))
+    # Fire-and-forget Claude vision over the photo — unless this is a
+    # bulk camera-roll import (batch_import=true). For batched imports
+    # the photo lands in the vault but vision is deferred until the
+    # user explicitly triggers it via POST /sources/{id}/analyze.
+    # raw_metadata.vision_pending=true is the UI's signal that the
+    # photo is awaiting analysis.
+    if not batch_import:
+        try:
+            await enqueue_personal_photo_vision(str(src.id))
+        except Exception as e:  # noqa: BLE001
+            log.warning("photo_vision_enqueue_failed",
+                        source_id=str(src.id), error=str(e))
 
     log.info(
         "photo_uploaded",
@@ -1004,6 +1035,97 @@ def _job_readout(j: ExtractionJob) -> ExtractionJobReadout:
         started_at=j.started_at,
         completed_at=j.completed_at,
     )
+
+
+class PatchSourceBody(BaseModel):
+    event_date: datetime | None = None
+    caption: str | None = None
+    source_label: str | None = None
+
+
+@router.patch("/{source_id}", response_model=SourceDetail)
+async def patch_source(
+    source_id: uuid.UUID,
+    body: PatchSourceBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> SourceDetail:
+    """Mutate user-supplied fields on a SourceDocument.
+
+    Currently scoped to event_date / caption / source_label. The
+    primary use case is the "No date on this upload" hint on the
+    source detail page — user sets an event date after the fact so
+    the upload can participate in timeline / dossier retrieval.
+
+    Setting event_date also re-runs attach_nearby_clinical_events so
+    the "Same window in your record" panel populates with whatever
+    major facts lived in the now-known window.
+    """
+    src = await db.get(SourceDocument, source_id)
+    if src is None or src.owner_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    touched = False
+    if body.event_date is not None:
+        src.user_supplied_event_date = body.event_date
+        # captured_at is for EXIF-derived dates; user-supplied dates
+        # live in user_supplied_event_date. Both feed the upload
+        # context anchor.
+        touched = True
+    if body.caption is not None:
+        src.user_supplied_caption = body.caption.strip() or None
+        touched = True
+    if body.source_label is not None:
+        src.source_label = body.source_label.strip() or None
+        touched = True
+    if touched and src.source_type in {"photo", "note", "voice_memo"}:
+        await attach_nearby_clinical_events(db, user, src)
+    await db.commit()
+    await db.refresh(src)
+    return SourceDetail(
+        **_to_summary(src).model_dump(),
+        storage_uri=src.storage_uri,
+        hash=src.hash,
+        mime_type=src.mime_type,
+        acquired_at=src.acquired_at,
+        raw_metadata=src.raw_metadata,
+        exif_metadata=src.exif_metadata,
+        has_gps=bool(src.exif_metadata and src.exif_metadata.get("gps")),
+    )
+
+
+@router.post("/{source_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_photo_analyze(
+    source_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Explicit "Analyze these" trigger for a personal photo upload.
+
+    Companion to the batch_import=true upload mode: bulk camera-roll
+    imports land without auto-vision; this endpoint lets the user
+    cherry-pick which ones to actually analyze. Idempotent — if
+    raw_metadata.vision is already populated, returns the existing
+    job result without re-running. (Re-running would double-charge
+    for content that hasn't changed.)
+    """
+    src = await db.get(SourceDocument, source_id)
+    if src is None or src.owner_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if src.source_type != "photo":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"/analyze only supports photo sources, got {src.source_type}",
+        )
+    if (src.raw_metadata or {}).get("vision") is not None:
+        return {"status": "already_analyzed"}
+
+    job_id = await enqueue_personal_photo_vision(str(src.id))
+    # Mark pending so the UI can spin until the worker completes.
+    raw = dict(src.raw_metadata or {})
+    raw["vision_pending"] = True
+    src.raw_metadata = raw
+    await db.commit()
+    return {"status": "enqueued", "job_id": job_id}
 
 
 @router.post("/{source_id}/extract-facts", status_code=status.HTTP_202_ACCEPTED)
