@@ -299,19 +299,50 @@ async def _fetch_paginated(
     return out
 
 
+def _queries_for_vendor(ehr_vendor: str | None) -> list[dict[str, Any]]:
+    """Return the search-query manifest tuned for a vendor.
+
+    Default is the Epic-shaped list with MedicationRequest /
+    MedicationStatement / MedicationDispense as separate searches —
+    Epic exposes all three. Athena's R4 SMART V1 catalog collapses
+    medications into one `patient/Medication.read` scope, and the
+    corresponding search endpoint is `/Medication?patient=…`; the
+    three Epic-shaped med endpoints all 403 on Athena V1 apps. To
+    avoid noise (and to actually pull med data on Athena), swap the
+    three for one `/Medication` query.
+
+    See memory/reference_athena_smart_quirks.md for the catalog
+    details. Cerner/Oracle and other vendors fall through to the
+    default list until we hit a real gap.
+    """
+    if (ehr_vendor or "").lower() == "athena":
+        return [
+            q for q in PATIENT_SEARCH_QUERIES
+            if q.get("resourceType") not in
+                ("MedicationRequest", "MedicationStatement", "MedicationDispense")
+        ] + [
+            {"resourceType": "Medication", "label": "Medications", "params": {}},
+        ]
+    return PATIENT_SEARCH_QUERIES
+
+
 async def fetch_patient_record(
     *,
     fhir_base: str,
     access_token: str,
     patient_fhir_id: str,
+    ehr_vendor: str | None = None,
 ) -> FhirSnapshot:
     """Run all patient-scoped queries + reference chasing.
 
     Attachment binary fetch (DocumentReference content) is intentionally
     deferred to the route layer where we control SourceDocument creation.
+
+    `ehr_vendor` tunes the query manifest — see _queries_for_vendor.
     """
     base = _strip_slash(fhir_base)
     snap = FhirSnapshot()
+    queries = _queries_for_vendor(ehr_vendor)
     sem = asyncio.Semaphore(MAX_CONCURRENT_FHIR_REQUESTS)
 
     async with httpx.AsyncClient(
@@ -347,7 +378,7 @@ async def fetch_patient_record(
                 except Exception as e:  # noqa: BLE001
                     log.warning("fhir_query_failed", resource=rt, label=q.get("label"), error=str(e))
 
-        await asyncio.gather(*[run_query(q) for q in PATIENT_SEARCH_QUERIES])
+        await asyncio.gather(*[run_query(q) for q in queries])
 
         # Reference chasing — collect referenced resource ids, fetch.
         wanted: dict[str, set[str]] = {rt: set() for rt in REFERENCE_RESOURCE_TYPES}

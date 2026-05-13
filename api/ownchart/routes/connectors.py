@@ -110,6 +110,34 @@ def _client_id_env_for(ehr_vendor: str) -> str:
     return f"OWNCHART_{ehr_vendor.upper()}_CLIENT_ID"
 
 
+# Per-vendor SMART scope defaults. Epic accepts the wildcard
+# `patient/*.read` and grants all approved resource scopes; Athena's
+# R4 SMART V1 catalog does NOT include MedicationRequest /
+# MedicationStatement / MedicationDispense (it consolidates into
+# `patient/Medication.read`), so the wildcard fails Okta policy
+# evaluation and the request gets access_denied. Other vendors fall
+# through to the Epic-shaped default until we hit a gap.
+#
+# See memory/reference_athena_smart_quirks.md for the full Athena
+# catalog and why offline_access is intentionally omitted.
+_ATHENA_DEFAULT_SCOPES = (
+    "openid fhirUser launch/patient "
+    "patient/Patient.read patient/Observation.read patient/Condition.read "
+    "patient/Medication.read patient/AllergyIntolerance.read "
+    "patient/Procedure.read patient/Immunization.read "
+    "patient/DiagnosticReport.read patient/Encounter.read "
+    "patient/CarePlan.read patient/CareTeam.read patient/Goal.read "
+    "patient/DocumentReference.read"
+)
+_DEFAULT_SCOPES = "openid fhirUser launch/patient patient/*.read"
+
+
+def _default_scopes_for(ehr_vendor: str | None) -> str:
+    if (ehr_vendor or "").lower() == "athena":
+        return _ATHENA_DEFAULT_SCOPES
+    return _DEFAULT_SCOPES
+
+
 # ---------------------------------------------------------------------------
 # Listing
 # ---------------------------------------------------------------------------
@@ -218,7 +246,7 @@ async def create_connector(
         )
 
     client_id = os.environ.get(_client_id_env_for(body.ehr_vendor))
-    scopes = body.scopes or "openid fhirUser launch/patient patient/*.read"
+    scopes = body.scopes or _default_scopes_for(body.ehr_vendor)
 
     c = ProviderConnector(
         slug=slug,
@@ -745,6 +773,7 @@ async def sync_connection(
         fhir_base=connector.fhir_base,
         access_token=access_token,
         patient_fhir_id=conn.patient_fhir_id,
+        ehr_vendor=connector.ehr_vendor,
     )
 
     # Persist the raw bundle as one SourceDocument (source_type='fhir_bundle').

@@ -1,8 +1,10 @@
 import Link from "next/link";
+import { DemoTour } from "./DemoTour";
 import {
   getDashboardStats,
   getDiscover,
   getHomeAiPartner,
+  getInstanceInfo,
   getMe,
   getNotableEvents,
   getTimeline,
@@ -41,7 +43,7 @@ export default async function DashboardPage() {
   // Fetch home modules in parallel. A failure on any one shouldn't
   // blank the whole home — render what we can, surface the error
   // inline.
-  const [statsR, timelineR, discoverR, meR, notableR, partnerR] =
+  const [statsR, timelineR, discoverR, meR, notableR, partnerR, instanceR] =
     await Promise.allSettled([
       getDashboardStats(),
       getTimeline({ grain: "year" }),
@@ -49,6 +51,7 @@ export default async function DashboardPage() {
       getMe(),
       getNotableEvents(6),
       getHomeAiPartner(),
+      getInstanceInfo(),
     ]);
 
   const stats = statsR.status === "fulfilled" ? statsR.value : null;
@@ -59,6 +62,8 @@ export default async function DashboardPage() {
   const partner: HomeAiPartner | null =
     partnerR.status === "fulfilled" ? partnerR.value : null;
   const recentEpisodes = partner?.recent_episodes ?? [];
+  const isDemo =
+    instanceR.status === "fulfilled" && !!instanceR.value?.demo_mode;
 
   // Personalized greeting is intentionally simple — the prior
   // regex-based first-name guess produced bad output for emails
@@ -150,6 +155,8 @@ export default async function DashboardPage() {
           Once you ingest a source, your record will appear here.
         </p>
       )}
+
+      <DemoTour demoMode={isDemo} />
 
       {partner?.insight && (
         <section className="mt-8 rounded-xl border border-accent/30 bg-accent/5 p-5">
