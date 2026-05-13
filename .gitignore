@@ -166,3 +166,20 @@ data-demo/
 # infra/demo_data/sample_patient.json (intentionally tracked — synthetic demo data)
 infra/demo_data/*.json
 !infra/demo_data/sample_patient.json
+
+# ---- Local-only operator artifacts — NEVER commit --------------------------
+# Real secrets and corruption-recovery backups. Especially private/ and
+# athena.txt — those carry real credentials that should never reach
+# GitHub. The .git.broken-* pattern matches recovery backups from Drive-
+# sync incidents; useful locally, never in the public repo.
+/private/
+/athena.txt
+/anthropic_dev_key.txt
+.git.broken-*/
+# Top-level scratch / note files developers tend to leave on a working tree
+VOICE_MEMOS_NOTE.md
+/*_NOTE.md
+/*_SCRATCH.md
+/*.txt
+# But the LICENSE.txt convention occasionally shows up — un-ignore if needed:
+!/LICENSE.txt

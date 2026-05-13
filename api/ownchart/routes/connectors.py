@@ -112,22 +112,39 @@ def _client_id_env_for(ehr_vendor: str) -> str:
 
 # Per-vendor SMART scope defaults. Epic accepts the wildcard
 # `patient/*.read` and grants all approved resource scopes; Athena's
-# R4 SMART V1 catalog does NOT include MedicationRequest /
-# MedicationStatement / MedicationDispense (it consolidates into
-# `patient/Medication.read`), so the wildcard fails Okta policy
-# evaluation and the request gets access_denied. Other vendors fall
-# through to the Epic-shaped default until we hit a gap.
+# R4 SMART V1 catalog is more restrictive — wildcard fails Okta
+# policy evaluation. Two specific Athena quirks shape the default:
 #
-# See memory/reference_athena_smart_quirks.md for the full Athena
-# catalog and why offline_access is intentionally omitted.
+# 1. V1 has no per-patient Medication SEARCH endpoint. The V1 scope
+#    `patient/Medication.read` covers Medication-by-id reads only;
+#    `GET /Medication?patient=...` returns 403. To actually pull
+#    a patient's medication list from Athena, we need V2-shaped
+#    scopes (`patient/MedicationRequest.rs`, MedicationStatement,
+#    MedicationDispense), which Athena's dev portal exposes
+#    separately. Including BOTH V1 and V2 med scopes is harmless
+#    when the V2 ones are approved on the app and gives the
+#    fetcher real data to pull.
+#
+# 2. offline_access is gated by a separate Okta authorization-
+#    server policy from FHIR scopes. Including it when the app
+#    doesn't have it pre-approved causes the whole request to
+#    fail access_denied. We omit it from the default; can be
+#    added per-connector via DB override once the operator gets
+#    Athena dev support to enable it.
+#
+# See memory/reference_athena_smart_quirks.md for the full catalog.
 _ATHENA_DEFAULT_SCOPES = (
     "openid fhirUser launch/patient "
+    # V1 resource scopes
     "patient/Patient.read patient/Observation.read patient/Condition.read "
     "patient/Medication.read patient/AllergyIntolerance.read "
     "patient/Procedure.read patient/Immunization.read "
     "patient/DiagnosticReport.read patient/Encounter.read "
     "patient/CarePlan.read patient/CareTeam.read patient/Goal.read "
-    "patient/DocumentReference.read"
+    "patient/DocumentReference.read "
+    # V2 medication scopes — required for patient-scoped med SEARCH
+    "patient/MedicationRequest.rs patient/MedicationStatement.rs "
+    "patient/MedicationDispense.rs"
 )
 _DEFAULT_SCOPES = "openid fhirUser launch/patient patient/*.read"
 
