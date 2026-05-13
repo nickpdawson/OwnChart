@@ -22,7 +22,7 @@ export function AddProvider() {
   // manual fields
   const [manualName, setManualName] = useState("");
   const [manualUrl, setManualUrl] = useState("");
-  const [manualVendor, setManualVendor] = useState<"athena" | "cerner" | "epic" | "unknown">("athena");
+  const [manualVendor, setManualVendor] = useState<"athena" | "cerner" | "epic" | "modmed" | "unknown">("athena");
 
   // athena fields
   const [athenaName, setAthenaName] = useState("");
@@ -286,6 +286,7 @@ export function AddProvider() {
               <option value="athena">Athena</option>
               <option value="cerner">Cerner / Oracle Health</option>
               <option value="epic">Epic</option>
+              <option value="modmed">ModMed (Modernizing Medicine)</option>
               <option value="unknown">Other / unknown</option>
             </select>
           </label>

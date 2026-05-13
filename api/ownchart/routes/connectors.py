@@ -148,10 +148,29 @@ _ATHENA_DEFAULT_SCOPES = (
 )
 _DEFAULT_SCOPES = "openid fhirUser launch/patient patient/*.read"
 
+# ModMed (Modernizing Medicine) — Drummond-certified FHIR R4 API,
+# per-practice fhir_base (NOT multi-tenant like Athena), specialty-
+# focused EHR (derm / ophth / ortho / GI / plastic / urology).
+# First-connect untested as of 2026-05-13 (Nick's app is "Pending for
+# Approval"). Start with the standard wildcard; if it fails at first
+# connect like Athena did, swap to an explicit per-resource list and
+# update memory/reference_modmed_smart_quirks.md.
+#
+# Drummond cert constrains them to USCDI shapes, so this scope set
+# should cover Patient, Condition, AllergyIntolerance, MedicationRequest,
+# Observation, Procedure, Immunization, DiagnosticReport, DocumentReference,
+# CarePlan, CareTeam, Goal, Encounter, Provenance.
+_MODMED_DEFAULT_SCOPES = (
+    "openid fhirUser launch/patient offline_access patient/*.read"
+)
+
 
 def _default_scopes_for(ehr_vendor: str | None) -> str:
-    if (ehr_vendor or "").lower() == "athena":
+    v = (ehr_vendor or "").lower()
+    if v == "athena":
         return _ATHENA_DEFAULT_SCOPES
+    if v == "modmed":
+        return _MODMED_DEFAULT_SCOPES
     return _DEFAULT_SCOPES
 
 
