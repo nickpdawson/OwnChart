@@ -55,16 +55,25 @@ system: |
 user_template: |
   Today: {today}
 
+  Trigger mode: {trigger_mode}
+  {trigger_hint}
+
+  Recent EHR / HK syncs (last 7 days — what's freshly arriving):
+  {recent_syncs}
+
   Recent facts (last 90 days, major significance, newest first):
   {recent_major_facts}
 
   Recent confirmed facts (last 30 days, any significance):
   {recent_all_facts}
 
-  Patient's dossiers (topic names):
+  Active dossiers (have facts modified or conversations within the last 30 days):
+  {active_dossiers}
+
+  All dossiers (the patient's organizing structure):
   {topics}
 
-  Recent conversation titles the patient has saved:
+  Recent conversation titles (what the patient has been curious about):
   {recent_conversation_titles}
 
   Make one observation worth surfacing on their Home page.

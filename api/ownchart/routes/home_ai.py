@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -351,14 +351,20 @@ async def get_home_ai_partner(
 
 async def _build_home_insight(
     db: AsyncSession, user: User, now: datetime,
+    *,
+    force_refresh: bool = False,
 ) -> HomeInsight | None:
     """Run the home_insight prompt over recent record state and cache
     the result for the rest of the UTC day. Returns None when the
     cache says we already tried today, when the model declined, or
     when we have no facts to consider.
+
+    `force_refresh=True` (manual "Make sense of what changed" trigger)
+    bypasses the cache and adds a hint to the user_template focusing
+    the model on what's new since the last refresh.
     """
     key = (user.id, now.date().isoformat())
-    if key in _INSIGHT_CACHE:
+    if not force_refresh and key in _INSIGHT_CACHE:
         return _INSIGHT_CACHE[key]
 
     cutoff_90 = now - timedelta(days=90)
@@ -401,22 +407,77 @@ async def _build_home_insight(
 
     # If the record is too sparse to observe anything, don't even
     # spend the LLM call. Marker None in cache so we don't re-check
-    # until tomorrow.
+    # until tomorrow (skipped on force_refresh).
     if len(recent_all) < 5 and len(recent_major) == 0:
-        _INSIGHT_CACHE[key] = None
+        if not force_refresh:
+            _INSIGHT_CACHE[key] = None
         return None
+
+    # Recent EHR/HK syncs (last 7d) — what's freshly arriving so the
+    # model can lean into "since your Bridger sync this morning, …"
+    # framing when relevant.
+    cutoff_7 = now - timedelta(days=7)
+    from ..models.provider_connection import ProviderConnection
+    from ..models.provider_connector import ProviderConnector
+    recent_syncs = list((await db.execute(
+        select(ProviderConnection, ProviderConnector.name, ProviderConnector.ehr_vendor)
+        .join(ProviderConnector,
+              ProviderConnector.id == ProviderConnection.connector_id)
+        .where(ProviderConnection.user_id == user.id)
+        .where(ProviderConnection.last_synced_at.isnot(None))
+        .where(ProviderConnection.last_synced_at >= cutoff_7)
+        .order_by(ProviderConnection.last_synced_at.desc())
+    )).all())
+
+    # Active dossiers: topics with conversations in last 30d OR new
+    # facts within their alias clause in last 7d. We approximate with
+    # the convo-tied set (cheap) — the new-facts join is O(topics ×
+    # facts) and the value-per-hour is marginal.
+    active_topic_slugs = set((await db.execute(
+        select(Conversation.scope)
+        .where(Conversation.user_id == user.id)
+        .where(Conversation.archived.is_(False))
+        .where(Conversation.last_message_at >= cutoff_30)
+    )).scalars().all())
+    active_slugs: set[str] = set()
+    for sc in active_topic_slugs:
+        if isinstance(sc, dict):
+            slug = sc.get("topic_slug")
+            if isinstance(slug, str):
+                active_slugs.add(slug)
+    active_topics = [t for t in topics_list if t.slug in active_slugs]
 
     def _fmt_fact(f: ExtractedFact) -> str:
         d = f.date_start.date().isoformat() if f.date_start else "?"
         sig = f.significance or "background"
         return f"  - {d} | id={f.id} | {sig} | {f.fact_type} | {(f.display_label or f.label)[:120]}"
 
+    def _fmt_sync(row) -> str:
+        conn, name, vendor = row
+        when = conn.last_synced_at.date().isoformat() if conn.last_synced_at else "?"
+        counts = conn.cached_resource_counts or {}
+        top_counts = ", ".join(f"{k}={v}" for k, v in sorted(
+            counts.items(), key=lambda kv: -kv[1])[:5]) if counts else "no counts"
+        return f"  - {when} | {name} ({vendor or 'unknown'}): {top_counts}"
+
     user_vars = {
         "today": now.date().isoformat(),
+        "trigger_mode": "manual refresh" if force_refresh else "daily auto",
+        "trigger_hint": (
+            "The patient just clicked 'Make sense of what changed' — focus "
+            "especially on what's new since they last looked at their record."
+            if force_refresh else
+            "Daily auto-render — observe whatever stands out about the "
+            "current state."
+        ),
+        "recent_syncs": "\n".join(_fmt_sync(r) for r in recent_syncs)
+            or "  (no syncs in the last 7 days)",
         "recent_major_facts": "\n".join(_fmt_fact(f) for f in recent_major)
             or "  (none)",
         "recent_all_facts": "\n".join(_fmt_fact(f) for f in recent_all[:20])
             or "  (none)",
+        "active_dossiers": "\n".join(f"  - {t.name}" for t in active_topics)
+            or "  (none with recent activity)",
         "topics": "\n".join(f"  - {t.name}" for t in topics_list)
             or "  (none yet)",
         "recent_conversation_titles": "\n".join(
@@ -450,4 +511,30 @@ async def _build_home_insight(
         generated_at=now,
     )
     _INSIGHT_CACHE[key] = insight
+    return insight
+
+
+@router.post("/insight/refresh", response_model=HomeInsight)
+async def refresh_home_insight(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> HomeInsight:
+    """Manual "Make sense of what changed" trigger. Bypasses the
+    daily cache, runs the prompt with a force_refresh hint focused
+    on recent change rather than generic observation, returns the
+    fresh insight.
+
+    Returns 422 if the record is too sparse for the model to observe
+    anything (rather than the daily auto-render's silent skip).
+    """
+    now = datetime.now(timezone.utc)
+    insight = await _build_home_insight(db, user, now, force_refresh=True)
+    if insight is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Not enough recent activity to observe a meaningful change. "
+                "Add more sources or wait for sync activity."
+            ),
+        )
     return insight

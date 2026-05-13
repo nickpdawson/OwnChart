@@ -148,6 +148,50 @@ async def run_provider_pattern_triage(
     return _job_to_out(job, candidates)
 
 
+class PatternSuppressionStats(BaseModel):
+    accepted_patterns: int
+    suppressed_member_facts: int
+    last_accepted_at: datetime | None = None
+
+
+@router.get("/review/pattern-stats", response_model=PatternSuppressionStats)
+async def pattern_suppression_stats(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> PatternSuppressionStats:
+    """Aggregate view of how much review burden patterns have absorbed.
+
+    Counts (accepted_patterns) the medication_pattern / provider_pattern
+    candidates this user has accepted, and the total number of member
+    facts those acceptances suppressed (sum of array_length(fact_ids)).
+    Surfaced on the Review Inbox header so the user can SEE that
+    pattern compression is actually doing work.
+    """
+    from sqlalchemy import func as _func
+    rows = (await db.execute(
+        select(
+            _func.count(SensemakingCandidate.id),
+            _func.coalesce(
+                _func.sum(_func.coalesce(
+                    _func.array_length(SensemakingCandidate.fact_ids, 1), 0,
+                )),
+                0,
+            ),
+            _func.max(SensemakingCandidate.disposition_at),
+        )
+        .where(SensemakingCandidate.user_id == user.id)
+        .where(SensemakingCandidate.disposition == "accepted")
+        .where(SensemakingCandidate.candidate_type.in_(
+            ("medication_pattern", "provider_pattern"),
+        ))
+    )).one()
+    return PatternSuppressionStats(
+        accepted_patterns=int(rows[0] or 0),
+        suppressed_member_facts=int(rows[1] or 0),
+        last_accepted_at=rows[2],
+    )
+
+
 @router.post("/sources/{source_id}/sensemake", response_model=JobOut,
              status_code=status.HTTP_201_CREATED)
 async def run_source_sensemake(
