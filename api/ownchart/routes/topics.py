@@ -882,7 +882,7 @@ async def ask_followup(
     # match) with free-text retrieval against the new question. Dedupe
     # by id, cap at 60 to keep the prompt bounded.
     topic_facts = await facts_for_topic(db, topic, limit=200)
-    question_facts = await search_facts(db, body.question, limit=24)
+    question_facts = await search_facts(db, body.question, limit=24, user_id=user.id)
     seen: dict[uuid.UUID, ExtractedFact] = {}
     for f in topic_facts + question_facts:
         if f.id not in seen:

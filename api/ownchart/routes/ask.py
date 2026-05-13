@@ -119,7 +119,9 @@ async def ask(
     # the cap rarely truncates anything load-bearing, but giving the LLM
     # a bit more headroom on "tell me the story of X" queries is cheap
     # and reduces "I don't see X in your record" misses where X is real.
-    facts = await search_facts(db, body.question, limit=40)
+    # user_id makes search_facts pattern-aware (re-include facts
+    # suppressed via accepted medication/provider pattern compression).
+    facts = await search_facts(db, body.question, limit=40, user_id=user.id)
     prompt = get_registry().get("ask_query")
     result = await call_with_tool(
         db, user, prompt,
