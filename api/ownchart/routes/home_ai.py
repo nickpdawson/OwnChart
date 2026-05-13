@@ -429,18 +429,19 @@ async def _build_home_insight(
         .order_by(ProviderConnection.last_synced_at.desc())
     )).all())
 
-    # Active dossiers: topics with conversations in last 30d OR new
-    # facts within their alias clause in last 7d. We approximate with
-    # the convo-tied set (cheap) — the new-facts join is O(topics ×
-    # facts) and the value-per-hour is marginal.
-    active_topic_slugs = set((await db.execute(
+    # Active dossiers: topics with conversations in last 30d.
+    # Conversation.scope is JSONB → dict in Python, which isn't
+    # hashable, so we extract slugs into a plain set first instead of
+    # set-ing the dicts directly (caught Nick's golden-path walk
+    # 2026-05-13).
+    scope_rows = list((await db.execute(
         select(Conversation.scope)
         .where(Conversation.user_id == user.id)
         .where(Conversation.archived.is_(False))
         .where(Conversation.last_message_at >= cutoff_30)
     )).scalars().all())
     active_slugs: set[str] = set()
-    for sc in active_topic_slugs:
+    for sc in scope_rows:
         if isinstance(sc, dict):
             slug = sc.get("topic_slug")
             if isinstance(slug, str):
