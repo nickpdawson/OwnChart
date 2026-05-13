@@ -86,6 +86,46 @@ export default async function SourceDetailPage({
 
       <MakeSenseButton sourceId={src.id} initialCandidates={candidates} />
 
+      {Array.isArray((meta as { nearby_clinical_events?: unknown[] }).nearby_clinical_events) &&
+        ((meta as { nearby_clinical_events?: unknown[] }).nearby_clinical_events?.length ?? 0) > 0 && (
+        <section className="mt-6 rounded-xl border border-accent/20 bg-accent/5 p-4">
+          <p className="text-xs uppercase tracking-widest text-accent">
+            Same window in your record
+          </p>
+          <p className="mt-1 text-sm text-muted">
+            Major clinical events within ±7 days of when this was
+            captured. Click through to confirm or explore the link.
+          </p>
+          <ul className="mt-3 space-y-1.5 text-sm">
+            {((meta as { nearby_clinical_events: {
+              fact_id: string;
+              label: string;
+              date: string | null;
+              fact_type: string;
+              significance: string;
+              source_label: string | null;
+              days_offset: number | null;
+            }[] }).nearby_clinical_events).map((e) => (
+              <li key={e.fact_id} className="flex flex-wrap items-baseline gap-2">
+                <span className="text-[10px] uppercase tracking-widest text-muted">
+                  {e.significance?.replace(/_/g, " ") ?? e.fact_type}
+                </span>
+                <span className="font-medium">{e.label}</span>
+                <span className="text-xs text-muted">
+                  {e.date}
+                  {e.days_offset !== null && e.days_offset !== 0
+                    ? ` · ${e.days_offset > 0 ? "+" : ""}${e.days_offset}d`
+                    : " · same day"}
+                </span>
+                {e.source_label && (
+                  <span className="text-xs text-muted">· {e.source_label}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {/* Technical metadata behind a disclosure per docs/07 R2: the
           source page leads with what this source *contributed*, not
           with file-inspector content. Provenance and integrity stay
