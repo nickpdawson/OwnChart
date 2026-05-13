@@ -349,7 +349,21 @@ async def promote_candidate_route(
 
     # Seed members: anchor (primary), same-day procedures (component),
     # same-day conditions (context), travel events (context).
+    #
+    # Dedup on (member_type, subject_id) — uq_episode_members_unique
+    # enforces uniqueness on (episode_id, member_type, subject_id), and
+    # the planner can emit the same source twice (once per fact-anchor
+    # that points to it). Without this dedup the bulk insert hit
+    # IntegrityError and Save-as-Episode 500'd for any episode whose
+    # planner produced multi-pointed sources. Caught during golden-path
+    # walk 2026-05-13.
+    seen: set[tuple[str, uuid.UUID]] = set()
+
     def add_member(member_type: str, subject_id: uuid.UUID, role: str, ordinal: int) -> None:
+        key = (member_type, subject_id)
+        if key in seen:
+            return
+        seen.add(key)
         db.add(EpisodeMember(
             episode_id=ep.id,
             member_type=member_type,
