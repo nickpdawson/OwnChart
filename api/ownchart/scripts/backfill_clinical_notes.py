@@ -125,15 +125,30 @@ async def main(
             if dry_run:
                 continue
 
+            err_msg: str | None = None
+            res = None
             try:
                 res = await extract_clinical_note(db, user, source)
+                if res.error:
+                    err_msg = res.error
             except Exception as e:  # noqa: BLE001
+                err_msg = f"{type(e).__name__}: {e}"
+
+            if err_msg:
                 errored += 1
-                print(f"    ERROR: {type(e).__name__}: {e}")
-                continue
-            if res.error:
-                errored += 1
-                print(f"    ERROR: {res.error}")
+                print(f"    ERROR: {err_msg}")
+                # Stamp the source so the UI / future inbox can surface
+                # a Retry. Re-fetch in case the extractor's own mid-
+                # transaction commit left stale state on the instance.
+                from datetime import datetime as _dt, timezone as _tz
+                src2 = await db.get(SourceDocument, source.id)
+                if src2 is not None:
+                    rm = dict(src2.raw_metadata or {})
+                    rm["extraction_status"] = "failed"
+                    rm["extraction_error"] = err_msg[:1000]
+                    rm["extraction_failed_at"] = _dt.now(_tz.utc).isoformat()
+                    src2.raw_metadata = rm
+                    await db.commit()
                 continue
             processed += 1
             facts_total += res.fact_count

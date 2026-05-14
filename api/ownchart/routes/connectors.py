@@ -1017,8 +1017,17 @@ async def _extract_clinical_note_in_background(
     source_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> None:
+    """Background-task wrapper. Visible failures are required —
+    a silent log line is not enough — so this stamps
+    raw_metadata.extraction_status = 'failed' + extraction_error on
+    the SourceDocument when anything goes wrong, and the audit-event
+    feed records the failure for the inbox. The UI can then offer a
+    Retry button on the affected source.
+    """
+    from datetime import datetime as _dt, timezone as _tz
     from ..core.db import SessionLocal
     from ..extract.clinical_note import extract_clinical_note
+    from ..models.audit_event import AuditEvent
     from ..models.source_document import SourceDocument as _Src
     from ..models.user import User as _User
 
@@ -1027,11 +1036,34 @@ async def _extract_clinical_note_in_background(
         usr = await db.get(_User, user_id)
         if src is None or usr is None:
             return
+        error_msg: str | None = None
         try:
-            await extract_clinical_note(db, usr, src)
+            res = await extract_clinical_note(db, usr, src)
+            error_msg = res.error  # extractor's own non-exception errors
         except Exception as e:  # noqa: BLE001
+            error_msg = f"{type(e).__name__}: {e}"
             log.warning(
                 "clinical_note_extract_background_failed",
                 source_id=str(source_id),
-                error=f"{type(e).__name__}: {e}",
+                error=error_msg,
             )
+
+        if error_msg:
+            # Stamp the source so the UI / a future inbox surface can
+            # show "extraction failed — Retry" affordances. Refetch
+            # in case the failed extractor mutation didn't commit.
+            src2 = await db.get(_Src, source_id)
+            if src2 is not None:
+                rm = dict(src2.raw_metadata or {})
+                rm["extraction_status"] = "failed"
+                rm["extraction_error"] = error_msg[:1000]
+                rm["extraction_failed_at"] = _dt.now(_tz.utc).isoformat()
+                src2.raw_metadata = rm
+                db.add(AuditEvent(
+                    user_id=user_id,
+                    event_type="clinical_note_extract_failed",
+                    subject_type="source_document",
+                    subject_id=str(source_id),
+                    detail={"error": error_msg[:1000]},
+                ))
+                await db.commit()

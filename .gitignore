@@ -183,3 +183,7 @@ VOICE_MEMOS_NOTE.md
 /*.txt
 # But the LICENSE.txt convention occasionally shows up — un-ignore if needed:
 !/LICENSE.txt
+
+# Personal session logs / morning notes — not for public history.
+MORNING_LOG_*.md
+IOS_PARITY_2026_*.md
