@@ -34,15 +34,20 @@ export default async function EpisodePage({
     throw e;
   }
 
+  const displayTitle = ep.display_title || ep.title;
+  const aliases = ep.aliases ?? [];
+
   return (
     <div className="max-w-4xl">
+      {/* Breadcrumb — "Event" is the product noun. The internal table
+          stays `episodes` for stability; the user sees Event. */}
       <p className="text-sm uppercase tracking-widest text-muted">
         <Link href="/timeline" className="hover:underline">
           Timeline
         </Link>{" "}
-        · episode · {ep.kind}
+        · Event · {ep.kind}
       </p>
-      <h1 className="mt-2 font-serif text-3xl">{ep.title}</h1>
+      <h1 className="mt-2 font-serif text-3xl">{displayTitle}</h1>
       <p className="mt-1 text-sm text-muted">
         {fmtDate(ep.date_start)}
         {ep.date_end && ep.date_end !== ep.date_start && (
@@ -50,6 +55,19 @@ export default async function EpisodePage({
         )}
         {" · "}created by {ep.created_by}
       </p>
+
+      {aliases.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {aliases.map((a) => (
+            <span
+              key={a}
+              className="rounded-full border border-accent/30 bg-accent/5 px-2.5 py-0.5 text-xs text-accent"
+            >
+              {a}
+            </span>
+          ))}
+        </div>
+      )}
 
       {ep.summary && (
         <p className="mt-4 max-w-2xl font-serif text-lg leading-relaxed text-ink">

@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -244,6 +244,7 @@ async def _question_mentions_event_alias(
              status_code=status.HTTP_201_CREATED)
 async def create_conversation_route(
     body: CreateRequest,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
@@ -265,38 +266,47 @@ async def create_conversation_route(
         ):
             should_route_to_ei = True
     if should_route_to_ei:
-        from ..llm.episode_intelligence import run_episode_intelligence
-        ei_out = await run_episode_intelligence(
-            db, user,
-            natural_language=body.first_message,
-            question=body.first_message,
+        # P0-3 (2026-05-14): seed the conversation synchronously and
+        # schedule the planner+LLM as a background task. Returns to
+        # the client in <1s with kind=episode_intelligence and a user
+        # message; the assistant message lands when the background
+        # task finishes (~60s). The frontend polls.
+        #
+        # Previously this awaited run_episode_intelligence inline,
+        # which tied up the HTTP request for the full LLM call and
+        # tripped on 504 / 500 timeouts on Cloudflare and inside the
+        # Next.js proxy.
+        from ..llm.episode_intelligence import (
+            seed_episode_intelligence_conversation,
+            run_episode_intelligence_in_background,
         )
-        # EI creates its own Conversation as a side effect — fetch it
-        # and return in the standard shape.
-        ei_conv_id = ei_out.get("conversation_id")
-        if ei_conv_id:
-            ei_conv = await db.get(Conversation, uuid.UUID(ei_conv_id))
-            if ei_conv is not None and ei_conv.user_id == user.id:
-                msgs = list((await db.execute(
-                    select(ConversationMessage)
-                    .where(ConversationMessage.conversation_id == ei_conv.id)
-                    .order_by(ConversationMessage.created_at.asc())
-                )).scalars().all())
-                messages_out: list[MessageOut] = []
-                for m in msgs:
-                    cits = list((await db.execute(
-                        select(ConversationCitation)
-                        .where(ConversationCitation.message_id == m.id)
-                        .order_by(ConversationCitation.ordinal)
-                    )).scalars().all())
-                    messages_out.append(_message_out(m, cits))
-                return ConversationDetail(
-                    **_summary(ei_conv).model_dump(),
-                    messages=messages_out,
-                )
-        # If EI didn't produce a conversation for any reason, fall
-        # through to the standard general_ask path below — degraded
-        # but not broken.
+        ei_conv = await seed_episode_intelligence_conversation(
+            db, user, first_message=body.first_message,
+        )
+        background_tasks.add_task(
+            run_episode_intelligence_in_background,
+            conversation_id=ei_conv.id,
+            user_id=user.id,
+            natural_language=body.first_message,
+        )
+        # Fetch the seeded conv + its single user message and return.
+        msgs = list((await db.execute(
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_id == ei_conv.id)
+            .order_by(ConversationMessage.created_at.asc())
+        )).scalars().all())
+        messages_out: list[MessageOut] = []
+        for m in msgs:
+            cits = list((await db.execute(
+                select(ConversationCitation)
+                .where(ConversationCitation.message_id == m.id)
+                .order_by(ConversationCitation.ordinal)
+            )).scalars().all())
+            messages_out.append(_message_out(m, cits))
+        return ConversationDetail(
+            **_summary(ei_conv).model_dump(),
+            messages=messages_out,
+        )
 
     conv = await create_conversation(
         db, user,
@@ -332,6 +342,7 @@ async def list_conversations(
     kind: str | None = Query(default=None),
     starred: bool | None = Query(default=None),
     archived: bool | None = Query(default=None),
+    anchor_fact_id: str | None = Query(default=None),
     limit: int = Query(default=50, le=200),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
@@ -349,6 +360,14 @@ async def list_conversations(
         stmt = stmt.where(Conversation.starred == starred)
     if archived is not None:
         stmt = stmt.where(Conversation.archived == archived)
+    if anchor_fact_id:
+        # Powers the Event page's "Conversations about this Event"
+        # section. Conversations created via Episode Intelligence
+        # stamp scope.anchor_fact_id at completion time.
+        stmt = stmt.where(
+            text("conversations.scope->>'anchor_fact_id' = :afid")
+            .bindparams(afid=anchor_fact_id)
+        )
     if q:
         # Q-B1 (2026-05-11 PM): full-text over message bodies via the
         # tsvector index added in migration 0023, OR title match.

@@ -922,6 +922,8 @@ export type EpisodeMember = {
 export type EpisodeDetail = {
   id: string;
   title: string;
+  display_title: string | null;
+  aliases: string[];
   summary: string | null;
   kind: string;
   date_start: string | null;

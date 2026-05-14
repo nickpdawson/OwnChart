@@ -304,6 +304,40 @@ def _parse_relative_window(natural_language: str, *, now: datetime) -> tuple[dat
     return start, end
 
 
+def _event_kind_phrase(rows: list[ExtractedFact]) -> str:
+    """Pick a human-readable phrase for a set of procedure rows that all
+    happened at the same timestamp. We look for an obvious anatomical
+    keyword in any of the labels and pluralize one degree gentler than
+    "STRABISMUS SCARRING EO MUSC/RSTCV MYOPATHY procedure."
+
+    For Nick's May 1 surgery the codes are STRABISMUS RECESSION/RESCJ,
+    PLMT ADJUSTABLE SUTR STRABISMUS, STRABISMUS SCARRING EO MUSC — so
+    "strabismus / eye surgery" is the right phrase. Falls through to
+    a generic "surgery" when nothing matches.
+    """
+    blob = " ".join((r.label or "").lower() for r in rows)
+    for needle, phrase in (
+        ("strabismus", "eye surgery"),
+        ("knee", "knee surgery"),
+        ("hip", "hip surgery"),
+        ("shoulder", "shoulder surgery"),
+        ("acl", "ACL surgery"),
+        ("rotator", "rotator cuff surgery"),
+        ("appendec", "appendectomy"),
+        ("cholecyst", "gallbladder surgery"),
+        ("hernia", "hernia repair"),
+        ("hysterec", "hysterectomy"),
+        ("cataract", "cataract surgery"),
+        ("colonosc", "colonoscopy"),
+        ("endosc", "endoscopy"),
+        ("cesarean", "cesarean delivery"),
+        ("c-sect", "cesarean delivery"),
+    ):
+        if needle in blob:
+            return phrase
+    return "surgery"
+
+
 async def _resolve_episode_alias(
     db: AsyncSession,
     *,
@@ -445,22 +479,58 @@ async def resolve_anchor(
                     ("deferred", "rejected", "source_only")
                 ))
                 .order_by(ExtractedFact.date_start.desc())
-                .limit(5)
+                .limit(8)
             )).scalars().all())
             if rows:
                 f = rows[0]
+                # Same-event collapse (Nick's P0-2, 2026-05-14):
+                # multiple procedure rows on the SAME calendar day
+                # are almost always the same surgical session — they
+                # come from FHIR Procedure CPT codes, operative-note
+                # extractions, H&P "planned procedure" entries, and
+                # post-op summaries, all describing one operation.
+                # Treat them as ONE event with HIGH confidence. The
+                # ±60s window we tried first missed clinical-note
+                # extracts whose date_start was set to the note's
+                # creation time (different from the FHIR-coded
+                # 13:25 timestamp).
+                anchor_dt = f.date_start
+                anchor_day = anchor_dt.date()
+                same_event_rows = [
+                    r for r in rows
+                    if r.date_start is not None and r.fact_type == "procedure"
+                    and r.date_start.date() == anchor_day
+                ]
+                if len(same_event_rows) >= 2:
+                    confidence = "high"
+                    explanation = (
+                        f"Matched your {anchor_dt.strftime('%B %-d, %Y')} "
+                        f"{_event_kind_phrase(same_event_rows)} — "
+                        f"{len(same_event_rows)} related procedure entries "
+                        f"on that day point at the same event."
+                    )
+                elif len(rows) == 1:
+                    confidence = "high"
+                    explanation = (
+                        f"Matched your {anchor_dt.strftime('%B %-d, %Y')} "
+                        f"{(f.display_label or f.label or 'event').lower()}."
+                    )
+                else:
+                    # Multiple distinct events in window — medium.
+                    confidence = "medium"
+                    explanation = (
+                        f"Found {len(rows)} major events between "
+                        f"{start.date().isoformat()} and "
+                        f"{end.date().isoformat()}. "
+                        f"Anchored on the most recent."
+                    )
                 return {
                     "fact_id": str(f.id),
                     "label": f.display_label or f.label,
                     "date_start": f.date_start.isoformat(),
                     "significance": f.significance,
-                    "match_confidence": "high" if len(rows) == 1 else "medium",
-                    "match_explanation": (
-                        f"Found {len(rows)} major event(s) between "
-                        f"{start.date().isoformat()} and "
-                        f"{end.date().isoformat()}. "
-                        f"Choosing the most recent."
-                    ),
+                    "match_confidence": confidence,
+                    "match_explanation": explanation,
                 }
         # Pure fallback: most recent major procedure.
         f = (await db.execute(

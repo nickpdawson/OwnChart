@@ -132,6 +132,44 @@ export function ThreadClient({
 
   const hasAssistantReply = messages.some((m) => m.role === "assistant" && m.content);
 
+  // EI conversations are created with kind=episode_intelligence and
+  // scope.status='running' while the background planner+LLM run. The
+  // assistant message lands ~60s later. Frontend polls until it does
+  // OR until scope.status flips to 'failed' (background hit an error
+  // and surfaced a fallback assistant message).
+  const isPendingEi =
+    thread.kind === "episode_intelligence" &&
+    !hasAssistantReply &&
+    (thread.scope?.status === "running" || !thread.scope?.status);
+  useEffect(() => {
+    if (!isPendingEi) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await fetch(
+          `/api/conversations/${encodeURIComponent(thread.id)}`,
+          { credentials: "include" },
+        );
+        if (!r.ok) return;
+        const fresh = (await r.json()) as ConvDetail;
+        if (cancelled) return;
+        setMessages(fresh.messages);
+        const done = fresh.messages.some((m) => m.role === "assistant" && m.content);
+        const failed = fresh.scope?.status === "failed";
+        if (done || failed) return; // stop the loop
+        setTimeout(tick, 2500);
+      } catch {
+        if (!cancelled) setTimeout(tick, 5000);
+      }
+    };
+    const t = setTimeout(tick, 2000);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPendingEi, thread.id]);
+
   // Deep-link from /ask: ?save=dossier auto-opens the modal so the
   // "Save as Dossier" button on the Ask answer panel lands here ready
   // to act. Only fires once on mount; user can close + reopen normally.
@@ -417,6 +455,21 @@ export function ThreadClient({
         {messages.map((m) => (
           <Bubble key={m.id} msg={m} />
         ))}
+        {isPendingEi && (
+          <li className="rounded-xl border border-muted/15 bg-surface p-4">
+            <p className="text-[10px] uppercase tracking-widest text-muted">
+              assistant · reading your record
+            </p>
+            <p className="mt-2 font-serif text-base leading-relaxed text-ink">
+              OwnChart is reading the record
+              <span className="inline-block ml-1 animate-pulse">…</span>
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              Pulling the procedure, anesthesia notes, discharge instructions,
+              and the wearable windows around the date. Usually 30–60 seconds.
+            </p>
+          </li>
+        )}
       </ol>
 
       <section className="rounded-xl border border-muted/15 bg-surface p-4">

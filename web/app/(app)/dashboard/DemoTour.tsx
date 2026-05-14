@@ -21,7 +21,7 @@ const TOUR_QUESTIONS: { headline: string; q: string; why: string }[] = [
   {
     headline: "Walk me through her appendectomy and surrounding workup.",
     q: "Tell me the story of the appendectomy in June 2023 — what led up to it, what happened during the workup that week, and what showed up in the days around it.",
-    why: "Episode Intelligence pulls the surgery, the same-day workup (X-ray, TTE Echo, pathology), and the post-op trajectory into one cited timeline.",
+    why: "Event Intelligence pulls the surgery, the same-day workup (X-ray, TTE Echo, pathology), and the post-op trajectory into one cited timeline.",
   },
   {
     headline: "What did the TTE Echo conclude?",
