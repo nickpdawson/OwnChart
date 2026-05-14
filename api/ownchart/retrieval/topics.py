@@ -84,6 +84,17 @@ _STOPWORDS: frozenset[str] = frozenset(
         "you", "your", "yours", "yourself", "yourselves",
         # Question-shaped fillers
         "tell", "show", "explain", "story", "summary", "summarize",
+        # Common verbs that leak into description ILIKE matches and pull
+        # high-significance unrelated facts to the top. "Do I take
+        # creatine?" was matching every Omeprazole/Celebrex/Finasteride
+        # description containing "Take 1 tablet by mouth..." — and the
+        # significance-rank ORDER BY pushed major_medication ahead of
+        # the background-significance creatine. Caught 2026-05-13 PM.
+        "take", "takes", "taking", "took",
+        "use", "uses", "using", "used",
+        "get", "gets", "getting", "got", "gotten",
+        "make", "makes", "making", "made",
+        "currently", "ever", "lately", "recently", "still",
     }
 )
 
