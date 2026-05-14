@@ -200,7 +200,14 @@ async def run_episode_intelligence(
     # Trim the planner payload before sending — wearable windows can
     # be hundreds of metric points each; the LLM only needs the
     # aggregates the planner already computed.
-    payload_json = json.dumps(planner_payload, default=str)[:48_000]
+    # Cap at 240k chars (≈ 60k tokens). The 48k cap was a relic of
+    # before clinical-note extraction added 200+ same-day facts per
+    # Event — at 75kB compact, the body_response section (which the
+    # planner appends last) got clipped off, so the LLM hallucinated
+    # "no wearable windows returned" even when they were there.
+    # Caught 2026-05-14 during the Make-The-Record-Actually-Readable
+    # acceptance walk.
+    payload_json = json.dumps(planner_payload, default=str)[:240_000]
 
     # Build input_source_ids defensively — a malformed source_id in the
     # planner payload mustn't blow up the whole call.

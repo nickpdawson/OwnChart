@@ -58,9 +58,13 @@ async def main(
 ) -> int:
     """Returns the number of newly-created facts."""
     async with SessionLocal() as db:
+        # Includes ccda_xml — the Hopkins data showed ccda_xml has
+        # the same has_plaintext=true / 0 facts gap as clinical_note
+        # had. The extractor strips HTML/XML tags before sending to
+        # the LLM, so the same prompt works.
         q = (
             select(SourceDocument)
-            .where(SourceDocument.source_type == "clinical_note")
+            .where(SourceDocument.source_type.in_(("clinical_note", "ccda_xml")))
             .order_by(SourceDocument.acquired_at.asc())
         )
         if user_id is not None:

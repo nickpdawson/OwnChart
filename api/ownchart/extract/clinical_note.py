@@ -169,10 +169,14 @@ async def extract_clinical_note(
     this source before calling. We don't dedup against existing facts
     here — the caller's responsibility.
     """
-    if source.source_type != "clinical_note":
+    # ccda_xml is structurally the same problem: the FHIR connector
+    # saves the document with has_plaintext=true and an HTML-strip-able
+    # narrative, but no extractor ran. Reuse the same pipeline — the
+    # plaintext strip below already handles html/xml/rtf.
+    if source.source_type not in ("clinical_note", "ccda_xml"):
         return ClinicalNoteExtractionResult(
             source_id=source.id, model_run_id=None, fact_count=0,
-            error=f"source_type must be clinical_note, got {source.source_type}",
+            error=f"source_type {source.source_type} not supported by clinical-note extractor",
             notes_to_reviewer=None,
         )
 

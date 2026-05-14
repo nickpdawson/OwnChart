@@ -218,7 +218,9 @@ async def get_home_ai_partner(
     out.recent_episodes = [
         RecentEpisode(
             id=str(e.id),
-            title=e.title,
+            # Prefer the user's display_title (Named Events) over the
+            # planner-derived title. Falls back when not set.
+            title=e.display_title or e.title,
             kind=e.kind,
             date_start=e.date_start,
             summary=e.summary,

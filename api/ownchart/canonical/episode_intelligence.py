@@ -44,7 +44,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.logger import get_logger
@@ -412,6 +412,128 @@ async def _resolve_episode_alias(
     }
 
 
+# Common English filler words to drop before substring-matching facts.
+# Anatomy / procedure keywords are what we want to land on.
+_KEYWORD_STOPWORDS: frozenset[str] = frozenset({
+    "a", "about", "after", "all", "an", "and", "any", "are", "as", "at",
+    "be", "before", "between", "but", "by", "can", "could", "did", "do",
+    "does", "during", "each", "for", "from", "had", "has", "have", "he",
+    "her", "him", "his", "how", "i", "if", "in", "into", "is", "it", "its",
+    "ive", "just", "me", "more", "most", "my", "no", "not", "now", "of",
+    "on", "or", "our", "out", "over", "regarding", "she", "so", "some",
+    "such", "tell", "than", "that", "the", "their", "them", "then",
+    "there", "these", "they", "this", "those", "to", "too", "under",
+    "up", "was", "we", "were", "what", "when", "where", "which", "while",
+    "who", "whom", "why", "will", "with", "would", "you", "your",
+    # phrasing-noise around clinical questions
+    "surgery", "surgical", "operation", "operative", "procedure",
+    "anything", "anywhere", "everything", "something", "much",
+    "currently", "right", "left",  # laterality leaks; the label has it
+    # Verbs / nouns that appear in question prose but NEVER in a
+    # procedure LABEL. These would otherwise leak into the keyword
+    # match. Caught 2026-05-14: "Give me 3 sentences on what they did
+    # including intraoperative meds. How did recovery affect endurance
+    # training?" matched a knee fact via "intraoperative" before the
+    # date-phrase resolver got its turn.
+    "intraoperative", "preoperative", "postoperative", "perioperative",
+    "preop", "postop", "intraop",
+    "recovery", "training", "endurance", "fitness", "performance",
+    "including", "sentences", "details", "meds", "medication",
+    "medications", "anesthesia", "anesthetic",
+    "yesterday", "today", "tomorrow", "tonight",
+})
+
+
+def _content_keywords(natural_language: str) -> list[str]:
+    """Return the meaningful content tokens of a user question that
+    are worth matching against fact labels. Drops filler + the literal
+    word 'surgery' (every label that names a surgery is more specific —
+    'ORIF', 'tympanoplasty', 'strabismus' — so matching on 'surgery'
+    poisons the precision).
+    """
+    raw = re.split(r"[^\w]+", (natural_language or "").lower())
+    out: list[str] = []
+    for t in raw:
+        if len(t) < 3 or t in _KEYWORD_STOPWORDS:
+            continue
+        out.append(t)
+    return out
+
+
+async def _resolve_keyword_anchor(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    natural_language: str,
+) -> dict[str, Any] | None:
+    """Anchor the question to a user's major-significance fact whose
+    label / description contains one of the question's content
+    keywords. Returns None when nothing strong matches.
+
+    Confidence is HIGH when exactly one major fact matches the
+    longest keyword; MEDIUM when multiple do (the most-significant
+    or most-dated wins). Resolves cases like:
+      "Tell me about my fibula surgery" → ORIF right fibula
+      "ear / hearing surgery" → Tympanoplasty
+      "knee surgery" → ACL reconstruction
+    even when those facts have NULL date_start.
+    """
+    keywords = _content_keywords(natural_language)
+    if not keywords:
+        return None
+    # Order by length DESC so 'tympanoplasty' beats 'ear'. Try each
+    # keyword from longest to shortest; first hit wins.
+    keywords = sorted(set(keywords), key=lambda k: -len(k))
+    for kw in keywords:
+        pat = f"%{kw}%"
+        # Note: this matches across all users' facts in the global
+        # table. search_facts() does the same; user-scoping in the
+        # facts table is via the anchor→source chain. For OwnChart's
+        # single-tenant deployment this is fine; multi-tenant will
+        # need an evidence_anchor_ids && (user's anchor ids) filter.
+        rows = list((await db.execute(
+            select(ExtractedFact)
+            .where(ExtractedFact.significance.in_(
+                ("major_event", "major_procedure", "major_diagnosis")
+            ))
+            .where(ExtractedFact.review_state.notin_(
+                ("deferred", "rejected", "source_only")
+            ))
+            # Label-only match. Description text contains phrasing
+            # like "intraoperative", "recovery", "training" that
+            # would otherwise hijack the anchor for conversational
+            # questions. Procedure labels are concrete anatomy /
+            # operation names; that's the signal we want.
+            .where(ExtractedFact.label.ilike(pat))
+            .order_by(
+                # Procedures first (anchor weight); then by date if any.
+                ExtractedFact.fact_type.desc(),
+                ExtractedFact.date_start.desc().nullslast(),
+            )
+            .limit(6)
+        )).scalars().all())
+        if not rows:
+            continue
+        # Prefer a procedure if one is present; else the first row.
+        procs = [r for r in rows if r.fact_type == "procedure"]
+        f = procs[0] if procs else rows[0]
+        confidence = "high" if len(rows) == 1 else "medium"
+        anchor_label = f.display_label or f.label or "(unlabeled)"
+        when = f"on {f.date_start.strftime('%B %-d, %Y')}" if f.date_start else "(date unknown)"
+        return {
+            "fact_id": str(f.id),
+            "label": anchor_label,
+            "date_start": f.date_start.isoformat() if f.date_start else None,
+            "significance": f.significance,
+            "match_confidence": confidence,
+            "match_explanation": (
+                f"Matched '{kw}' in your question to your "
+                f"{anchor_label.lower()} {when}."
+            ),
+        }
+    return None
+
+
 async def resolve_anchor(
     db: AsyncSession,
     *,
@@ -462,6 +584,28 @@ async def resolve_anchor(
         )
         if alias_hit is not None:
             return alias_hit
+
+    # Keyword-anchor resolution: search the user's facts for a major
+    # event/procedure whose LABEL matches an anatomy/procedure word
+    # in the question. Closes the cases Nick caught 2026-05-14:
+    #   "Tell me about my fibula surgery" → ORIF facts have NULL
+    #     date_start so the date-window query missed them.
+    #   "ear / hearing surgery" → Tympanoplasty facts in the
+    #     Hopkins ccda_xml weren't reachable by date alone.
+    #
+    # Deferred when the question already contains a relative date
+    # phrase ("10 days ago", "May 1"), because the date is the
+    # stronger anchor — and a conversational phrasing word like
+    # "intraoperative" or "recovery" would otherwise outrank the
+    # date by accident.
+    if natural_language and user_id is not None:
+        has_date_phrase = _parse_relative_window(natural_language, now=now) is not None
+        if not has_date_phrase:
+            kw_hit = await _resolve_keyword_anchor(
+                db, user_id=user_id, natural_language=natural_language,
+            )
+            if kw_hit is not None:
+                return kw_hit
 
     if natural_language:
         window = _parse_relative_window(natural_language, now=now)
