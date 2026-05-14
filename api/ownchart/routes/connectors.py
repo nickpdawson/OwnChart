@@ -17,7 +17,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -758,6 +758,7 @@ def _date_for_with_fallback(
 @router.post("/{conn_id}/sync")
 async def sync_connection(
     conn_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> SyncResponse:
@@ -936,6 +937,20 @@ async def sync_connection(
                     source_id=str(att_src.id),
                     error=str(e),
                 )
+        # Clinical notes (RTF/HTML/text DocumentReferences) and ccda_xml
+        # encounter summaries: schedule the LLM extractor as a
+        # background task so the user gets a fast 201 on /sync and the
+        # facts land within ~30s. This is the auto-extraction hook
+        # Nick asked about 2026-05-14 — without it, only the manual
+        # backfill script populates facts, and new syncs leave content
+        # invisible to EI until someone reruns the script.
+        elif att_src.source_type in ("clinical_note", "ccda_xml"):
+            if (att.plaintext or "") and len(att.plaintext or "") >= 40:
+                background_tasks.add_task(
+                    _extract_clinical_note_in_background,
+                    source_id=att_src.id,
+                    user_id=user.id,
+                )
 
         # Anchor on the FHIR snapshot pointing back to the attachment SourceDocument.
         anchor = EvidenceAnchor(
@@ -990,3 +1005,33 @@ async def disconnect(
     conn.status = "revoked"
     await db.commit()
     log.info("connector_disconnected", connection_id=str(conn.id), user_id=str(user.id))
+
+
+# ---------------------------------------------------------------------------
+# Background extraction hooks — invoked from /sync after a clinical_note
+# or ccda_xml attachment lands. Opens a fresh SessionLocal because the
+# request's session closes when the response is sent.
+
+async def _extract_clinical_note_in_background(
+    *,
+    source_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    from ..core.db import SessionLocal
+    from ..extract.clinical_note import extract_clinical_note
+    from ..models.source_document import SourceDocument as _Src
+    from ..models.user import User as _User
+
+    async with SessionLocal() as db:
+        src = await db.get(_Src, source_id)
+        usr = await db.get(_User, user_id)
+        if src is None or usr is None:
+            return
+        try:
+            await extract_clinical_note(db, usr, src)
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "clinical_note_extract_background_failed",
+                source_id=str(source_id),
+                error=f"{type(e).__name__}: {e}",
+            )
