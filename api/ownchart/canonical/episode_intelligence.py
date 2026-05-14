@@ -789,6 +789,83 @@ def _fact_dict(f: ExtractedFact, source: SourceDocument | None) -> dict[str, Any
     }
 
 
+async def _unparsed_clinical_notes(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    start: datetime,
+    end: datetime,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    """Find clinical_note source_documents in [start, end] whose
+    plaintext was fetched but never turned into ExtractedFact rows.
+
+    Caught 2026-05-13 PM: every clinical_note across 6 health systems
+    (Bozeman, Hopkins, Stanford, Bridger Ortho, OrthoVirginia, UVA)
+    has has_plaintext=true and zero extracted facts. EI used to say
+    "no anesthesia record" when in fact the Anesthesia Procedure
+    Notes RTF is sitting on disk with the anesthesiologist's name
+    in the first 200 chars. This helper surfaces those notes with
+    their plaintext_excerpt so the LLM can quote real content
+    instead of claiming the record is missing.
+
+    Date filter is done in SQL on the COALESCE of
+    `raw_metadata->>'creation'` (the note's content date — what the
+    user means by "the May 1 anesthesia note") and `acquired_at`
+    (when OwnChart fetched it). Doing the filter Python-side after
+    an over-pull starved Stanford on users with many ortho notes
+    acquired the same day; SQL-side filter is exact.
+    """
+    from sqlalchemy import text as sql_text
+
+    rows = list((await db.execute(
+        sql_text(
+            """
+            SELECT id, source_label, source_system, original_filename,
+                   acquired_at, raw_metadata
+            FROM source_documents
+            WHERE owner_user_id = :uid
+              AND source_type = 'clinical_note'
+              AND COALESCE(
+                    NULLIF(raw_metadata->>'creation', '')::timestamptz,
+                    acquired_at
+                  ) BETWEEN :start AND :end
+            ORDER BY COALESCE(
+                NULLIF(raw_metadata->>'creation', '')::timestamptz,
+                acquired_at
+            ) ASC
+            LIMIT :lim
+            """
+        ).bindparams(uid=user_id, start=start, end=end, lim=limit)
+    )).mappings().all())
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        rm = r["raw_metadata"] if isinstance(r["raw_metadata"], dict) else {}
+        creation = rm.get("creation") if isinstance(rm, dict) else None
+        content_dt: datetime | None = None
+        if isinstance(creation, str):
+            try:
+                content_dt = datetime.fromisoformat(creation.replace("Z", "+00:00"))
+            except ValueError:
+                content_dt = None
+        if content_dt is None:
+            content_dt = r["acquired_at"]
+
+        excerpt = (rm.get("plaintext_excerpt") or "")[:800] if isinstance(rm, dict) else ""
+        kind = (rm.get("title") if isinstance(rm, dict) else None) or r["original_filename"]
+
+        out.append({
+            "source_id": str(r["id"]),
+            "source_label": r["source_label"],
+            "source_system": r["source_system"],
+            "note_kind": kind,
+            "content_date": content_dt.isoformat() if content_dt else None,
+            "excerpt": excerpt,
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 
@@ -885,6 +962,20 @@ async def plan_episode_intelligence(
     travel_life_facts = [f for f in surround_facts if _is_travel_or_life(f)]
     travel_sources = await _resolve_sources(db, travel_life_facts)
 
+    # Unparsed clinical notes (operative reports, anesthesia notes,
+    # discharge instructions) — fetched from EHR connectors but the
+    # extractor never ran on them, so they have plaintext but no
+    # ExtractedFact rows. We pass the excerpts directly to the LLM
+    # so it can quote real content instead of claiming the records
+    # are missing. Same ±21d window. Requires user_id; falls back
+    # to empty when the caller doesn't pass one.
+    unparsed_notes: list[dict[str, Any]] = []
+    if user_id is not None:
+        unparsed_notes = await _unparsed_clinical_notes(
+            db, user_id=user_id,
+            start=surround_start, end=surround_end,
+        )
+
     # --- Recovery windows from the episode-kind profile ---------------
     window_data: list[dict[str, Any]] = []
     for name, days_a, days_b in _profile_for_kind(episode_kind_hint):
@@ -960,6 +1051,12 @@ async def plan_episode_intelligence(
         "body_response": {
             "windows": window_data,
         },
+        # Clinical notes that exist as source documents in the window
+        # but whose plaintext was never parsed into ExtractedFacts.
+        # These often contain the answer to "what anesthetic did I get"
+        # / "who was the surgeon" / "what did the discharge instructions
+        # say" — quote the excerpts when relevant.
+        "unparsed_clinical_notes": unparsed_notes,
         "follow_up_questions": _seed_follow_ups(anchor, anesthesia_facts),
     }
 
