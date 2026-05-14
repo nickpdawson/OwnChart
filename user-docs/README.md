@@ -12,7 +12,7 @@ Each OwnChart deployment registers its own app with each EHR vendor whose data i
 
 | EHR | Audience focus | Guide | Review path |
 |---|---|---|---|
-| **Epic** | Largest US hospitals, academic medical centers (Cleveland Clinic, Stanford, Mass General Brigham, Mayo, Kaiser, etc.) | [EPIC_SETUP.md](./EPIC_SETUP.md) | USCDI v3 auto-download — no human review, ≤12 hours per Epic customer |
+| **Epic** | Largest US hospitals, academic medical centers (Cleveland Clinic, Stanford, Mass General Brigham, Mayo, Kaiser, ....) | [EPIC_SETUP.md](./EPIC_SETUP.md) | USCDI v3 auto-download — no human review, ≤12 hours per Epic customer |
 | **athenahealth** | Mid-market ambulatory practices | [ATHENA_SETUP.md](./ATHENA_SETUP.md) | Human review, 1–4 weeks |
 | **ModMed** | Specialty practices (dermatology, ophthalmology, orthopedics, GI, plastic surgery, pain, OB-GYN) | [MODMED_SETUP.md](./MODMED_SETUP.md) | Contact-driven |
 | **NextGen** | Mid-sized ambulatory practices, FQHCs, community health centers, behavioral health | [NEXTGEN_SETUP.md](./NEXTGEN_SETUP.md) | Self-service portal |
