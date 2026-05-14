@@ -1,6 +1,8 @@
 # Getting an athenahealth developer account
 
-> athenahealth exposes patient-facing FHIR access through `developer.athenahealth.com`. The registration flow follows the same SMART-on-FHIR shape as Epic, but the developer experience and reviewer interaction are notably different. Expect more back-and-forth with athena's review team and longer turnaround.
+> athenahealth exposes patient-facing FHIR access through <https://www.athenahealth.com/developer-portal> with API reference docs at <https://docs.athenahealth.com/api/docs/fhir-apis>. The registration flow follows the same SMART-on-FHIR shape as Epic, but the developer experience and reviewer interaction are notably different. Expect more back-and-forth with athena's review team and longer turnaround.
+
+> **Read [CONNECTORS.md](./CONNECTORS.md) first** if you haven't — it explains the universal pattern. Athena adds a human-review step that Epic skips.
 
 Expected time: 30 minutes to fill out the application, then **1–4 weeks** of review before your app is approved for production.
 
@@ -22,8 +24,8 @@ Same as the Epic setup:
 
 ## Step 1 — Create a developer account
 
-1. Go to <https://developer.athenahealth.com>.
-2. Click **Sign Up** in the top right.
+1. Start at <https://www.athenahealth.com/developer-portal>. Click through to the developer portal sign-up.
+2. The current portal canonical URL is `developer.athenahealth.com`; the API reference and FHIR specs live at <https://docs.athenahealth.com/api/docs/fhir-apis>.
 3. Use your real name and a deliverable email. Athena verifies the email and may follow up with identity questions for production access.
 4. Confirm the email and sign in.
 

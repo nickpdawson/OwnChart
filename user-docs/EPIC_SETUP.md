@@ -2,6 +2,8 @@
 
 > Epic exposes patient-facing FHIR access through a developer portal informally called "Orchid" at <https://fhir.epic.com>. One registration covers every Epic-based health system. Once your app is approved for auto-download, individual Epic customers (Stanford, Kaiser, Bozeman Health, OrthoVirginia, your local hospital) automatically gain the ability to connect to your OwnChart instance — usually within 12 hours of you flipping the "Ready for Production" switch.
 
+> **Read [CONNECTORS.md](./CONNECTORS.md) first** if you haven't — it explains the universal pattern. Epic is the easiest of the major vendors thanks to USCDI v3 auto-download.
+
 Expected time: ~30 minutes. One-time setup per OwnChart deployment.
 
 ## Prerequisites
