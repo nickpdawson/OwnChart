@@ -127,7 +127,9 @@ async def call_with_tool(
         tool_input = resp.tool_input
         raw_text = resp.raw_text
         stop_reason = resp.stop_reason
-        usage = resp.usage
+        usage = dict(resp.usage or {})
+        if stop_reason is not None:
+            usage["stop_reason"] = stop_reason
         output_hash = _hash_payload({"tool_input": tool_input, "raw_text": raw_text})
     except ProviderUnavailable as e:
         err = f"ProviderUnavailable: {e}"

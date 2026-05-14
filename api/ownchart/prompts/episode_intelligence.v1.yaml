@@ -55,15 +55,27 @@ user_template: |
   User's natural-language question (may be empty for batch runs):
   {question}
 
-  Synthesize the structured Episode Intelligence answer per the
-  seven-section tool below.
+  Synthesize the structured Episode Intelligence answer using the
+  emit_episode_intelligence tool below.
+
+  REQUIREMENTS (do not skip):
+  1. Fill ALL of: anchor_acknowledgment, what_happened, what_they_did,
+     anesthesia, travel_and_life, body_response, body_response_observations,
+     interpretation, follow_up_questions, citations.
+  2. Each section is a plain string (not an object). Write the prose
+     directly into each field.
+  3. When a section has no supporting evidence, write one honest sentence
+     saying so — never leave the field empty or omit it.
+  4. Use the planner's procedure/condition/encounter/body_response.windows
+     arrays as your evidence base. The "Body response" prose MUST quote
+     actual mean/min/max numbers from body_response.windows when present.
 
 tools:
   - name: emit_episode_intelligence
-    description: Emit a structured Episode Intelligence record.
+    description: Emit a structured Episode Intelligence record. ALL seven section fields are required strings — do not omit any. If a section has no evidence, write one sentence stating that and move on; never collapse the schema by leaving fields out.
     input_schema:
       type: object
-      required: [anchor_acknowledgment, what_happened, what_they_did, anesthesia, travel_and_life, body_response, interpretation, follow_up_questions, citations]
+      required: [anchor_acknowledgment, what_happened, what_they_did, anesthesia, travel_and_life, body_response, body_response_observations, interpretation, follow_up_questions, citations]
       properties:
         anchor_acknowledgment:
           type: string
@@ -73,79 +85,57 @@ tools:
             your example surgery
             (high confidence)."
         what_happened:
-          type: object
-          required: [summary]
-          properties:
-            summary:
-              type: string
-              description: |
-                Plain-English summary of the procedure / event,
-                surgeon/facility, related diagnoses, post-op
-                instructions where evident. 2-4 short paragraphs.
-            cited_fact_ids:
-              type: array
-              items: {type: string}
+          type: string
+          description: |
+            Plain-English summary of the procedure / event,
+            surgeon/facility, related diagnoses, post-op instructions
+            where evident. 2-4 short paragraphs. Cite the procedure,
+            condition, and encounter facts the planner attached.
         what_they_did:
-          type: object
-          required: [translation]
-          properties:
-            translation:
-              type: string
-              description: |
-                Patient-readable rendering of the procedural codes /
-                operative prose, with the original terms preserved
-                in parentheses where useful.
-            cited_fact_ids:
-              type: array
-              items: {type: string}
+          type: string
+          description: |
+            Patient-readable rendering of the procedural codes /
+            operative prose, with the original terms preserved in
+            parentheses where useful. If there are multiple procedure
+            codes for the same surgery, walk through each.
         anesthesia:
-          type: object
-          required: [summary]
-          properties:
-            summary:
-              type: string
-              description: |
-                The anesthesia / intraoperative medication summary.
-                If the planner reported missing_anesthesia_record,
-                say so plainly and suggest where the user could
-                supply one.
-            cited_fact_ids:
-              type: array
-              items: {type: string}
+          type: string
+          description: |
+            The anesthesia / intraoperative medication summary.
+            If the planner reported missing_anesthesia_record=true,
+            say so plainly in one sentence and suggest where the
+            user could supply one. Never fabricate anesthesia meds.
         travel_and_life:
-          type: object
-          required: [summary]
-          properties:
-            summary:
-              type: string
-              description: |
-                Calendar / travel / life context for the surrounding
-                ±21 days. "You appear to have traveled to X from Y on
-                Z" not "calendar data exists." When nothing is in
-                evidence, say so.
-            cited_fact_ids:
-              type: array
-              items: {type: string}
+          type: string
+          description: |
+            Calendar / travel / life context for the surrounding
+            ±21 days. "You appear to have traveled to X from Y on Z"
+            not "calendar data exists." When nothing is in evidence,
+            say so in one sentence.
         body_response:
-          type: object
-          required: [summary, window_observations]
-          properties:
-            summary:
-              type: string
-              description: |
-                One short paragraph describing the wearable / sleep /
-                activity changes across the standardized windows.
-            window_observations:
-              type: array
-              items:
-                type: object
-                required: [window, observation]
-                properties:
-                  window:
-                    type: string
-                    enum: [30d_baseline, 7d_before, day_of, 7d_after, 14d_after]
-                  observation:
-                    type: string
+          type: string
+          description: |
+            One short paragraph describing the wearable / sleep /
+            activity changes across the standardized windows. Use the
+            planner's body_response.windows aggregates (mean, min,
+            max, n) — quote actual numbers where they exist. When
+            metrics are missing, say so explicitly.
+        body_response_observations:
+          type: array
+          description: |
+            One observation per recovery window. Pair each window
+            with one sentence interpreting the aggregates. Empty
+            array allowed only when the planner returned zero
+            windows.
+          items:
+            type: object
+            required: [window, observation]
+            properties:
+              window:
+                type: string
+                enum: [30d_baseline, 7d_before, day_of, 7d_after, 14d_after]
+              observation:
+                type: string
         interpretation:
           type: string
           description: |

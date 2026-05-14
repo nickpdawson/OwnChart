@@ -128,11 +128,27 @@ def _profile_for_kind(kind: str | None) -> tuple[tuple[str, int, int], ...]:
 # from ingest/auto_export.py + ingest/healthkit.py. We do simple
 # substring matches because labels carry units etc.
 _WEARABLE_METRICS = {
-    "rhr": ("resting heart rate", "rhr"),
-    "hrv": ("heart rate variability", "hrv"),
-    "sleep_duration": ("sleep", "time asleep", "sleep duration"),
-    "active_energy": ("active energy", "active calories"),
-    "steps": ("steps",),
+    # Each metric: natural-language needles + HK identifier substrings.
+    # HK ingest creates fact labels like
+    # `HKQuantityTypeIdentifierHeartRateVariabilitySDNN: 28.48 ms`
+    # (all-one-word), and Auto Export produces friendlier labels like
+    # `Heart rate variability: 38 ms`. Both shapes need to classify.
+    # Bug caught 2026-05-13 PM in golden-path walk: body_response
+    # section returned "no aggregated metrics" for every Episode
+    # Intelligence run because the classifier only matched
+    # natural-phrase shapes that don't exist in native HK labels.
+    "rhr": ("resting heart rate", "rhr", "restingheartrate"),
+    "hrv": ("heart rate variability", "hrv", "heartratevariability"),
+    "heart_rate": ("heart rate", "heartrate"),
+    "sleep_duration": (
+        "sleep", "time asleep", "sleep duration", "sleepanalysis",
+    ),
+    "active_energy": (
+        "active energy", "active calories", "activeenergyburned",
+    ),
+    "steps": ("steps", "stepcount"),
+    "vo2max": ("vo2max", "vo2 max"),
+    "spo2": ("oxygen saturation", "spo2", "oxygensaturation"),
 }
 
 
@@ -388,14 +404,28 @@ def _classify_wearable(label: str) -> str | None:
     return None
 
 
+_WEARABLE_METHODS = ("health_auto_export", "native_healthkit")
+
+
 async def _facts_in_window(
     db: AsyncSession,
     start: datetime,
     end: datetime,
     *,
     wearable_only: bool = False,
+    clinical_only: bool = False,
     limit: int = 2000,
 ) -> list[ExtractedFact]:
+    """Pull facts in [start, end].
+
+    `wearable_only` filters to HK / auto-export observations only.
+    `clinical_only` excludes HK / auto-export facts so the same-day
+    clinical pull (procedure/encounter/condition/medication) doesn't
+    get drowned out by tens of thousands of wearable observations
+    that sort earlier by `date_start.asc()` and starve the limit.
+    Caught 2026-05-13 PM — limit=200 on a wearable-heavy day clipped
+    procedures off entirely.
+    """
     stmt = (
         select(ExtractedFact)
         .where(ExtractedFact.date_start.isnot(None))
@@ -405,9 +435,11 @@ async def _facts_in_window(
         .limit(limit)
     )
     if wearable_only:
-        stmt = stmt.where(ExtractedFact.extraction_method.in_(
-            ("health_auto_export", "native_healthkit")
-        ))
+        stmt = stmt.where(ExtractedFact.extraction_method.in_(_WEARABLE_METHODS))
+    elif clinical_only:
+        stmt = stmt.where(
+            ExtractedFact.extraction_method.notin_(_WEARABLE_METHODS)
+        )
     return list((await db.execute(stmt)).scalars().all())
 
 
@@ -439,6 +471,25 @@ def _aggregate_metrics(facts: list[ExtractedFact]) -> dict[str, dict[str, Any]]:
                     value = float(m.group(0))
                 except ValueError:
                     pass
+        # HK ingest writes value into the label after a colon
+        # (e.g., "HKQuantityTypeIdentifierHeartRateVariabilitySDNN: 28.48 ms"),
+        # not into description or coded_concepts. Fall back to parsing
+        # the number out of the label tail. Caught 2026-05-13 PM.
+        if value is None and f.label:
+            m = re.search(r":\s*(-?\d+(?:\.\d+)?)", f.label)
+            if m:
+                try:
+                    value = float(m.group(1))
+                except ValueError:
+                    pass
+            # Also pick up the unit if present after the number.
+            if metric not in units:
+                um = re.search(
+                    r":\s*-?\d+(?:\.\d+)?\s+([A-Za-z/%][A-Za-z/%0-9]*)",
+                    f.label,
+                )
+                if um:
+                    units[metric] = um.group(1)
         if value is None:
             continue
         bucket.setdefault(metric, []).append(value)
@@ -536,7 +587,9 @@ async def plan_episode_intelligence(
     # --- Same-day clinical scope (the surgery + its components) ----
     day_start = anchor_date.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = anchor_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-    day_facts = await _facts_in_window(db, day_start, day_end, limit=200)
+    day_facts = await _facts_in_window(
+        db, day_start, day_end, clinical_only=True, limit=200,
+    )
     day_sources = await _resolve_sources(db, day_facts)
 
     procedure_facts = [f for f in day_facts if f.fact_type == "procedure"]
@@ -573,10 +626,13 @@ async def plan_episode_intelligence(
         episode_kind_hint = "default"
 
     # --- ±21 day surrounding window: travel, life context, calendar
+    # Exclude wearable observations for the same reason as the
+    # same-day query — six weeks of HK data easily blows past any
+    # limit and starves out the travel / life-event facts.
     surround_start = anchor_date - timedelta(days=21)
     surround_end = anchor_date + timedelta(days=21)
     surround_facts = await _facts_in_window(
-        db, surround_start, surround_end, limit=500,
+        db, surround_start, surround_end, clinical_only=True, limit=500,
     )
     travel_life_facts = [f for f in surround_facts if _is_travel_or_life(f)]
     travel_sources = await _resolve_sources(db, travel_life_facts)

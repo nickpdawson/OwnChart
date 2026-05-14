@@ -195,6 +195,11 @@ async def run_episode_intelligence(
         input_source_ids=input_source_ids,
         tool_name="emit_episode_intelligence",
         provider=preferred if isinstance(preferred, str) else None,
+        # 9 required structured sections, each often multi-paragraph.
+        # The 4096 default was truncating Opus mid-tool-call, leaving
+        # only 2–3 keys populated and dumping XML markup into the last
+        # completed parameter. Caught 2026-05-13 PM.
+        max_tokens=16384,
     )
 
     job.model_run_id = result.model_run_id
@@ -246,20 +251,34 @@ async def run_episode_intelligence(
     job.status = "completed"
 
     # Compose the narrative for the conversation transcript.
-    # Defensive: the LLM can emit a section field either as the
-    # documented dict shape ({summary, cited_fact_ids}) or as a bare
-    # string. Caught when Nick's "eye surgery on may 1 2026" question
-    # crashed with AttributeError on str.get. Handle both.
+    # Defensive on two LLM quirks:
+    #
+    # 1. Section can come back as a dict ({summary, cited_fact_ids}) or
+    #    a bare string. AttributeError otherwise.
+    # 2. Opus occasionally leaks XML-style parameter wrappers into the
+    #    value, like  <parameter name="summary">your record …</parameter>
+    #    inside what should be plain prose. Strip them — the parameter
+    #    name is already in the section header, the user doesn't need
+    #    to see the schema scaffolding.
+    import re as _re
+    _XML_PARAM_OPEN = _re.compile(r"<parameter\s+name=[\"'][^\"']*[\"']\s*>", _re.IGNORECASE)
+    _XML_PARAM_CLOSE = _re.compile(r"</parameter\s*>", _re.IGNORECASE)
+
+    def _strip_xml(s: str) -> str:
+        s = _XML_PARAM_OPEN.sub("", s)
+        s = _XML_PARAM_CLOSE.sub("", s)
+        return s.strip()
+
     def _section_text(key: str, dict_field: str = "summary") -> str:
         val = structured.get(key)
         if isinstance(val, dict):
-            return str(val.get(dict_field) or "")
+            return _strip_xml(str(val.get(dict_field) or ""))
         if isinstance(val, str):
-            return val
+            return _strip_xml(val)
         return ""
 
     sections = [
-        structured.get("anchor_acknowledgment") or "",
+        _strip_xml(structured.get("anchor_acknowledgment") or ""),
         f"\n\n**What happened**\n{_section_text('what_happened', 'summary')}",
         f"\n\n**What they did**\n{_section_text('what_they_did', 'translation')}",
         f"\n\n**Anesthesia & intraoperative meds**\n{_section_text('anesthesia', 'summary')}",
