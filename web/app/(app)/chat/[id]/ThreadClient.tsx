@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
   CandidateRef,
@@ -21,6 +21,79 @@ function fmtTime(iso: string): string {
   } catch {
     return iso;
   }
+}
+
+// Minimal safe markdown renderer for assistant messages.
+//
+// The LLM (Episode Intelligence in particular) emits markdown with
+// `**Section headers**`, occasional `_italic_`, and `\n\n` paragraph
+// breaks. Previously we rendered `msg.content` inside a single <p>
+// with `whitespace-pre-wrap`, so asterisks showed up as literal
+// characters — Nick called this out 2026-05-13 PM as "still
+// unformatted MD." Pulling in react-markdown would require a deps
+// install and rebuild risk; this inline renderer handles the
+// patterns the LLM actually produces with zero new dependencies.
+//
+// What it does:
+//   - splits on blank lines into paragraphs
+//   - within each paragraph, wraps `**bold**` in <strong>, `_italic_`
+//     in <em>, and `` `code` `` in <code>
+//   - preserves single newlines inside a paragraph as <br/>
+//   - any literal `**`/`_` the user typed still renders the same
+//     because the regex requires a closing pair
+//
+// What it deliberately doesn't do:
+//   - links, lists, headings via `#`, tables — none of these appear
+//     in current EI/Ask output. Add when the LLM starts producing
+//     them. Until then YAGNI.
+//
+// Safety: all input is converted via React text nodes (never
+// dangerouslySetInnerHTML), so untrusted content can't inject HTML.
+function renderInline(text: string, keyBase: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  // Token order matters: **bold** before *italic* so the inner
+  // match doesn't eat the bold markers.
+  const pattern = /(\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|`[^`\n]+`)/g;
+  const parts = text.split(pattern);
+  parts.forEach((p, i) => {
+    if (!p) return;
+    const key = `${keyBase}-${i}`;
+    if ((p.startsWith("**") && p.endsWith("**")) || (p.startsWith("__") && p.endsWith("__"))) {
+      out.push(<strong key={key}>{p.slice(2, -2)}</strong>);
+    } else if ((p.startsWith("*") && p.endsWith("*") && p.length > 2)
+              || (p.startsWith("_") && p.endsWith("_") && p.length > 2)) {
+      out.push(<em key={key}>{p.slice(1, -1)}</em>);
+    } else if (p.startsWith("`") && p.endsWith("`") && p.length > 2) {
+      out.push(
+        <code key={key} className="rounded bg-muted/10 px-1 py-0.5 text-[0.92em]">
+          {p.slice(1, -1)}
+        </code>,
+      );
+    } else {
+      // Preserve single newlines within a paragraph as <br/>.
+      const lines = p.split("\n");
+      lines.forEach((line, li) => {
+        if (li > 0) out.push(<br key={`${key}-br-${li}`} />);
+        if (line) out.push(line);
+      });
+    }
+  });
+  return out;
+}
+
+function MessageBody({ content }: { content: string }) {
+  const trimmed = (content || "").trim();
+  if (!trimmed) return null;
+  // Split on blank lines (paragraph boundaries). The LLM emits
+  // `\n\n` between sections; this also tolerates `\n  \n` etc.
+  const paragraphs = trimmed.split(/\n\s*\n/);
+  return (
+    <div className="mt-2 space-y-3 font-serif text-base leading-relaxed text-ink">
+      {paragraphs.map((para, i) => (
+        <p key={`p-${i}`}>{renderInline(para, `p${i}`)}</p>
+      ))}
+    </div>
+  );
 }
 
 export function ThreadClient({
@@ -213,15 +286,16 @@ export function ThreadClient({
       {promotableEpisode && (
         <section className="rounded-xl border border-accent/30 bg-accent/5 p-4">
           <p className="text-xs uppercase tracking-widest text-accent">
-            Episode candidate
+            Event candidate
           </p>
           <p className="mt-1 font-serif text-base text-ink">
-            {promotableEpisode.title ?? "Save this as an episode"}
+            {promotableEpisode.title ?? "Save this as an Event"}
           </p>
           <p className="mt-1 text-sm text-muted">
-            Promoting saves a canonical episode with members,
-            cross-links it to this conversation, and surfaces it on
-            Home and Timeline.
+            Saving keeps this Event in your timeline with all the
+            evidence it pulled in — and you can rename it (e.g.
+            &ldquo;2026 left eye&rdquo;) and refer to it by that
+            name in chat from now on.
           </p>
           <button
             type="button"
@@ -229,7 +303,7 @@ export function ThreadClient({
             disabled={promoting}
             className="mt-3 rounded-md bg-accent px-3 py-1.5 text-sm text-surface hover:opacity-90 disabled:opacity-50"
           >
-            {promoting ? "Saving…" : "Save as Episode"}
+            {promoting ? "Saving…" : "Save as Event"}
           </button>
         </section>
       )}
@@ -406,9 +480,7 @@ function Bubble({ msg }: { msg: ConvMessage }) {
         {" · "}
         {fmtTime(msg.created_at)}
       </p>
-      <p className="mt-2 whitespace-pre-wrap font-serif text-base leading-relaxed text-ink">
-        {msg.content}
-      </p>
+      <MessageBody content={msg.content} />
       {msg.citations.length > 0 && (
         <div className="mt-3">
           <p className="text-xs uppercase tracking-widest text-muted">

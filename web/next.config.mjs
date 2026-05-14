@@ -7,11 +7,16 @@ const nextConfig = {
   poweredByHeader: false,
   experimental: {
     typedRoutes: true,
-    // Brief generation hits Anthropic Opus and routinely takes 30-60s.
-    // Default rewrite proxy timeout is 30s, which silently cuts the
-    // response and surfaces as `socket hang up` / HTTP 500 in the
-    // browser even though the api fully completed. Bump to 120s.
-    proxyTimeout: 120_000,
+    // Brief + Episode Intelligence hit Anthropic Opus. EI in particular
+    // ships ~25k input tokens (planner JSON + unparsed clinical notes)
+    // and routinely takes 50-70s on the LLM call alone, plus planner
+    // overhead. The default 30s and even the prior 120s cap were
+    // hitting at the worst possible moment — Opus had finished and
+    // the api had already committed the model_run, but the persistence
+    // path got cancelled by the proxy timeout, leaving an orphan
+    // model_run with no conversation message saved. Caught 2026-05-14
+    // 03:17 UTC. Bumped to 240s for headroom.
+    proxyTimeout: 240_000,
   },
   async rewrites() {
     // The web container talks to the api container over the docker network.
