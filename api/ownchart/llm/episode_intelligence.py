@@ -277,16 +277,37 @@ async def run_episode_intelligence(
             return _strip_xml(val)
         return ""
 
-    sections = [
-        _strip_xml(structured.get("anchor_acknowledgment") or ""),
-        f"\n\n**What happened**\n{_section_text('what_happened', 'summary')}",
-        f"\n\n**What they did**\n{_section_text('what_they_did', 'translation')}",
-        f"\n\n**Anesthesia & intraoperative meds**\n{_section_text('anesthesia', 'summary')}",
-        f"\n\n**Travel & life context**\n{_section_text('travel_and_life', 'summary')}",
-        f"\n\n**Body response**\n{_section_text('body_response', 'summary')}",
-        f"\n\n**Interpretation**\n{_section_text('interpretation')}",
-    ]
-    narrative = "".join(sections).strip()
+    # Narrative shape (post-2026-05-13 directive):
+    #   1. short_answer first — directly answers the user.
+    #   2. Anchor / "what & where" — compact context.
+    #   3. Found vs Missing — explicit, separate, no fabrication.
+    #   4. Body response — endurance-aware.
+    #   5. Interpretation — humble.
+    #   6. Evidence — sources the answer leans on.
+    # Each `_section_text` access is defensive against the dict-vs-string
+    # shape Opus sometimes returns under schema confusion, and strips
+    # any leaked `<parameter name="...">` markers.
+    short_answer = _section_text("short_answer")
+    anchor_ack = _strip_xml(structured.get("anchor_acknowledgment") or "")
+    parts: list[str] = []
+    if short_answer:
+        parts.append(short_answer)
+    if anchor_ack:
+        parts.append(f"\n\n_{anchor_ack}_")
+    for header, key, dict_field in [
+        ("What happened",                "what_happened",         "summary"),
+        ("What they did",                "what_they_did",         "translation"),
+        ("Meds found",                   "meds_found",            "summary"),
+        ("Meds missing",                 "meds_missing",          "summary"),
+        ("Body response",                "body_response",         "summary"),
+        ("Travel & life context",        "travel_and_life",       "summary"),
+        ("Interpretation",               "interpretation",        "summary"),
+        ("Evidence",                     "evidence_summary",      "summary"),
+    ]:
+        body = _section_text(key, dict_field)
+        if body:
+            parts.append(f"\n\n**{header}**\n{body}")
+    narrative = "".join(parts).strip()
 
     a_msg = ConversationMessage(
         conversation_id=conv.id,

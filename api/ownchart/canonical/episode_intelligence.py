@@ -143,13 +143,31 @@ _WEARABLE_METRICS = {
     "sleep_duration": (
         "sleep", "time asleep", "sleep duration", "sleepanalysis",
     ),
-    "active_energy": (
-        "active energy", "active calories", "activeenergyburned",
-    ),
-    "steps": ("steps", "stepcount"),
     "vo2max": ("vo2max", "vo2 max"),
     "spo2": ("oxygen saturation", "spo2", "oxygensaturation"),
 }
+
+# Cumulative endurance metrics — sum across the window AND roll up
+# to per-day totals + active-day counts. NEVER report these as a
+# per-sample mean: HK auto-export emits one fact per ~30s interval
+# and "active energy averaged 0.82 kcal/sample" is meaningless to
+# the user. Caught 2026-05-13 PM in Nick's endurance review.
+_CUMULATIVE_METRICS = {
+    "active_energy_kcal": (
+        "active energy", "active calories", "activeenergyburned",
+    ),
+    "exercise_minutes": (
+        "exercise time", "appleexercisetime", "apple exercise time",
+    ),
+    "walking_running_mi": (
+        "walking + running", "distancewalkingrunning",
+    ),
+    "steps_total": ("steps", "stepcount"),
+}
+
+# Workout sessions — counted, not summed/meaned. HK emits one fact
+# per workout with the label "HKWorkoutType: <duration_seconds>".
+_WORKOUT_LABEL_NEEDLES = ("hkworkouttype",)
 
 
 # Anesthesia proper — anesthetics, paralytics, local anesthetics.
@@ -271,9 +289,19 @@ def _parse_relative_window(natural_language: str, *, now: datetime) -> tuple[dat
         unit = m.group(4).lower()
         n = 1
     days = {"day": 1, "week": 7, "month": 30, "year": 365}.get(unit, 7) * n
-    target = now - timedelta(days=days)
-    half = max(2, days // 4)  # narrow window for "a few days ago", wider for "a year ago"
-    return target - timedelta(days=half), target + timedelta(days=half)
+    # Anchor on calendar midnight, not on `now.time()`. Original code
+    # used `now - timedelta(days=N)` directly, so "10 days ago" at
+    # 21:30 UTC produced a window starting 21:30 ten days prior —
+    # which missed any event at 09:00 / 13:00 on the target day.
+    # Caught 2026-05-13 PM: the May-1 13:25 surgery fell 8 hours
+    # outside the window for "about 10 days ago" asked at 21:38.
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    target = midnight - timedelta(days=days)
+    half = max(3, days // 4)  # at least ±3 days for short windows
+    half = min(half, 21)       # cap at ±3 weeks for "a year ago"
+    start = target - timedelta(days=half)
+    end = target + timedelta(days=half + 1) - timedelta(microseconds=1)
+    return start, end
 
 
 async def resolve_anchor(
@@ -443,66 +471,181 @@ async def _facts_in_window(
     return list((await db.execute(stmt)).scalars().all())
 
 
-def _aggregate_metrics(facts: list[ExtractedFact]) -> dict[str, dict[str, Any]]:
-    """Group wearable facts by metric and compute simple stats.
+def _classify_cumulative(label: str) -> str | None:
+    s = (label or "").lower()
+    for key, needles in _CUMULATIVE_METRICS.items():
+        for n in needles:
+            if n in s:
+                return key
+    return None
 
-    Returns: { metric_key: { n, mean, min, max, unit } }.
-    Values come from `coded_concepts.value` when present; otherwise we
-    try to parse a leading number from the description.
+
+def _is_workout_session(label: str) -> bool:
+    s = (label or "").lower()
+    return any(n in s for n in _WORKOUT_LABEL_NEEDLES)
+
+
+def _extract_value(f: ExtractedFact) -> tuple[float | None, str | None]:
+    """Pull a numeric value (and optional unit) out of a wearable fact.
+
+    Three sources, in order:
+      1. coded_concepts.value / .unit
+      2. leading number in description
+      3. label tail after a colon ("...HeartRateVariabilitySDNN: 28.48 ms")
     """
-    bucket: dict[str, list[float]] = {}
-    units: dict[str, str] = {}
-    for f in facts:
-        metric = _classify_wearable(f.label)
-        if not metric:
-            continue
-        value = None
-        if isinstance(f.coded_concepts, dict):
-            v = f.coded_concepts.get("value")
-            if isinstance(v, (int, float)):
-                value = float(v)
-            u = f.coded_concepts.get("unit")
-            if isinstance(u, str):
-                units.setdefault(metric, u)
-        if value is None and f.description:
-            m = re.search(r"-?\d+(?:\.\d+)?", f.description or "")
-            if m:
-                try:
-                    value = float(m.group(0))
-                except ValueError:
-                    pass
-        # HK ingest writes value into the label after a colon
-        # (e.g., "HKQuantityTypeIdentifierHeartRateVariabilitySDNN: 28.48 ms"),
-        # not into description or coded_concepts. Fall back to parsing
-        # the number out of the label tail. Caught 2026-05-13 PM.
-        if value is None and f.label:
-            m = re.search(r":\s*(-?\d+(?:\.\d+)?)", f.label)
-            if m:
-                try:
-                    value = float(m.group(1))
-                except ValueError:
-                    pass
-            # Also pick up the unit if present after the number.
-            if metric not in units:
-                um = re.search(
-                    r":\s*-?\d+(?:\.\d+)?\s+([A-Za-z/%][A-Za-z/%0-9]*)",
-                    f.label,
-                )
-                if um:
-                    units[metric] = um.group(1)
-        if value is None:
-            continue
-        bucket.setdefault(metric, []).append(value)
+    value: float | None = None
+    unit: str | None = None
+    if isinstance(f.coded_concepts, dict):
+        v = f.coded_concepts.get("value")
+        if isinstance(v, (int, float)):
+            value = float(v)
+        u = f.coded_concepts.get("unit")
+        if isinstance(u, str):
+            unit = u
+    if value is None and f.description:
+        m = re.search(r"-?\d+(?:\.\d+)?", f.description or "")
+        if m:
+            try:
+                value = float(m.group(0))
+            except ValueError:
+                pass
+    if value is None and f.label:
+        m = re.search(r":\s*(-?\d+(?:\.\d+)?)", f.label)
+        if m:
+            try:
+                value = float(m.group(1))
+            except ValueError:
+                pass
+    if unit is None and f.label:
+        um = re.search(
+            r":\s*-?\d+(?:\.\d+)?\s+([A-Za-z/%][A-Za-z/%0-9]*)",
+            f.label,
+        )
+        if um:
+            unit = um.group(1)
+    return value, unit
 
-    out: dict[str, dict[str, Any]] = {}
-    for metric, values in bucket.items():
+
+def _aggregate_metrics(facts: list[ExtractedFact]) -> dict[str, Any]:
+    """Aggregate wearable facts across a recovery window.
+
+    Output shape:
+      {
+        # physiological — averaged across samples
+        "rhr": {n, mean, min, max, unit},
+        "hrv": {...},
+        "sleep_duration": {...},
+        "vo2max": {...},
+        "spo2": {...},
+
+        # endurance — summed across the window AND rolled per day
+        "active_energy_kcal": {total, daily_mean, daily_max, active_days, days, unit},
+        "exercise_minutes":   {total, daily_mean, daily_max, active_days, days, unit},
+        "walking_running_mi": {total, daily_mean, daily_max, active_days, days, unit},
+        "steps_total":        {total, daily_mean, daily_max, active_days, days, unit},
+
+        # training context
+        "workout_count": {n, durations_sec, days_with_workout},
+        "training_gap_days": int,  # longest consecutive zero-activity stretch
+      }
+    Caught 2026-05-13 PM: previous version reported per-sample MEAN
+    for every metric, which made "active energy averaged 0.82 kcal/sample"
+    sound like a real fitness signal. Sums and per-day rollups for
+    endurance metrics; means stay for HR/HRV/sleep/VO2max/SpO2.
+    """
+    mean_buckets: dict[str, list[float]] = {}
+    mean_units: dict[str, str] = {}
+    # day_buckets[metric][date_iso] = sum-of-values-on-that-day
+    day_buckets: dict[str, dict[str, float]] = {}
+    cum_units: dict[str, str] = {}
+    all_active_days: set[str] = set()  # any cumulative metric > 0
+    workout_durations: list[float] = []
+    workout_days: set[str] = set()
+
+    for f in facts:
+        value, unit = _extract_value(f)
+        day = f.date_start.date().isoformat() if f.date_start else None
+
+        # Workout sessions
+        if _is_workout_session(f.label):
+            if value is not None:
+                workout_durations.append(value)
+            if day:
+                workout_days.add(day)
+            continue
+
+        # Mean-aggregated physiological metrics
+        metric = _classify_wearable(f.label)
+        if metric is not None and value is not None:
+            mean_buckets.setdefault(metric, []).append(value)
+            if unit and metric not in mean_units:
+                mean_units[metric] = unit
+            continue
+
+        # Cumulative endurance metrics — sum per day
+        cum = _classify_cumulative(f.label)
+        if cum is not None and value is not None and day is not None:
+            day_buckets.setdefault(cum, {}).setdefault(day, 0.0)
+            day_buckets[cum][day] += value
+            if unit and cum not in cum_units:
+                cum_units[cum] = unit
+            if value > 0:
+                all_active_days.add(day)
+
+    out: dict[str, Any] = {}
+
+    for metric, values in mean_buckets.items():
         out[metric] = {
             "n": len(values),
             "mean": round(sum(values) / len(values), 2),
             "min": round(min(values), 2),
             "max": round(max(values), 2),
-            "unit": units.get(metric),
+            "unit": mean_units.get(metric),
         }
+
+    for metric, daily in day_buckets.items():
+        days_with_data = len(daily)
+        totals = list(daily.values())
+        if not totals:
+            continue
+        active_count = sum(1 for v in totals if v > 0)
+        out[metric] = {
+            "total": round(sum(totals), 2),
+            "daily_mean": round(sum(totals) / days_with_data, 2) if days_with_data else 0,
+            "daily_max": round(max(totals), 2),
+            "active_days": active_count,
+            "days": days_with_data,
+            "unit": cum_units.get(metric),
+        }
+
+    if workout_durations or workout_days:
+        out["workout_count"] = {
+            "n": len(workout_durations),
+            "durations_sec": [round(d, 1) for d in workout_durations],
+            "days_with_workout": sorted(workout_days),
+        }
+
+    # Training gap: longest consecutive-day run with no active-energy
+    # day in the all_active_days set. Requires the window to know
+    # which days are in scope — caller passes by computing the day
+    # set from day_buckets. Simpler version: count zero-active days
+    # among the days the window actually has data for.
+    all_days_seen: set[str] = set()
+    for daily in day_buckets.values():
+        all_days_seen.update(daily.keys())
+    if all_days_seen:
+        sorted_days = sorted(all_days_seen)
+        max_gap = 0
+        cur_gap = 0
+        for d in sorted_days:
+            if d in all_active_days:
+                cur_gap = 0
+            else:
+                cur_gap += 1
+                if cur_gap > max_gap:
+                    max_gap = cur_gap
+        out["training_gap_days"] = max_gap
+
     return out
 
 
@@ -595,23 +738,37 @@ async def plan_episode_intelligence(
     procedure_facts = [f for f in day_facts if f.fact_type == "procedure"]
     condition_facts = [f for f in day_facts if f.fact_type == "condition"]
     encounter_facts = [f for f in day_facts if f.fact_type == "encounter"]
-    anesthesia_facts = [
-        f for f in day_facts
-        if f.fact_type == "medication" and _is_anesthesia(f)
-    ]
+
+    # A "named" medication has a label other than a bare FHIR reference
+    # ("MedicationRequest e0nrm..." with an opaque ID). Those rows are
+    # MedicationRequest resources whose medicationReference wasn't
+    # resolved during ingest — the Medication.code.text or display name
+    # never made it into the fact. Treat unresolved ones as a separate
+    # bucket so the LLM can honestly say "N MedicationRequest entries
+    # exist but I can't name them" instead of either claiming 24
+    # anesthesia agents or pretending the records don't exist.
+    def _is_named_med(f: ExtractedFact) -> bool:
+        label = (f.label or "").strip()
+        return not (
+            label.startswith("MedicationRequest ")
+            or label.startswith("MedicationStatement ")
+            or label.startswith("Medication ") and len(label.split()) <= 2
+        )
+
+    all_meds = [f for f in day_facts if f.fact_type == "medication"]
+    unresolved_med_refs = [f for f in all_meds if not _is_named_med(f)]
+    named_meds = [f for f in all_meds if _is_named_med(f)]
+    anesthesia_facts = [f for f in named_meds if _is_anesthesia(f)]
     perioperative_support_facts = [
-        f for f in day_facts
-        if f.fact_type == "medication" and not _is_anesthesia(f)
-        and _is_perioperative_support(f)
+        f for f in named_meds
+        if not _is_anesthesia(f) and _is_perioperative_support(f)
     ]
     # "Other meds same day" excludes anesthesia AND perioperative
-    # support to avoid double-listing — the narrative cites each
-    # bucket separately.
+    # support AND unresolved references to avoid double-listing —
+    # the narrative cites each bucket separately.
     other_meds = [
-        f for f in day_facts
-        if f.fact_type == "medication"
-        and not _is_anesthesia(f)
-        and not _is_perioperative_support(f)
+        f for f in named_meds
+        if not _is_anesthesia(f) and not _is_perioperative_support(f)
     ]
 
     # Episode kind hint — used to pick the recovery profile.
@@ -679,6 +836,18 @@ async def plan_episode_intelligence(
             "other_meds_same_day": [
                 _fact_dict(f, day_sources.get(f.id)) for f in other_meds[:25]
             ],
+            # Same-day MedicationRequest facts that reference a
+            # Medication resource we never resolved during ingest.
+            # They EXIST but we can't name them. The LLM should
+            # state this fact, not claim the meds aren't recorded
+            # at all and not invent agent names.
+            "unresolved_medication_references": {
+                "count": len(unresolved_med_refs),
+                "samples": [
+                    _fact_dict(f, day_sources.get(f.id))
+                    for f in unresolved_med_refs[:5]
+                ],
+            },
         },
         "perioperative_support_meds": {
             "facts": [
