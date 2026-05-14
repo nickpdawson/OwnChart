@@ -120,6 +120,8 @@ class EpisodeMemberOut(BaseModel):
 class EpisodeSummary(BaseModel):
     id: str
     title: str
+    display_title: str | None = None
+    aliases: list[str] = Field(default_factory=list)
     summary: str | None
     kind: str
     date_start: datetime | None
@@ -138,6 +140,8 @@ def _summary(e: Episode) -> EpisodeSummary:
     return EpisodeSummary(
         id=str(e.id),
         title=e.title,
+        display_title=e.display_title,
+        aliases=list(e.aliases or []),
         summary=e.summary,
         kind=e.kind,
         date_start=e.date_start,
@@ -186,6 +190,12 @@ async def list_recent_episodes_route(
 
 class EpisodePatchRequest(BaseModel):
     title: str | None = None
+    # Rename for display. Backing `title` stays as the planner-derived
+    # label so re-runs of EI don't fight the user.
+    display_title: str | None = None
+    # Replace the alias set wholesale. Pass [] to clear; omit to leave
+    # untouched. Use POST/DELETE on /aliases for additive ops.
+    aliases: list[str] | None = None
     summary: str | None = None
     kind: str | None = None
     # User-confirmable significance applied to the primary_fact_id.
@@ -193,6 +203,10 @@ class EpisodePatchRequest(BaseModel):
     # ranked feed; background / source_only hide it.
     significance: str | None = None
     reason: str | None = None
+
+
+class EpisodeAliasRequest(BaseModel):
+    alias: str
 
 
 @router.patch("/{episode_id}", response_model=EpisodeDetail)
@@ -223,6 +237,24 @@ async def patch_episode_route(
     if body.title is not None and body.title.strip():
         detail["from_title"] = ep.title
         ep.title = body.title.strip()[:512]
+    if body.display_title is not None:
+        detail["from_display_title"] = ep.display_title
+        cleaned = body.display_title.strip()
+        ep.display_title = cleaned[:512] if cleaned else None
+    if body.aliases is not None:
+        detail["from_aliases"] = list(ep.aliases or [])
+        # Dedupe + strip whitespace + drop empties + cap at 16.
+        seen: set[str] = set()
+        cleaned_aliases: list[str] = []
+        for a in body.aliases:
+            s = (a or "").strip()
+            if not s or s.lower() in seen:
+                continue
+            seen.add(s.lower())
+            cleaned_aliases.append(s[:128])
+            if len(cleaned_aliases) >= 16:
+                break
+        ep.aliases = cleaned_aliases
     if body.summary is not None:
         ep.summary = body.summary
     if body.kind is not None and body.kind.strip():
@@ -258,6 +290,80 @@ async def patch_episode_route(
         user_agent=request.headers.get("user-agent"),
     ))
     await db.commit()
+    return await get_episode_route(ep.id, user, db)
+
+
+@router.post("/{episode_id}/aliases", response_model=EpisodeDetail)
+async def add_episode_alias_route(
+    episode_id: uuid.UUID,
+    body: EpisodeAliasRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> EpisodeDetail:
+    """Add an alias to an Event. Idempotent on case-insensitive match."""
+    ep = await db.get(Episode, episode_id)
+    if ep is None or ep.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    new_alias = (body.alias or "").strip()
+    if not new_alias:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, detail="alias is required"
+        )
+    existing = list(ep.aliases or [])
+    if any(a.lower() == new_alias.lower() for a in existing):
+        return await get_episode_route(ep.id, user, db)
+    if len(existing) >= 16:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="alias cap reached (16). Remove one first.",
+        )
+    existing.append(new_alias[:128])
+    ep.aliases = existing
+    ep.updated_at = datetime.now(timezone.utc)
+    db.add(AuditEvent(
+        user_id=user.id,
+        event_type="episode_alias_added",
+        subject_type="episode",
+        subject_id=str(ep.id),
+        detail={"alias": new_alias},
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    ))
+    await db.commit()
+    return await get_episode_route(ep.id, user, db)
+
+
+@router.delete("/{episode_id}/aliases/{alias}", response_model=EpisodeDetail)
+async def remove_episode_alias_route(
+    episode_id: uuid.UUID,
+    alias: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> EpisodeDetail:
+    """Remove an alias (case-insensitive). Idempotent."""
+    ep = await db.get(Episode, episode_id)
+    if ep is None or ep.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    target = (alias or "").strip().lower()
+    if not target:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY)
+    before = list(ep.aliases or [])
+    after = [a for a in before if a.lower() != target]
+    if after != before:
+        ep.aliases = after
+        ep.updated_at = datetime.now(timezone.utc)
+        db.add(AuditEvent(
+            user_id=user.id,
+            event_type="episode_alias_removed",
+            subject_type="episode",
+            subject_id=str(ep.id),
+            detail={"alias": alias},
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        ))
+        await db.commit()
     return await get_episode_route(ep.id, user, db)
 
 

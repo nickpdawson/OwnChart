@@ -211,6 +211,35 @@ def _is_episode_shaped(text: str) -> bool:
     return bool(_EPISODE_KEYWORDS.search(text or ""))
 
 
+async def _question_mentions_event_alias(
+    db: AsyncSession, *, user_id: uuid.UUID, text: str,
+) -> bool:
+    """True if `text` literally contains an Event display_title or
+    alias the user has registered. Used to route alias-only questions
+    ("How did 2026 left eye affect my training?") into Episode
+    Intelligence even when no episode-keyword fires.
+    """
+    from ..models.episode import Episode
+    if not text:
+        return False
+    q = text.lower()
+    rows = list((await db.execute(
+        select(Episode)
+        .where(Episode.user_id == user_id)
+        .where((Episode.aliases != []) | (Episode.display_title.isnot(None)))  # type: ignore[arg-type]
+    )).scalars().all())
+    for ep in rows:
+        candidates: list[str] = []
+        if ep.display_title:
+            candidates.append(ep.display_title)
+        candidates.extend(ep.aliases or [])
+        for phrase in candidates:
+            p = (phrase or "").strip().lower()
+            if len(p) >= 3 and p in q:
+                return True
+    return False
+
+
 @router.post("", response_model=ConversationDetail,
              status_code=status.HTTP_201_CREATED)
 async def create_conversation_route(
@@ -223,12 +252,19 @@ async def create_conversation_route(
     # is the default for /ask). Existing dossier / source / episode-
     # scoped flows are untouched.
     scope_type = (body.scope or {}).get("type", "whole_record")
+    should_route_to_ei = False
     if (
         body.first_message
         and body.kind == "ask"
         and scope_type == "whole_record"
-        and _is_episode_shaped(body.first_message)
     ):
+        if _is_episode_shaped(body.first_message):
+            should_route_to_ei = True
+        elif await _question_mentions_event_alias(
+            db, user_id=user.id, text=body.first_message,
+        ):
+            should_route_to_ei = True
+    if should_route_to_ei:
         from ..llm.episode_intelligence import run_episode_intelligence
         ei_out = await run_episode_intelligence(
             db, user,

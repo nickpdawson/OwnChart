@@ -100,6 +100,7 @@ async def run_episode_intelligence(
             fact_id=fact_id,
             episode_id=episode_id,
             natural_language=natural_language,
+            user_id=user.id,
             now=now,
         )
     except Exception as e:  # noqa: BLE001

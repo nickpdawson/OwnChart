@@ -304,12 +304,87 @@ def _parse_relative_window(natural_language: str, *, now: datetime) -> tuple[dat
     return start, end
 
 
+async def _resolve_episode_alias(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    natural_language: str,
+) -> dict[str, Any] | None:
+    """Return an anchor dict if the user's question literally names
+    an existing Event (by display_title or any alias). None otherwise.
+
+    Match policy: case-insensitive substring match where the alias
+    or display_title appears as a whole-phrase in the question.
+    Longest match wins so "2026 left eye surgery" beats "left eye".
+    """
+    from ..models.episode import Episode
+
+    rows = list((await db.execute(
+        select(Episode)
+        .where(Episode.user_id == user_id)
+        .where(
+            (Episode.aliases != []) | (Episode.display_title.isnot(None))  # type: ignore[arg-type]
+        )
+    )).scalars().all())
+    if not rows:
+        return None
+
+    q = (natural_language or "").lower()
+    best: tuple[Episode, str] | None = None  # (episode, matched_phrase)
+    for ep in rows:
+        candidates: list[str] = []
+        if ep.display_title:
+            candidates.append(ep.display_title)
+        candidates.extend(ep.aliases or [])
+        for phrase in candidates:
+            p = (phrase or "").strip()
+            if not p or len(p) < 3:
+                continue
+            if p.lower() in q:
+                if best is None or len(p) > len(best[1]):
+                    best = (ep, p)
+    if best is None:
+        return None
+
+    ep, matched = best
+    if ep.primary_fact_id is None:
+        # Alias points to an Event with no anchor fact (rare —
+        # promotion-from-candidate sets primary_fact_id). Surface a
+        # minimal anchor using the Episode's own date_start.
+        return {
+            "fact_id": None,
+            "label": ep.display_title or ep.title,
+            "date_start": ep.date_start.isoformat() if ep.date_start else None,
+            "significance": "major_event",
+            "match_confidence": "high",
+            "match_explanation": (
+                f"Resolved alias '{matched}' to your saved Event "
+                f"'{ep.display_title or ep.title}'."
+            ),
+        }
+    f = await db.get(ExtractedFact, ep.primary_fact_id)
+    if f is None:
+        return None
+    return {
+        "fact_id": str(f.id),
+        "label": ep.display_title or ep.title,
+        "date_start": f.date_start.isoformat() if f.date_start else None,
+        "significance": f.significance,
+        "match_confidence": "high",
+        "match_explanation": (
+            f"Resolved alias '{matched}' to your saved Event "
+            f"'{ep.display_title or ep.title}'."
+        ),
+    }
+
+
 async def resolve_anchor(
     db: AsyncSession,
     *,
     fact_id: uuid.UUID | None = None,
     episode_id: uuid.UUID | None = None,
     natural_language: str | None = None,
+    user_id: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Find the best anchor fact for the request.
@@ -317,9 +392,11 @@ async def resolve_anchor(
     Resolution order:
       1. Explicit fact_id (always wins; confidence='high').
       2. Explicit episode_id → episode.primary_fact_id.
-      3. NL phrase like "about a week ago" → window-restricted search
+      3. NL phrase mentioning an existing Event's display_title or
+         alias (when user_id is supplied) → that Event, high confidence.
+      4. NL phrase like "about a week ago" → window-restricted search
          for the highest-significance procedure/event in that window.
-      4. NL phrase fallback → just the most recent major_procedure.
+      5. NL phrase fallback → just the most recent major_procedure.
     """
     now = now or datetime.now(timezone.utc)
 
@@ -341,7 +418,16 @@ async def resolve_anchor(
         ep = await db.get(Episode, episode_id)
         if ep is None or ep.primary_fact_id is None:
             return None
-        return await resolve_anchor(db, fact_id=ep.primary_fact_id, now=now)
+        return await resolve_anchor(
+            db, fact_id=ep.primary_fact_id, user_id=user_id, now=now,
+        )
+
+    if natural_language and user_id is not None:
+        alias_hit = await _resolve_episode_alias(
+            db, user_id=user_id, natural_language=natural_language,
+        )
+        if alias_hit is not None:
+            return alias_hit
 
     if natural_language:
         window = _parse_relative_window(natural_language, now=now)
@@ -713,14 +799,19 @@ async def plan_episode_intelligence(
     fact_id: uuid.UUID | None = None,
     episode_id: uuid.UUID | None = None,
     natural_language: str | None = None,
+    user_id: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Build the structured payload for one episode (or None if no
-    anchor could be resolved). Pure read; no writes."""
+    anchor could be resolved). Pure read; no writes.
+
+    `user_id` is required for alias-based Event resolution — without it
+    the resolver falls back to relative-date / most-recent matching.
+    """
     now = now or datetime.now(timezone.utc)
     anchor = await resolve_anchor(
         db, fact_id=fact_id, episode_id=episode_id,
-        natural_language=natural_language, now=now,
+        natural_language=natural_language, user_id=user_id, now=now,
     )
     if anchor is None:
         return None
