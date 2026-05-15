@@ -155,7 +155,27 @@ async def _gather_evidence(
             )).scalar_one_or_none()
             if topic is not None:
                 from ..retrieval.topics import facts_for_topic
-                facts = await facts_for_topic(db, topic, limit=limit)
+                # Topic-scoped chats also need to honor the user's
+                # current question. If the dossier is "Left Knee" but
+                # the user asks "look at my OrthoVirginia records,"
+                # retrieval must reach OrthoVirginia — not just
+                # left-knee-aliased facts. Round-3 read 2026-05-15 PM.
+                topic_facts = await facts_for_topic(db, topic, limit=limit)
+                question_facts = await search_facts(
+                    db, question, limit=limit, user_id=user_id,
+                )
+                # Topic facts first (the dossier context the user
+                # explicitly opened), then question-driven results.
+                seen_ids: set = set()
+                merged: list[ExtractedFact] = []
+                for f in topic_facts + question_facts:
+                    if f.id in seen_ids:
+                        continue
+                    seen_ids.add(f.id)
+                    merged.append(f)
+                    if len(merged) >= limit:
+                        break
+                facts = merged
 
     elif kind == "episode":
         from ..models.episode import EpisodeMember

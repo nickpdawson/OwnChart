@@ -18,8 +18,11 @@ import uuid
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.logger import get_logger
 from ..models.extracted_fact import ExtractedFact
 from ..models.topic import Topic
+
+log = get_logger("ownchart.retrieval.topics")
 
 
 # Significance rank for ORDER BY — lower number = higher priority.
@@ -118,25 +121,54 @@ def topic_membership_clause(topic: Topic):
     if the topic has no aliases / patterns to match on — caller should
     treat that as "no facts".
 
-    Membership combines two signals (OR-matched):
+    Membership combines three signals (OR-matched):
 
-    1. **Alias substring** (`aliases` + topic name) — case-insensitive
-       ILIKE match against label or description. Catches the easy case
-       where the fact mentions the topic by name.
-    2. **Label patterns** (`label_patterns`) — Postgres POSIX regex
-       (`~*`) match against label or description. Catches vocabulary
-       classes the alias path misses — e.g., a an operative
-       report that says "Left lateral rectus recession 5 mm" without
-       ever using the word "an eye condition".
+    1. **Long alias substring** (≥6 chars) — case-insensitive ILIKE.
+       Cheap and broad; safe at this length.
+    2. **Short alias word-bounded** (3–5 chars) — POSIX regex with
+       `\\m...\\M` word anchors. "ACL" matches "ACL repair" but not
+       "Octreotide acetate"; "OA" alone is BELOW the 3-char floor
+       and silently dropped. Without this guard, a 2-char alias
+       like "OA" did a 1.9s parallel seq scan over 1.7M rows
+       (caught 2026-05-15 PM on /dossier/left-knee).
+    3. **Label patterns** (`label_patterns`) — Postgres POSIX regex
+       (`~*`). Catches vocabulary classes the alias path misses,
+       e.g. "Left lateral rectus recession 5 mm" without the word
+       eye.
+
+    Aliases under 3 characters are dropped entirely with a logged
+    warning — they were almost certainly user typos or stub entries.
     """
     terms = [topic.name, *topic.aliases]
     filters = []
+    dropped: list[str] = []
     for t in terms:
         if not t:
             continue
-        pattern = f"%{t}%"
-        filters.append(ExtractedFact.label.ilike(pattern))
-        filters.append(ExtractedFact.description.ilike(pattern))
+        s = t.strip()
+        if len(s) < 3:
+            dropped.append(s)
+            continue
+        if len(s) <= 5:
+            # Word-bounded regex so short tokens stay precise.
+            # Postgres `~*` is case-insensitive POSIX; `\m`/`\M` mark
+            # word start / end (Postgres extension). Escape any
+            # regex meta-chars the user might have typed.
+            esc = re.sub(r"([.+*?^$()\[\]{}|\\])", r"\\\1", s)
+            rx = r"\m" + esc + r"\M"
+            filters.append(ExtractedFact.label.op("~*")(rx))
+            filters.append(ExtractedFact.description.op("~*")(rx))
+        else:
+            pattern = f"%{s}%"
+            filters.append(ExtractedFact.label.ilike(pattern))
+            filters.append(ExtractedFact.description.ilike(pattern))
+    if dropped:
+        log.warning(
+            "topic_alias_too_short",
+            topic=topic.slug,
+            dropped=dropped,
+            note="aliases <3 chars cause ILIKE seq-scan explosions; rename them",
+        )
     for rx in topic.label_patterns or []:
         if not rx:
             continue
@@ -353,24 +385,80 @@ async def search_facts(
             sub_stmt = sub_stmt.where(sf)
         substr_facts = list((await db.execute(sub_stmt)).scalars().all())
 
+    # --- Source-name expansion (2026-05-15 PM) ---------------------------
+    # When the raw query mentions a known source by name ("Look at my
+    # OrthoVirginia records", "What do Stanford notes say…"), retrieval
+    # must reach facts that live UNDER that source — not just facts
+    # whose label/description happens to contain the source name.
+    # Without this, asking the chat to consult OrthoVirginia returned
+    # 0 substantive facts because the source identity lives on
+    # source_documents.source_label, not in extracted_facts.* text.
+    source_facts: list[ExtractedFact] = []
+    raw_lower = raw.lower()
+    if raw_lower:
+        from ..models.evidence_anchor import EvidenceAnchor
+        from ..models.source_document import SourceDocument
+        # Pull all distinct source_labels — small set (one row per
+        # connected practice / upload origin) so this is cheap.
+        label_rows = list((await db.execute(
+            select(SourceDocument.id, SourceDocument.source_label)
+            .where(SourceDocument.source_label.isnot(None))
+            .distinct()
+        )).all())
+        # Match labels against the raw question. Strip whitespace +
+        # case-fold; also try a no-whitespace form so "Ortho Virginia"
+        # in the question hits "OrthoVirginia" in the data and vice
+        # versa.
+        matched_source_ids: list[uuid.UUID] = []
+        seen_labels: set[str] = set()
+        for sid, label in label_rows:
+            if not label or label in seen_labels:
+                continue
+            seen_labels.add(label)
+            lab = label.lower().strip()
+            lab_nospace = "".join(lab.split())
+            raw_nospace = "".join(raw_lower.split())
+            if (lab in raw_lower or lab_nospace in raw_nospace) and len(lab) >= 4:
+                matched_source_ids.append(sid)
+        if matched_source_ids:
+            # Two-step: collect anchor_ids under matched sources, then
+            # find facts whose evidence_anchor_ids array overlaps. The
+            # `&&` array-overlap operator on a GIN-indexed text[] is
+            # the canonical Postgres pattern for "facts that cite any
+            # of these anchors."
+            anchor_ids = list((await db.execute(
+                select(EvidenceAnchor.id)
+                .where(EvidenceAnchor.source_document_id.in_(matched_source_ids))
+            )).scalars().all())
+            if anchor_ids:
+                fact_stmt = (
+                    select(ExtractedFact)
+                    .where(ExtractedFact.evidence_anchor_ids.op("&&")(anchor_ids))
+                    .order_by(
+                        _SIGNIFICANCE_RANK,
+                        ExtractedFact.date_start.desc().nullslast(),
+                    )
+                    .limit(limit)
+                )
+                sf = _state_filter()
+                if sf is not None:
+                    fact_stmt = fact_stmt.where(sf)
+                source_facts = list((await db.execute(fact_stmt)).scalars().all())
+
     # Merge order:
-    #   - When substring returns hits, those WIN. The user asked about
-    #     a specific thing (strabismus, fibula, Celebrex) — the
-    #     substring-matched + significance-sorted facts are what they
-    #     mean. Category breadth comes after as filler.
-    #   - When substring is empty (genuinely unspecific query like
-    #     "what medications am I on?"), fall back to category-rep
-    #     facts as the primary signal.
+    #   - **Source-name match wins first** when the user named a
+    #     specific source — that's a direct instruction to look there.
+    #   - Substring match comes next.
+    #   - Category-representative facts fill remaining slots.
     #
-    # Earlier ordering put category first unconditionally. That caused
-    # "Tell me about my May 1 strabismus surgery" to return 40 ACL
-    # reconstruction facts (alphabetically-early matches of the
-    # token "procedure") and zero May-1-strabismus facts (which were
-    # ready in substring but got crowded out before the merge could
-    # reach them). Caught during golden-path walk 2026-05-13.
-    merge_order = (
-        substr_facts + cat_facts if substr_facts else cat_facts + substr_facts
-    )
+    # When substring is empty (genuinely unspecific query like
+    # "what medications am I on?"), fall back to category-rep facts.
+    if source_facts:
+        merge_order = source_facts + substr_facts + cat_facts
+    elif substr_facts:
+        merge_order = substr_facts + cat_facts
+    else:
+        merge_order = cat_facts + substr_facts
     seen: dict = {}
     for f in merge_order:
         if f.id not in seen:
