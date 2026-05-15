@@ -99,6 +99,22 @@ tools:
           description: |
             The observation, 2-4 sentences. Second person. Plain
             prose, no markdown.
+
+            Curiosity framing (2026-05-15 PM read): this is an
+            OBSERVATION worth a closer look, NOT a diagnosis or
+            clinical finding. Frame the body so the reader knows
+            this is a prompt to look, not a finding to accept.
+            Acceptable openers: "I noticed…", "Worth a look:",
+            "Your record shows…". Unacceptable: "You have…", "This
+            indicates…", "You should…". Never imply causation.
+            When evidence is sparse, say "I see only N rows pointing
+            at this" rather than asserting confidently.
+
+            Always include 1-3 fact_ids in `related_fact_ids` so
+            the UI's "Why I'm showing this" affordance can link to
+            them. If the observation can't be tied to specific
+            facts, set `refuse=true` instead — better silence than
+            ungrounded narrative.
         question:
           type: string
           description: |

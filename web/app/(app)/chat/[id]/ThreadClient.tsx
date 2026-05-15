@@ -517,21 +517,7 @@ export function ThreadClient({
         {messages.map((m) => (
           <Bubble key={m.id} msg={m} />
         ))}
-        {isPendingEi && !stuckPendingEi && (
-          <li className="rounded-xl border border-muted/15 bg-surface p-4">
-            <p className="text-[10px] uppercase tracking-widest text-muted">
-              assistant · reading your record
-            </p>
-            <p className="mt-2 font-serif text-base leading-relaxed text-ink">
-              OwnChart is reading the record
-              <span className="inline-block ml-1 animate-pulse">…</span>
-            </p>
-            <p className="mt-1 text-xs text-muted">
-              Pulling the procedure, anesthesia notes, discharge instructions,
-              and the wearable windows around the date. Usually 30–60 seconds.
-            </p>
-          </li>
-        )}
+        {isPendingEi && !stuckPendingEi && <ThinkingBubble />}
         {isPendingEi && stuckPendingEi && (
           <li className="rounded-xl border border-caution/30 bg-caution/5 p-4">
             <p className="text-[10px] uppercase tracking-widest text-caution">
@@ -594,6 +580,72 @@ export function ThreadClient({
         {error && <p className="mt-3 text-sm text-caution">{error}</p>}
       </section>
     </div>
+  );
+}
+
+// ThinkingBubble — staged status while EI / Ask is pending.
+//
+// The actual backend phases (planner → LLM call → tool emit → audit
+// write) don't expose intermediate progress, so this isn't a literal
+// progress bar. The stages are illustrative — they advance on a timer
+// so the user knows the system is doing something instead of staring
+// at a static ellipsis. P1-4 from Nick's 2026-05-15 PM smoke read.
+const _THINKING_STAGES = [
+  { at: 0,    headline: "Finding the right event",     hint: "Matching your question to the most likely anchor on your record." },
+  { at: 8000, headline: "Checking primary records",    hint: "Preferring operative reports and specialist notes over copy-forward history." },
+  { at: 22000, headline: "Reading supporting evidence", hint: "Pulling anesthesia notes, instructions, and the wearable windows around the date." },
+  { at: 42000, headline: "Writing cited answer",       hint: "Drafting the response with fact_ids inline so you can verify." },
+];
+
+function ThinkingBubble() {
+  const [stageIdx, setStageIdx] = useState(0);
+  const [startedAt] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      let next = 0;
+      for (let i = _THINKING_STAGES.length - 1; i >= 0; i--) {
+        if (elapsed >= _THINKING_STAGES[i].at) { next = i; break; }
+      }
+      setStageIdx(next);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [startedAt]);
+  const stage = _THINKING_STAGES[stageIdx];
+  return (
+    <li className="rounded-xl border border-muted/15 bg-surface p-4">
+      <p className="text-[10px] uppercase tracking-widest text-muted">
+        assistant · {stage.headline}
+        <span className="ml-1.5 inline-flex gap-0.5 align-middle">
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              className="inline-block h-1 w-1 rounded-full bg-accent animate-pulse"
+              style={{ animationDelay: `${i * 200}ms` }}
+            />
+          ))}
+        </span>
+      </p>
+      <ol className="mt-2 space-y-1 text-sm">
+        {_THINKING_STAGES.map((s, i) => {
+          const isDone = i < stageIdx;
+          const isActive = i === stageIdx;
+          return (
+            <li key={s.headline} className={
+              "flex items-baseline gap-2 " +
+              (isActive ? "text-ink" : isDone ? "text-muted line-through" : "text-muted/50")
+            }>
+              <span aria-hidden className={
+                "inline-block h-1.5 w-1.5 shrink-0 rounded-full " +
+                (isActive ? "bg-accent" : isDone ? "bg-evidence" : "bg-muted/30")
+              } />
+              <span>{s.headline}</span>
+            </li>
+          );
+        })}
+      </ol>
+      <p className="mt-2 text-xs text-muted">{stage.hint}</p>
+    </li>
   );
 }
 

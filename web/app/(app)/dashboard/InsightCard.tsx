@@ -90,6 +90,15 @@ export function InsightCard({ initial }: { initial: Insight | null }) {
       <p className="mt-2 font-serif text-base leading-relaxed text-ink">
         {insight.body}
       </p>
+      {/* Curiosity framing — the insight is an *observation*, not a
+          diagnostic claim. The "Curious, not certain" pill + the
+          related-fact-ids affordance below tell the user this is
+          a prompt to look closer, not a finding to accept. P1-5
+          from 2026-05-15 PM smoke read. */}
+      <div className="mt-2 inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-muted">
+        <span className="inline-block h-1 w-1 rounded-full bg-evidence" />
+        Observation, not a finding · verify in the cited evidence
+      </div>
       {insight.question && (
         <a
           href={`/ask?q=${encodeURIComponent(insight.question)}`}
@@ -97,6 +106,34 @@ export function InsightCard({ initial }: { initial: Insight | null }) {
         >
           {insight.question}
         </a>
+      )}
+      {insight.related_fact_ids.length > 0 && (
+        <div className="mt-3">
+          <details className="group">
+            <summary className="cursor-pointer text-xs text-muted hover:text-ink">
+              Why I&apos;m showing this · {insight.related_fact_ids.length}{" "}
+              evidence row{insight.related_fact_ids.length === 1 ? "" : "s"}
+            </summary>
+            <ul className="mt-2 flex flex-wrap gap-1.5">
+              {insight.related_fact_ids.slice(0, 8).map((fid) => (
+                <li key={fid}>
+                  <a
+                    href={`/discover?fact=${encodeURIComponent(fid)}`}
+                    className="inline-flex items-center rounded-md border border-accent/30 bg-accent/5 px-1.5 py-0.5 text-[0.75rem] font-mono text-accent hover:bg-accent/10"
+                    title={`Open fact ${fid}`}
+                  >
+                    fact {fid.slice(0, 8)}
+                  </a>
+                </li>
+              ))}
+              {insight.related_fact_ids.length > 8 && (
+                <li className="text-xs text-muted">
+                  +{insight.related_fact_ids.length - 8} more
+                </li>
+              )}
+            </ul>
+          </details>
+        </div>
       )}
       <p className="mt-3 text-[10px] uppercase tracking-widest text-muted">
         Generated{" "}
