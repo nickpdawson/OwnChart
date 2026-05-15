@@ -1,6 +1,13 @@
 id: extract_clinical_note
 version: 1
-model: claude-opus-4-7
+# Haiku 4.5 (was Opus 4.7) — extraction is a structured-output
+# mapping task with a tight schema. Haiku is ~15× cheaper input and
+# ~19× cheaper output for the same quality on this task shape. The
+# 246-note backfill on Opus 4.7 cost ~$15; the same workload on
+# Haiku is ~$1. Switched 2026-05-14 PM after a 48h cost audit.
+# Opus stays on Episode Intelligence + Ask (the synthesis steps),
+# where the model's reasoning is the actual product.
+model: claude-haiku-4-5-20251001
 purpose: extract_clinical_note
 
 # Built 2026-05-14 to close the 184-clinical-notes-with-zero-facts gap

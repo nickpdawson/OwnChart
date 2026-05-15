@@ -57,7 +57,19 @@ class AnthropicProvider(LlmProvider):
             "messages": request.messages,
         }
         if request.tools:
-            request_payload["tools"] = request.tools
+            # Stamp cache_control on the LAST tool so Anthropic
+            # caches everything up to and including the tool schema.
+            # EI ships a ~2k-token tool definition that's identical
+            # across calls; without this, every call paid full
+            # input price for the schema. 2026-05-14 cost audit
+            # showed cache_read at $0.35 vs input_no_cache at $6.62 —
+            # caching was barely being used. This is the fix.
+            tools = [dict(t) for t in request.tools]
+            if tools:
+                last = dict(tools[-1])
+                last["cache_control"] = {"type": "ephemeral"}
+                tools[-1] = last
+            request_payload["tools"] = tools
             if request.tool_choice:
                 request_payload["tool_choice"] = {
                     "type": "tool",
@@ -78,15 +90,27 @@ class AnthropicProvider(LlmProvider):
             elif block.type == "text":
                 raw_text = (raw_text or "") + block.text
 
+        # Surface cache hits/misses in usage so we can audit cost
+        # impact from the model_runs table. Anthropic's response has
+        # cache_read_input_tokens + cache_creation_input_tokens; both
+        # default to 0 when caching isn't in play.
+        usage_out: dict[str, Any] = {
+            "input_tokens": resp.usage.input_tokens,
+            "output_tokens": resp.usage.output_tokens,
+            "latency_ms": latency_ms,
+        }
+        cache_read = getattr(resp.usage, "cache_read_input_tokens", None)
+        cache_create = getattr(resp.usage, "cache_creation_input_tokens", None)
+        if cache_read is not None:
+            usage_out["cache_read_input_tokens"] = cache_read
+        if cache_create is not None:
+            usage_out["cache_creation_input_tokens"] = cache_create
+
         return LlmResponse(
             raw_text=raw_text,
             tool_input=tool_input,
             stop_reason=resp.stop_reason,
-            usage={
-                "input_tokens": resp.usage.input_tokens,
-                "output_tokens": resp.usage.output_tokens,
-                "latency_ms": latency_ms,
-            },
+            usage=usage_out,
             provider=self.key,
             model=request.model,
         )
