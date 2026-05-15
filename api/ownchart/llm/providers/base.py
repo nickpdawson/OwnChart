@@ -26,6 +26,11 @@ class LlmRequest:
 
     The provider implementation translates these into its own SDK
     format.
+
+    `api_key_override` lets a caller hand a per-user, decrypted API key
+    to the provider for this single call. Used by the BYOK path so the
+    user's own Anthropic / OpenAI key is billed instead of the
+    deployment default. Plaintext only lives in memory for the call.
     """
 
     model: str
@@ -34,6 +39,7 @@ class LlmRequest:
     tools: list[dict[str, Any]] = field(default_factory=list)
     tool_choice: str | None = None
     max_tokens: int = 4096
+    api_key_override: str | None = None
 
 
 @dataclass

@@ -90,6 +90,25 @@ export function SettingsClient({
         </dl>
       </section>
 
+      {/* AI providers — link out to the BYOK page. Inline editor
+          would dwarf the rest of Settings; keep it on its own. */}
+      <section>
+        <h2 className="text-xs uppercase tracking-widest text-muted">
+          AI providers
+        </h2>
+        <p className="mt-1 max-w-2xl text-sm text-muted">
+          Bring your own Anthropic / OpenAI key, or use the
+          deployment&apos;s shared key. Sign in with Claude when
+          Anthropic exposes it.
+        </p>
+        <a
+          href="/settings/providers"
+          className="mt-3 inline-block rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/10"
+        >
+          Manage AI providers →
+        </a>
+      </section>
+
       {SECTIONS.filter((s) => s.key !== "profile").map((section) => {
         const items = registry.filter((r) => r.section === section.key);
         if (items.length === 0) return null;

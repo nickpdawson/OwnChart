@@ -23,11 +23,15 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.crypto import TokenCryptoError, decrypt_str
 from ..core.logger import get_logger
+from ..models.llm_provider_credential import LlmProviderCredential
 from ..models.model_run import ModelRun
 from ..models.user import User
 from .prompts import Prompt
@@ -56,6 +60,39 @@ class LlmCallResult:
 
 def _hash_payload(p: Any) -> str:
     return hashlib.sha256(json.dumps(p, sort_keys=True, default=str).encode()).hexdigest()
+
+
+async def _resolve_user_api_key(
+    db: AsyncSession, user: User, provider_key: str,
+) -> tuple[str | None, uuid.UUID | None]:
+    """Look up the user's non-revoked api_key credential for `provider_key`.
+
+    Returns (plaintext_key, credential_id) when one exists and decrypts
+    cleanly. Returns (None, None) when the user has no row, has only a
+    revoked row, or the row's secret can't be decrypted (logged + audit
+    suppressed; caller falls back to the deployment default key).
+    """
+    row = (await db.execute(
+        select(LlmProviderCredential)
+        .where(LlmProviderCredential.user_id == user.id)
+        .where(LlmProviderCredential.provider == provider_key)
+        .where(LlmProviderCredential.auth_kind == "api_key")
+        .where(LlmProviderCredential.revoked_at.is_(None))
+        .order_by(LlmProviderCredential.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if row is None or row.encrypted_secret is None:
+        return None, None
+    try:
+        plaintext = decrypt_str(row.encrypted_secret)
+    except TokenCryptoError as e:
+        log.warning("byok_decrypt_failed",
+                    provider=provider_key, credential_id=str(row.id),
+                    error=str(e))
+        return None, None
+    if not plaintext:
+        return None, None
+    return plaintext, row.id
 
 
 async def call_with_tool(
@@ -99,6 +136,15 @@ async def call_with_tool(
         )
     content.append({"type": "text", "text": rendered_user})
 
+    selected = resolve_provider(provider)
+    # BYOK: prefer the user's stored, non-revoked api_key credential
+    # for this provider. Falls back to the deployment default key
+    # (env var) when the user has no row. Decryption only at call time,
+    # plaintext never persisted.
+    user_key, user_credential_id = await _resolve_user_api_key(
+        db, user, selected.key,
+    )
+
     request = LlmRequest(
         model=prompt.model,
         system=prompt.system,
@@ -106,6 +152,7 @@ async def call_with_tool(
         tools=prompt.tools,
         tool_choice=tool_name,
         max_tokens=max_tokens,
+        api_key_override=user_key,
     )
     input_hash = _hash_payload({
         "model": request.model, "system": request.system,
@@ -113,7 +160,6 @@ async def call_with_tool(
         "tool_choice": request.tool_choice,
     })
     run_id = uuid.uuid4()
-    selected = resolve_provider(provider)
 
     err: str | None = None
     tool_input: dict[str, Any] | None = None
@@ -142,6 +188,15 @@ async def call_with_tool(
         log.warning("llm_call_failed", purpose=purpose,
                     provider=selected.key, error=err)
 
+    # Stamp which credential was billed so cost can be attributed
+    # per-user without exposing the key. Audit-only; doesn't change
+    # behavior.
+    if user_credential_id is not None:
+        usage["billed_credential_id"] = str(user_credential_id)
+        usage["billed_to"] = "user_byok"
+    else:
+        usage["billed_to"] = "deployment_default"
+
     run = ModelRun(
         id=run_id,
         provider=selected.key,
@@ -156,6 +211,13 @@ async def call_with_tool(
         error=err,
     )
     db.add(run)
+    # Touch last_used_at when a BYOK credential was actually used
+    # (regardless of success — even a failed call indicates the key
+    # was attempted, which is what Settings UI shows the user).
+    if user_credential_id is not None:
+        cred = await db.get(LlmProviderCredential, user_credential_id)
+        if cred is not None and cred.revoked_at is None:
+            cred.last_used_at = datetime.now(timezone.utc)
     await db.commit()
 
     return LlmCallResult(

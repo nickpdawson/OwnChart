@@ -53,7 +53,7 @@ class OpenAIProvider(LlmProvider):
         # Late import keeps the package optional.
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(api_key=_api_key())
+        client = AsyncOpenAI(api_key=request.api_key_override or _api_key())
         messages = [{"role": "system", "content": request.system}, *_translate_messages(request.messages)]
         kwargs: dict[str, Any] = {
             "model": request.model,

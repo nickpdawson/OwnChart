@@ -16,7 +16,12 @@ _settings = get_settings()
 _client: AsyncAnthropic | None = None
 
 
-def _get_client() -> AsyncAnthropic:
+def _get_client(api_key_override: str | None = None) -> AsyncAnthropic:
+    # BYOK path: build a one-shot client with the user's decrypted key.
+    # Don't cache — the override is per-call and the singleton must
+    # stay bound to the deployment default key.
+    if api_key_override:
+        return AsyncAnthropic(api_key=api_key_override)
     global _client
     if _client is None:
         if not _settings.anthropic_api_key:
@@ -43,7 +48,7 @@ class AnthropicProvider(LlmProvider):
         return bool(_settings.anthropic_api_key)
 
     async def call(self, request: LlmRequest) -> LlmResponse:
-        client = _get_client()
+        client = _get_client(request.api_key_override)
         request_payload: dict[str, Any] = {
             "model": request.model,
             "max_tokens": request.max_tokens,

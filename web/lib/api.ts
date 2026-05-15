@@ -952,3 +952,50 @@ export async function listEpisodes(): Promise<EpisodeDetail[]> {
   if (!r.ok) throw new Error(`listEpisodes failed: ${r.status}`);
   return (await r.json()) as EpisodeDetail[];
 }
+
+// ---------------------------------------------------------------------------
+// LLM providers — BYOK settings UI.
+
+export type ProviderShape = {
+  key: string;
+  label: string;
+  configured: boolean;
+  capabilities: Record<string, unknown>;
+  user_credential_count: number;
+};
+
+export type ProviderCatalog = {
+  providers: ProviderShape[];
+};
+
+export type CredentialOut = {
+  id: string;
+  provider: string;
+  auth_kind: string;
+  label: string | null;
+  default_model: string | null;
+  endpoint_url: string | null;
+  capabilities: Record<string, unknown>;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string;
+  has_secret: boolean;
+};
+
+export async function getProviderCatalog(): Promise<ProviderCatalog> {
+  const r = await fetch(`${INTERNAL_API}/api/llm-providers`, {
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`getProviderCatalog failed: ${r.status}`);
+  return (await r.json()) as ProviderCatalog;
+}
+
+export async function listCredentials(): Promise<CredentialOut[]> {
+  const r = await fetch(`${INTERNAL_API}/api/llm-providers/credentials`, {
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`listCredentials failed: ${r.status}`);
+  return (await r.json()) as CredentialOut[];
+}
