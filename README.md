@@ -110,7 +110,7 @@ Ask natural-language questions across your whole record or a specific Event, Dos
 
 OwnChart can help explain what happened around a meaningful event: a surgery, injury, race, medication change, trip, flare, or recovery window.
 
-It can connect clinical notes, medications, wearable data, calendar context, photos, and personal notes when those sources are available.
+It can connect clinical notes, medications, wearable data, photos, and personal notes when those sources are available.
 
 ### Build Dossiers
 
@@ -218,7 +218,7 @@ Ask:
 
 > "What happened around the Marine Corps Marathon in 2025?"
 
-OwnChart should be able to look at workouts, travel, calendar events, sleep, HRV, injuries, notes, and recovery patterns around the race.
+OwnChart should be able to look at workouts, sleep, HRV, injuries, notes, and recovery patterns around the race.
 
 ### Supplement change
 
