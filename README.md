@@ -1,268 +1,439 @@
 <p align="center">
-  <img src="./OwnHealth%20Icon.svg" alt="OwnChart icon — five planets on a horizon line" width="128" height="128" />
+  <img src="./OwnHealth%20Icon.svg" alt="OwnChart icon" width="128" height="128" />
 </p>
 
 # OwnChart
 
-**An AI-first, evidence-grounded, patient-owned research partner for health and life data. Self-hosted. Your records, your model, your rules.**
+**Your life tells the story of your health. OwnChart helps you read it.**
 
-> **0.1b — documentation drop.** This initial commit publishes the doctrine, security model, and connector setup guides for the upcoming 0.1b public beta. **The source code lands in this repo when 0.1b ships.** Until then, read [PHILOSOPHY.md](./PHILOSOPHY.md), [SECURITY.md](./SECURITY.md), and the [user-docs/](./user-docs/) connector guides — and tell us if anything in the design model needs to change before code touches it.
->
-> Working title; name may change.
+OwnChart is a private, self-hosted AI research partner for your body, your care, and your life. It brings together medical records, wearable data, clinical notes, PDFs, CCDAs, FHIR bundles, photos, voice notes, supplements, workouts, and life events, then lets you ask questions across all of it with citations back to the evidence.
+
+OwnChart is not a patient portal. It is not an EMR clone. It is a patient-owned, person-owned tool for understanding the story your data is already telling.
+
+You own the data. You ask the questions. You stay the authority.
+
+<p align="center">
+  <img src="./user-docs/screenshots/web-02-ask.png" alt="OwnChart Home — your living record" width="720" />
+</p>
+
+<p align="center">
+  <em>Demo data shown — synthetic patient bundle.</em>
+</p>
 
 ---
 
-## What this is
+## What can I ask?
 
-Closer to **Cursor for health and life data** than to **MyChart for patients**.
+OwnChart is built for questions that do not fit inside a single portal, chart note, lab result, or fitness app.
 
-OwnChart is not a record viewer. It is a research partner. You bring your data — every PDF, FHIR bundle, CCDA, HealthKit metric, faxed report, and personal note you can pull together — and OwnChart brings structure, memory, retrieval, citations, and AI-assisted reasoning. You ask questions of your own health life. OwnChart answers with evidence, cites every source, and admits what it doesn't know. You stay the final authority on what anything means.
+Examples:
 
-The goal is **patient parity**: a person, working with AI, reaching the same level of insight into their own record as the people who normally have the tools, training, and institutional access. Not impersonating a clinician. Not giving medical advice. Helping you ask better questions, understand your own evidence, see longitudinal patterns, surface what might matter, and prepare for conversations with clinicians from a position of agency.
+- "What happened around my surgery, and how did recovery affect my sleep, HRV, and training?"
+- "What happened around the Marine Corps Marathon in 2025?"
+- "What changed when I started taking vitamin B?"
+- "Tell me the story of my hearing loss over the years."
+- "When did my knee problems start showing up in the record?"
+- "What did the operative note actually say, in plain English?"
+- "Which medications show up in multiple systems, and are any duplicates?"
+- "What do my wearable data and calendar suggest about the weeks before this flare?"
+- "What should I review before my next appointment?"
+- "What does OwnChart know, what is inferred, and what is still missing?"
 
-## Why this exists
+Healthcare is part of health. It is not the whole thing.
 
-The American medical record is fragmented by design. Your data sits in a dozen portals, formatted for billing, optimized for the institution, and made deliberately hard to take with you. When you need to make a decision — a second opinion, a surgery, a slow-burning symptom that nobody's connecting the dots on — you are the one piecing it together. From PDFs. From memory.
+Some people will use OwnChart to understand complex medical histories. Others may rarely see a doctor and use it mostly to understand training, sleep, recovery, supplements, travel, stress, injuries, symptoms, and aging.
 
-OwnChart is the system that should already exist for that work:
+---
 
-- One longitudinal record, built from every source you can pull (EHR APIs, CCDAs, faxes, your iPhone, your notes, your memory).
-- Raw sources preserved exactly as received, forever. Your corrections and annotations layered on top — never overwriting the source.
-- Local-first storage. PHI never leaves your machine without your explicit, scoped consent.
-- AI as a thinking partner: ask in natural language, get cited answers, save conversations as part of your longitudinal learning.
-- No vendor telemetry. No SaaS backend. No institutional override.
+## Why OwnChart exists
 
-The patient is the user. The patient owns the record. The patient owns the server. The patient owns the corrections, the questions, the canonical version of their own story.
+Most of us do not have one health record. We have fragments:
 
-## Doctrine
+- EHR portals
+- FHIR exports
+- CCDA documents
+- PDFs and faxes
+- scanned notes
+- radiology reports
+- Apple Health / HealthKit data
+- workouts
+- sleep and HRV
+- medications and supplements
+- calendars and travel
+- photos
+- voice notes
+- memory
 
-The non-negotiables. Read them as constraints on every feature decision, not aspirations.
+Institutions have systems for storing, coding, billing, and reviewing those fragments. People usually do not.
 
-1. **AI-first is not AI-magical.** AI is the primary interaction model — but every substantive AI statement is source-backed, user-canonical, inferred, statistical, or explicitly unknown. Never opaque. Never silent canonicalization.
-2. **Raw sources are immutable.** Original PDFs, FHIR bundles, CCDA XML are content-addressed (SHA-256) and never modified.
-3. **User correction is canonical.** Your version becomes the displayed truth. The source is preserved as evidence, never erased.
-4. **One consent gate, on the egress path.** No PHI leaves the host to any LLM provider — local or remote — without explicit, scoped opt-in. (See [SECURITY.md](./SECURITY.md).)
-5. **No third-party telemetry.** Logs, prompts, embeddings, queue payloads are all treated as PHI. No Sentry, no Mixpanel, no crash reporter.
-6. **FHIR-native at the edges, human-native in the core.** Standards at the boundary; lived experience in the middle.
-7. **Significance over fact-count.** Source density is not meaning. The product ranks by user-confirmable significance.
-8. **Provenance is auditable for every AI output.** `ModelRun` records: provider, model, prompt version, inputs sent, output, consent mode, user action. "Why did OwnChart say this?" always has an answer.
-9. **Patient memory is evidence.** Your notes, photos, and corrections sit alongside clinical facts in timelines and dossiers — not as a separate "patient-reported" ghetto.
-10. **Doctrine travels with the fork.** MIT license on the code; this doctrine is what makes a fork still patient-owned.
+OwnChart exists to close that gap.
 
-Full treatment in [PHILOSOPHY.md](./PHILOSOPHY.md).
+The goal is **personal health parity**: helping a person, caregiver, or family understand their own health and life data with the seriousness, memory, and analytical depth normally reserved for clinicians, researchers, trainers, dietitians, and institutions.
 
-## AI as a first-class citizen
+Not by replacing experts.
+Not by giving medical advice.
+By helping you ask better questions, see patterns, read the evidence, and show up with more agency.
 
-OwnChart treats AI as the primary interaction surface, not a sidecar. Five interaction modes:
+---
 
-| Mode | What it does | Examples |
-|---|---|---|
-| **Ask** | Natural-language questions across your record, with cited answers | "Tell me the story of my knee pain." "What changed after my May 1 surgery?" "What should I review before Friday's appointment?" |
-| **Make Sense** | Organize a source, period, dossier, or review queue. Produces *candidates*, not silent mutations | "Make sense of this Stanford import." "Organize 2026." "Clean up this review queue." "Explain this episode." |
-| **Discover** | Proactive suggestions of things worth exploring, with evidence preview and signal strength | "These procedure rows may be one surgery." "Sleep and resting HR available before and after this surgery." |
-| **Explain** | Translate clinical language into plain English without flattening nuance. Original always preserved | `"LAP CHOLECYSTECTOMY"` → `"Laparoscopic gallbladder removal"` |
-| **Compare** | Deterministic statistics plus AI explanation for periods, signals, eras | "Before/after surgery." "Medication era vs. baseline." "Sleep around the injury." |
+## Core idea
 
-### Conversations are a first-class product object
+OwnChart turns messy personal evidence into a living research workspace.
 
-Ask conversations are **saved automatically** — with scope, sources used, citations, model, prompt version, privacy mode, and timestamp. They are searchable, resumable, and pinnable to dossiers. Your conversation history is part of your longitudinal learning, not disposable chat. The Home screen surfaces *Continue researching* alongside *Worth noticing* and *Make Sense*.
-
-### Evidence Contract
-
-Every substantive AI statement is one of:
-
-- **Source-backed** — directly stated in a source you control.
-- **User-canonical** — confirmed or corrected by you. Overrides the source for display.
-- **Inferred** — reasoned but not directly stated. Marked as inference.
-- **Statistical** — aggregate or correlation. Includes the underlying method.
-- **Unknown** — insufficient evidence. The product says so plainly.
-
-Every answer supports a one-click "why do you think that?" path into the source page, section, excerpt, confidence, and any correction you've made.
-
-### Multi-provider, not Anthropic-only
-
-OwnChart is designed for **model pluralism**. The consent gate is uniform across providers; the rest is your choice:
-
-- **Anthropic Claude** — the reference provider in 0.1b.
-- **OpenAI** — supported alongside Claude.
-- **Google Gemini** — supported alongside the above.
-- **Local models** (Ollama, llama.cpp endpoints) — for users who never want PHI to leave the host at all.
-- **Admin-provided credentials** vs **user-provided API keys** vs **provider OAuth** — all configurable per instance.
-
-Settings let you pick default provider, default model, and **per-task model preferences** (e.g., a smaller cheaper model for label translation, a stronger model for Ask). The UI shows you which provider answered any given question.
-
-### Two architectural commitments
-
-- **Prompts are externalized.** Every prompt lives in `api/ownchart/prompts/*.yaml`, version-controlled. No hardcoded strings. `ModelRun.prompt_version` cites file + SHA.
-- **AI never mutates canonical data directly.** It produces *candidates* — suggested labels, episode groupings, duplicates, summaries. You accept, edit, or reject. The accepted version becomes your canonical assertion.
-
-If you turn LLM consent off entirely, OwnChart still works — ingest, browse, search, timeline, manual correction, deterministic Discover all run locally. You lose Ask, Make Sense, Vision OCR fallback, and the explain/compare modes. That's the trade, and you get to make it.
-
-## Primary product objects
-
-OwnChart is built around what users actually think about, in priority order:
-
-| Object | What it is |
+| Object | Meaning |
 |---|---|
-| **Questions** | What you want to understand. Natural language, scoped to whole record / period / dossier / source |
-| **Conversations** | Saved, searchable, resumable Ask + Make Sense threads with all their evidence |
-| **Moments** | Important things that happened (surgery, diagnosis, hospitalization, turning point) |
-| **Episodes** | Related moments over a period — system-proposed clusters (e.g., "May 2026 surgery + recovery") |
-| **Patterns** | Trends, correlations, gaps, changes, repetitions surfaced by Discover |
-| **Dossiers** | Living case files about a topic — your research workspace for a condition or thread |
-| **Sources** | Evidence, available when you want to verify (PDFs, FHIR bundles, CCDA, etc.) |
-| **Facts** | Supporting evidence units. Substrate, not the default view |
+| **Conversations** | Saved AI research threads with citations |
+| **Events** | Meaningful things that happened: surgery, race, injury, diagnosis, trip, medication start, flare, recovery period |
+| **Dossiers** | Long-running topics: hearing loss, knees, sleep, migraine, training, strabismus, nutrition |
+| **Sources** | Original evidence: PDFs, notes, FHIR bundles, CCDAs, photos, files |
+| **Facts** | Extracted evidence units that support answers |
+| **Patterns** | Trends, gaps, correlations, changes, and repeated signals |
 
-Facts are last on purpose. The product does not ask you to become a database administrator before you receive value.
+Facts are not the product. They are the substrate.
 
-## Security model
+The product is the ability to ask:
 
-The headline: **PHI lives on your disk and stays there unless you explicitly send it somewhere else.**
+> What happened?
+> What changed?
+> What connects?
+> What does the evidence actually say?
 
-- **Self-hosted only.** Docker Compose on your hardware. No SaaS backend exists.
-- **Bind-mount storage** for raw sources; Postgres 16 + pgvector for the structured layer. Disk-level encryption (LUKS / FileVault) is the deployer's responsibility — OwnChart assumes it.
-- **Consent gate as the egress checkpoint.** Every external LLM call passes through one function that checks: global consent flag, per-source override, per-person consent, and privacy mode. If any check fails, the call is refused before any payload is assembled. Local-model calls also flow through the gate so the audit trail is complete, even though they don't leave the host.
-- **Privacy modes:** `off`, `metadata_only`, `selected_evidence` (default for Make Sense), `full_source_allowed` (requires explicit acknowledgment).
-- **Per-source overrides:** any source can be marked "never send to LLM", "source-only context", "exclude from Discover", or "exclude from Ask".
-- **No telemetry. No analytics. No crash reporter.** Errors stay on the host.
-- **Safety boundary.** AI never instructs you to start, stop, or change medication. Self-harm intent gets crisis-oriented support and a referral to human help — never assistance with the act.
-- **Cost transparency.** Every `ModelRun` records token usage and estimated cost. Optional monthly spend ceilings.
-- **Secrets in env vars only.** Never in YAML. Never in git. `infra/.env` is gitignored; `infra/.env.example` is the template.
-- **HAR redaction.** Browser captures used for connector development have cookies and tokens stripped before display; HAR files are aggressively gitignored.
-- **Argon2id local passwords** in v0.1b. Authentik OIDC + caregiver delegation next.
+---
 
-Full threat model, role model, and operator checklist: [SECURITY.md](./SECURITY.md).
+## What OwnChart does
 
-## What's in 0.1b
+### Ask your record
 
-Shipping:
+Ask natural-language questions across your whole record or a specific Event, Dossier, source, or time period. Answers cite the evidence they used.
 
-- **Ask** — natural-language questions across your record with cited answers, scope controls, retrieved-evidence disclosure, and visible privacy mode.
-- **Make Sense** — user-initiated sensemaking of sources, periods, dossiers, and review queues. Produces candidates the user accepts/edits/rejects.
-- **Discover** — deterministic + LLM-assisted suggestions (dense periods, episode candidates, duplicates, source conflicts, metric changes, suggested dossiers, data-quality issues).
-- **Conversations** — saved, searchable, resumable. Pinnable to dossiers.
-- **Dossiers** — living case files per topic with hero metrics, executive brief, evidence clusters, and conversation thread.
-- **Timeline** — global and topic-scoped, ranked by user-confirmable significance.
-- **Review Inbox** — confirm/correct extracted facts. Lane split, bulk triage, source-level summaries. Distinct from Make Sense candidates.
-- **Evidence Vault** — every claim links back to its source page; sources grouped by time, type, and contribution.
-- **Connections** — see EHR / HealthKit / Auto Export status, last sync, what changed, what's available.
-- **User correction layer** — canonical assertions layered over source facts; source preserved.
-- **Document ingest** — PDF, image, CCDA/CCD XML, CCDA archives, with local Tesseract OCR; Claude Vision (or other vision model) on consent.
-- **Epic SMART-on-FHIR connector** — patient-mediated OAuth, USCDI v3 auto-download (no Epic review required for the patient-app path).
-- **Health Auto Export REST push endpoint** — interim path for HealthKit metrics via the third-party Health Auto Export iOS app.
-- **Multi-provider LLM** — Anthropic primary, with OpenAI, Gemini, and local-model endpoints supported.
-- **Global LLM consent gate + per-source + per-person overrides + `ModelRun` audit trail.**
-- **Demo mode** — read-only synthetic sample data; safe for App Store review of HealthKit sync flows.
-- **Configuration-as-code** — full parity between `infra/config.yaml` and the settings GUI. Edit in files or UI; both are first-class. Driven by a settings registry.
+### Make sense of an Event
 
-On the roadmap, **not** in 0.1b:
+OwnChart can help explain what happened around a meaningful event: a surgery, injury, race, medication change, trip, flare, or recovery window.
 
-- **Native OwnChart iOS app** — direct on-device HealthKit sync, replacing the Auto Export bridge for new users.
-- **Athena, Cerner/Oracle Health, Kaiser Permanente** patient-mediated connectors. (Kaiser remains export-via-CCD; KP doesn't expose patient FHIR yet.)
-- **Nightly cleanup digest** — optional, user-enabled. Bounded suggestions, never silent mutations.
-- **DICOM ingestion and radiology study timeline.**
-- **Authentik OIDC and caregiver/household roles** — schema is partially in place in v0.1b; full delegation UI is roadmap.
-- **Plugin architecture** for community-contributed connectors.
-- **Pictal Health integration / export.**
+It can connect clinical notes, medications, wearable data, calendar context, photos, and personal notes when those sources are available.
+
+### Build Dossiers
+
+Create living case files for ongoing topics. A Dossier can collect related facts, sources, conversations, Events, notes, and questions over time.
+
+### Preserve the source
+
+Raw sources are immutable. Corrections and annotations are layered on top. The original file remains available for verification.
+
+### Keep conversations
+
+AI conversations are saved, searchable, and reusable. A useful answer can become an Event, attach to a Dossier, or become part of your long-term record.
+
+### Review uncertainty
+
+OwnChart does not silently turn model output into truth. It surfaces candidates, uncertain facts, possible duplicates, and suggested groupings for human review.
+
+---
+
+## Evidence contract
+
+OwnChart is AI-first, but not AI-magical.
+
+Every substantive AI statement should be one of:
+
+- **Source-backed** — directly supported by a source you control
+- **User-canonical** — confirmed or corrected by you
+- **Inferred** — reasoned from evidence, but not directly stated
+- **Statistical** — derived from aggregates or comparisons
+- **Unknown** — not enough evidence
+
+The system should be able to answer:
+
+> "Why do you think that?"
+
+with source links, citations, excerpts, model run history, and provenance.
+
+---
+
+## Privacy and ownership
+
+OwnChart is designed for self-hosting.
+
+- Your server.
+- Your files.
+- Your database.
+- Your model keys.
+- Your rules.
+
+PHI does not leave your host for an external AI provider unless you explicitly allow it. OwnChart supports privacy modes and keeps an audit trail of model calls.
+
+OwnChart currently supports API-key-based AI providers. "Sign in with Claude" / "Sign in with ChatGPT" style consumer OAuth is not assumed, because those providers do not generally expose that as an API billing path today.
+
+The default deployment model is **single-origin**:
+
+```text
+https://your-ownchart.example.com
+https://your-ownchart.example.com/api/...
+```
+
+Self-hosters should not need separate `api.*` DNS unless they intentionally choose that architecture.
+
+Full privacy commitment: [PRIVACY.md](./PRIVACY.md) (or <https://www.ownchart.me/privacy>).
+
+---
+
+## Current alpha capabilities
+
+OwnChart is early, but already includes:
+
+- FHIR ingestion
+- CCDA / XML ingestion
+- PDF and document ingestion
+- clinical-note extraction
+- HealthKit / Apple Health data paths
+- saved conversations
+- cited AI answers
+- Events with rename and aliases
+- Dossiers
+- Review Inbox
+- evidence vault
+- source provenance
+- model run audit trail
+- BYO AI API keys
+- demo mode
+- iOS companion app in TestFlight
+
+This is alpha software. Expect rough edges, missing connectors, evolving data models, and UX that is still being shaped.
+
+---
+
+## Example workflows
+
+### Surgery recovery
+
+Ask:
+
+> "I had eye surgery about 10 days ago. What did they do, what medications were used, and how did recovery affect my training?"
+
+OwnChart can gather the operative note, anesthesia-related records, discharge instructions, medications, HRV, sleep, workouts, and activity around the date, then answer with citations.
+
+### Marathon context
+
+Ask:
+
+> "What happened around the Marine Corps Marathon in 2025?"
+
+OwnChart should be able to look at workouts, travel, calendar events, sleep, HRV, injuries, notes, and recovery patterns around the race.
+
+### Supplement change
+
+Ask:
+
+> "What happened when I started taking vitamin B?"
+
+OwnChart can look for the start of the supplement, then compare sleep, energy, training, symptoms, labs, notes, and other relevant signals before and after.
+
+### Hearing loss over time
+
+Ask:
+
+> "Tell me the story of my hearing loss."
+
+OwnChart can collect audiology reports, ENT notes, procedures, hearing tests, hearing-aid records, symptoms, and personal notes into a Dossier.
+
+---
+
+## What OwnChart is not
+
+OwnChart is not medical advice.
+
+It does not tell you to start, stop, or change medication. It does not replace a clinician, trainer, dietitian, therapist, or emergency service.
+
+It helps you understand your own evidence, ask better questions, and maintain authority over your own health story.
+
+---
 
 ## Stack
 
-| Layer | Choice |
+| Layer | Technology |
 |---|---|
-| API | Python 3.12 + FastAPI (async), SQLAlchemy 2 + Alembic, Pydantic v2, uv |
-| Workers | Arq (Redis-backed) |
-| DB | Postgres 16 + pgvector + pg_trgm |
-| Storage | Filesystem bind-mount, SHA-256 content-addressed |
-| Frontend | Next.js 15 (App Router) + TypeScript + Tailwind + shadcn/ui |
-| LLM | Multi-provider (Anthropic, OpenAI, Google, local) — all gated by the consent layer |
-| OCR | Tesseract via OCRmyPDF (local); vision-model OCR (Claude Vision et al.) on consent |
-| Auth | Local password (Argon2id) — Authentik OIDC + caregiver delegation planned |
-| Reverse proxy | Bring your own (nginx, Caddy, NPM, Traefik) |
+| API | Python, FastAPI, SQLAlchemy, Alembic, Pydantic |
+| Database | Postgres, pgvector, pg_trgm |
+| Workers | Redis-backed background jobs |
+| Frontend | Next.js, TypeScript, Tailwind |
+| Storage | Filesystem bind mounts with content-addressed source files |
+| AI | Multi-provider architecture, BYO API keys, prompt/version audit |
+| OCR / extraction | Local and model-assisted extraction paths |
 | Deploy | Docker Compose |
+| Mobile | Native iOS companion app |
 
-## Repo layout (when code lands)
-
-```
-api/                FastAPI app + Arq workers
-  ownchart/
-    core/           config, security, consent gate, PHI-safe logger
-    models/         SQLAlchemy models
-    prompts/        LLM prompts in YAML — never hardcoded
-    llm/            multi-provider client + prompt loader + ModelRun audit
-    ingest/         per-lane ingestion (pdf, ccda, fhir, auto_export, notes)
-    extract/        Tesseract OCR + vision-model OCR (consent-gated)
-    canonical/      equivalence + significance ranking
-    sensemaking/    Make Sense + Discover job runners + candidate model
-    conversations/  saved Ask/Make Sense threads
-    routes/         FastAPI routers
-    workers/        Arq tasks
-    settings/       settings registry — drives GUI + file config parity
-  alembic/          migrations
-web/                Next.js app
-infra/              docker-compose.yml, deploy.sh, .env.example, config.example.yaml
-user-docs/          Public setup guides (Epic, Athena, etc.)
-scripts/            helper scripts
-data/               PHI bind-mount target — gitignored
-```
+---
 
 ## Quick start
 
-> Code lands when 0.1b ships. The runtime shape will be roughly:
->
-> ```sh
-> cp infra/.env.example infra/.env
-> # fill in at least one LLM provider key, SESSION_SECRET, POSTGRES_PASSWORD
-> cp infra/config.example.yaml infra/config.yaml
->
-> docker compose -f infra/docker-compose.yml up --build
-> # web at http://localhost:8800, api at http://localhost:8801
-> ```
+OwnChart is intended to run on your own server.
 
-## iOS app (public beta)
+```sh
+git clone https://github.com/nickpdawson/OwnChart.git
+cd OwnChart
 
-A native iOS companion app — direct on-device HealthKit sync to your own self-hosted OwnChart server — is in public TestFlight beta:
+cp infra/.env.example infra/.env
+cp infra/config.example.yaml infra/config.yaml
 
-**Join the beta: [testflight.apple.com/join/z8QemcTe](https://testflight.apple.com/join/z8QemcTe)**
+docker compose -f infra/docker-compose.yml up --build
+```
 
-Pair the app with the demo at `https://demo.ownchart.me` (creds `demo@ownchart.me` / `MYHEALTHdata`) for a synthetic walkthrough, or with your own self-hosted instance to start syncing your real HealthKit data.
+Then open the instance URL configured for your deployment.
 
-## Connecting your records
+More complete setup docs live in [`user-docs/`](./user-docs/).
 
-Most EHR connectors require you to register OwnChart with the vendor as a "patient app" — typically a 30-minute task done once per vendor. Setup guides under [`user-docs/`](./user-docs/):
+---
 
-- [Registering an Epic FHIR app](./user-docs/EPIC_SETUP.md) — works for any health system on Epic (Kaiser, Stanford, Bozeman Health, OrthoVirginia, etc.) once registered.
-- [Getting an Athena developer account](./user-docs/ATHENA_SETUP.md) — for athenahealth-based providers.
+## Documentation
 
-## Privacy
+Documentation is organized into a few layers. Some of these are works in progress — placeholders are marked _coming soon_.
 
-The project doesn't operate a service that receives your data — the OwnChart iOS app and the OwnChart server software talk only to a server you control. Full privacy commitment: [PRIVACY.md](./PRIVACY.md) (or <https://www.ownchart.me/privacy>).
+### For users
+
+- [User Guide](./user-docs/USER_GUIDE.md) — how to use Ask, Events, Dossiers, Review Inbox, conversations. _coming soon_
+- [iOS companion app](./user-docs/IOS_PARITY.md) — pairing TestFlight build with your self-hosted server.
+- [Demo walkthrough](./user-docs/DEMO.md) — what you can see at <https://demo.ownchart.me> without installing anything. _coming soon_
+
+### Installing and operating
+
+- [Install guide](./user-docs/INSTALL.md) — Docker Compose deploy, env vars, reverse proxy, first-run setup. _coming soon_
+- [Operations runbook](./user-docs/OPERATIONS.md) — backups, upgrades, log rotation, common failure modes. _coming soon_
+- [Configuration reference](./user-docs/CONFIG.md) — every `infra/config.yaml` and `infra/.env` key. _coming soon_
+
+### Connecting your records (FHIR + EHRs)
+
+Each OwnChart install registers its own apps with each EHR vendor. Cost: $0 per vendor. Time: ~30 minutes of paperwork per vendor.
+
+- **[CONNECTORS.md](./user-docs/CONNECTORS.md) — start here.** The universal pattern that every vendor follows. Read this first; the per-vendor guides are short once you have it.
+- [Epic](./user-docs/EPIC_SETUP.md) — largest US hospitals and academic medical centers. USCDI v3 auto-download, no human review.
+- [athenahealth](./user-docs/ATHENA_SETUP.md) — mid-market ambulatory practices. Human review, 1–4 weeks.
+- [ModMed](./user-docs/MODMED_SETUP.md) — specialty practices (dermatology, ophthalmology, orthopedics, GI, plastic, pain, OB-GYN). Contact-driven.
+- [NextGen](./user-docs/NEXTGEN_SETUP.md) — mid-sized ambulatory practices, FQHCs, community health, behavioral health. Self-service portal.
+- [Oracle Health (Cerner)](./user-docs/CERNER_SETUP.md) — health systems on Oracle Health Millennium. Self-service sandbox + per-site production rollout.
+
+Vendors not yet covered (PR-worthy gaps): Allscripts/Veradigm, eClinicalWorks, MEDITECH, Kaiser Permanente (CCD only), MyHealthONE/HCA. See [user-docs/README.md](./user-docs/README.md).
+
+### Project doctrine and security
+
+- [PHILOSOPHY.md](./PHILOSOPHY.md) — the non-negotiables: evidence contract, user-canonical correction, consent gate, AI-as-partner not oracle.
+- [SECURITY.md](./SECURITY.md) — threat model, PHI handling, consent gate design, operator checklist.
+- [PRIVACY.md](./PRIVACY.md) — what leaves the host, what doesn't, and on what terms.
+
+---
+
+## Screenshots
+
+All screenshots use the public demo's synthetic patient bundle — no real PHI.
+
+### Web
+
+<p align="center">
+  <a href="./user-docs/screenshots/web-03-timeline.png"><img src="./user-docs/screenshots/web-03-timeline.png" alt="Continue exploring — dossier list" width="420" /></a>
+  <a href="./user-docs/screenshots/web-04-dossier.png"><img src="./user-docs/screenshots/web-04-dossier.png" alt="Newly assembled — Events from synthetic patient bundle" width="420" /></a>
+</p>
+
+<p align="center">
+  <a href="./user-docs/screenshots/web-05-event.png"><img src="./user-docs/screenshots/web-05-event.png" alt="Provider portals — connect via SMART on FHIR" width="420" /></a>
+  <a href="./user-docs/screenshots/web-06-review.png"><img src="./user-docs/screenshots/web-06-review.png" alt="AI Partner — saved conversations with cited evidence" width="420" /></a>
+</p>
+
+### iOS
+
+<p align="center">
+  <a href="./user-docs/screenshots/ios-01.png"><img src="./user-docs/screenshots/ios-01.png" alt="iOS Home — demo dossier and six-year timeline" width="220" /></a>
+  <a href="./user-docs/screenshots/ios-02.png"><img src="./user-docs/screenshots/ios-02.png" alt="iOS Timeline — annual view across categories" width="220" /></a>
+  <a href="./user-docs/screenshots/ios-03.png"><img src="./user-docs/screenshots/ios-03.png" alt="iOS Ask — research-partner suggestions" width="220" /></a>
+  <a href="./user-docs/screenshots/ios-04.png"><img src="./user-docs/screenshots/ios-04.png" alt="iOS Add to your record — HealthKit, photos, documents, notes" width="220" /></a>
+</p>
+
+---
+
+## Demo
+
+A public demo is available at:
+
+**<https://demo.ownchart.me>**
+
+The demo uses synthetic/sample data and runs in read-only mode.
+
+---
+
+## iOS app
+
+A native iOS companion app is in TestFlight for syncing Apple Health / HealthKit data to your own OwnChart server.
+
+**TestFlight:** <https://testflight.apple.com/join/z8QemcTe>
+
+Pairing instructions: [user-docs/IOS_PARITY.md](./user-docs/IOS_PARITY.md).
+
+---
+
+## Roadmap
+
+Near-term:
+
+- stronger Event and Dossier workflows
+- calendar integration
+- richer timeline zoom and heatmaps
+- improved Review Inbox grouping
+- more connectors
+- household / caregiver support
+- local-model options
+- DICOM / imaging support
+- plugin architecture
+
+OwnChart is especially interested in use cases like:
+
+- complex medical history
+- parent / caregiver memory support
+- chronic conditions
+- recovery after surgery or injury
+- hearing loss over time
+- training and endurance context
+- quantified self exploration
+- people who almost never see doctors but still want to understand their body and life patterns
+
+---
+
+## Philosophy
+
+OwnChart is built from a few commitments:
+
+1. People should be able to understand their own records.
+2. Life context matters.
+3. Health is bigger than healthcare.
+4. AI should increase agency, not replace judgment.
+5. Evidence should always be inspectable.
+6. The person remains the final authority.
+
+Read more in [PHILOSOPHY.md](./PHILOSOPHY.md).
+
+---
+
+## Security
+
+See [SECURITY.md](./SECURITY.md).
+
+OwnChart treats records, prompts, logs, model inputs, model outputs, embeddings, and uploaded files as sensitive health data.
+
+---
 
 ## License
 
-MIT. See [LICENSE](./LICENSE). The license covers OwnChart's code; the doctrine that comes with it (in [PHILOSOPHY.md](./PHILOSOPHY.md)) is what should travel with any fork that calls itself patient-owned.
+MIT. See [LICENSE](./LICENSE).
 
-## Status
-
-This repo currently contains the **0.1b documentation drop**: the doctrine, the security model, the connector setup guides, and the brand. The source code is coming as 0.1b solidifies.
-
-The point of publishing the design first is to expose four load-bearing decisions to scrutiny before more people depend on them:
-
-- the **consent gate** as the single egress checkpoint for any PHI leaving the host,
-- the **user-correction-as-canonical** model that lets the patient override the source record without erasing it,
-- the **Evidence Contract** that requires every AI statement to be source-backed, user-canonical, inferred, statistical, or unknown, and
-- the **`ModelRun` audit trail** that makes every AI output traceable to its prompt and inputs.
-
-If any of those look wrong to you, open an issue. Better to fix the model before there's code committed to it.
+---
 
 ## Acknowledgments
 
-The doctrine and design of OwnChart carry forward work from several people whose thinking it builds on:
+OwnChart is inspired by the ePatient movement, quantified self communities, patient autonomy work, and the belief that people deserve tools equal to the seriousness of their own lives.
 
-- **[Hugo Campos](https://github.com/hugooc)** and the [AI Patients](https://www.aipatients.org/) community — for **Critical AI Health Literacy** as the lens through which every AI feature in OwnChart is evaluated. The "AI as research partner, not oracle" framing, the patient-agency-first product translation, and the test that every AI surface should *increase* the patient's capability are all rooted here.
-- **[Josh Mandel](https://github.com/jmandel)** — for SMART-on-FHIR-aware LLM tooling and the live demonstration that patient-side AI on real health records is achievable now. Two of Josh's projects parallel OwnChart's surfaces closely:
+Special thanks to:
+
+- **[Hugo Campos](https://github.com/hugooc)** and the [AI Patients](https://www.aipatients.org/) community — for **Critical AI Health Literacy** and the framing of AI as a research partner, not an oracle.
+- **[Josh Mandel](https://github.com/jmandel)** and the SMART on FHIR ecosystem — for making patient-mediated access to health records possible. Two of Josh's projects parallel OwnChart's surfaces closely:
   - [`health-record-mcp`](https://github.com/jmandel/health-record-mcp) — Model Context Protocol server bringing SMART-on-FHIR records into LLM workflows.
   - [`health-skillz`](https://github.com/jmandel/health-skillz) — a Claude Skill for connecting to and analyzing personal health records via SMART on FHIR ([health-skillz.joshuamandel.com](https://health-skillz.joshuamandel.com)).
+- The many patients, caregivers, clinicians, designers, and open-source builders pushing toward a world where people can actually use the data collected about them.
 
-OwnChart's import surface and evidence-citation model owe a lot to this lineage.
-
-The mistakes are the project maintainer's.
+The mistakes are ours.
