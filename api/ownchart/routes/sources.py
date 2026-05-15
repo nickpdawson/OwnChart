@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -60,6 +61,15 @@ class SourceDetail(SourceSummary):
     raw_metadata: dict | None
     exif_metadata: dict | None
     has_gps: bool
+    # Surface the background-extraction state at the top level so the
+    # UI doesn't have to dig into raw_metadata. Nick RC review 2026-05-14:
+    # "the user/admin must be able to see when sync succeeds but
+    # extraction fails 30 seconds later."
+    extraction_status: str | None = None      # "completed" | "failed" | "skipped" | "pending" | None
+    extraction_fact_count: int | None = None
+    extraction_error: str | None = None
+    extraction_run_at: datetime | None = None
+    extraction_failed_at: datetime | None = None
 
 
 def _to_summary(s: SourceDocument) -> SourceSummary:
@@ -93,6 +103,16 @@ async def get_source(
     if src is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     has_gps = bool((src.exif_metadata or {}).get("GPSInfo"))
+    rm = src.raw_metadata or {}
+
+    def _parse_dt(v: Any) -> datetime | None:
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None
+
     return SourceDetail(
         **_to_summary(src).model_dump(),
         storage_uri=src.storage_uri,
@@ -102,6 +122,11 @@ async def get_source(
         raw_metadata=src.raw_metadata,
         exif_metadata=src.exif_metadata,
         has_gps=has_gps,
+        extraction_status=rm.get("extraction_status"),
+        extraction_fact_count=rm.get("extraction_fact_count"),
+        extraction_error=rm.get("extraction_error"),
+        extraction_run_at=_parse_dt(rm.get("extraction_run_at")),
+        extraction_failed_at=_parse_dt(rm.get("extraction_failed_at")),
     )
 
 

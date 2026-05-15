@@ -9,11 +9,24 @@ Backend identifiers stay stable (`episodes` table, `episode_id`,
 noun changes for user-facing strings only — the API contract is
 backwards-compatible.
 
-> **Environments.** `dev` (ownchart.dzsec.net) and `main`
-> (demo.ownchart.me) share the same API contract; the difference
-> is whose data is in the database. Native clients can read the
-> `X-OwnChart-Build` response header to know which environment
-> they hit.
+> **Single-origin contract.** OwnChart serves the API and the web
+> UI from the **same host**. There is no `api.*` subdomain.
+>
+> Examples of valid instance origins:
+> - `https://ownchart.dzsec.net` (dev)
+> - `https://demo.ownchart.me` (release)
+> - `https://selfhoster.example.com` (self-hosted)
+>
+> All API paths live under `/api/*` on that same host:
+> `https://<instance>/api/conversations`, `/api/episodes/{id}`, etc.
+>
+> Native clients should store an **`instanceBaseURL`** (e.g.
+> `https://ownchart.dzsec.net`) — NOT a separate `apiBaseURL`.
+> All requests are constructed as `instanceBaseURL + "/api/..."`.
+> If multi-origin deployments become a feature later, discovery
+> will happen *from* that one instance origin (e.g. via
+> `/api/instance/info`), never by guessing an `api.*` hostname.
+> Self-hosters must not be asked to create multiple DNS records.
 
 ---
 

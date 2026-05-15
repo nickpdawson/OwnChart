@@ -82,49 +82,26 @@ async def get_dashboard_stats(
         rejected=by_state.get("rejected", 0),
     )
 
-    # Topics with per-topic fact counts using the same retrieval rule
-    # the dossier uses (alias substring + label_patterns). For the
-    # dashboard summary we use a cheap heuristic: ILIKE any alias.
-    # Exact match parity with the dossier resolver isn't required;
-    # this is just a rough "how big is each topic".
+    # Topic snapshots: ship just the topic shells (id/slug/name/desc)
+    # WITHOUT per-topic fact counts. The previous loop ran 8 sequential
+    # OR-of-ILIKE scans across the full extracted_facts table and
+    # dominated dashboard latency — 49s on Nick's record (~8k facts,
+    # 8 topics). The dossier detail page recomputes the precise count
+    # for one topic at a time, where it belongs.
+    # RC fix 2026-05-14. If the count is needed back later, the right
+    # shape is a precomputed topic_counts cache refreshed after
+    # ingest/backfill, not a synchronous scan on every Home render.
     topic_rows = (await db.execute(select(Topic).order_by(Topic.name))).scalars().all()
-    topic_snaps: list[TopicSnapshot] = []
-    for t in topic_rows:
-        terms = [t.name, *(t.aliases or [])]
-        if not terms:
-            count = 0
-        else:
-            from sqlalchemy import or_
-
-            filters = []
-            for term in terms:
-                if not term:
-                    continue
-                pat = f"%{term}%"
-                filters.append(ExtractedFact.label.ilike(pat))
-                filters.append(ExtractedFact.description.ilike(pat))
-            for rx in t.label_patterns or []:
-                if not rx:
-                    continue
-                filters.append(ExtractedFact.label.op("~*")(rx))
-                filters.append(ExtractedFact.description.op("~*")(rx))
-            if filters:
-                count = (await db.execute(
-                    select(func.count(ExtractedFact.id))
-                    .where(or_(*filters))
-                    .where(ExtractedFact.review_state.notin_(("deferred", "rejected")))
-                )).scalar_one()
-            else:
-                count = 0
-        topic_snaps.append(
-            TopicSnapshot(
-                id=str(t.id),
-                slug=t.slug,
-                name=t.name,
-                description=t.description,
-                fact_count=count,
-            )
+    topic_snaps: list[TopicSnapshot] = [
+        TopicSnapshot(
+            id=str(t.id),
+            slug=t.slug,
+            name=t.name,
+            description=t.description,
+            fact_count=0,
         )
+        for t in topic_rows
+    ]
 
     # Recent sources (last 5 by acquired_at).
     recent_rows = (

@@ -40,6 +40,22 @@ const STRENGTH_LABEL: Record<SignalStrength, string> = {
   needs_review: "Review",
 };
 
+// Race-promise helper: rejects after `ms` so a slow upstream doesn't
+// block the entire dashboard SSR. The year-grain timeline aggregation
+// is the main offender — it can take 20s+ on a record with 200k+
+// HK observations. Nick's RC ask: dashboard < 2s server-side, so we
+// give the timeline call 2.5s before falling back to the
+// "Try the Timeline tab directly" message in LifeOverview.
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
+
 export default async function DashboardPage() {
   // Fetch home modules in parallel. A failure on any one shouldn't
   // blank the whole home — render what we can, surface the error
@@ -47,7 +63,7 @@ export default async function DashboardPage() {
   const [statsR, timelineR, discoverR, meR, notableR, partnerR, instanceR] =
     await Promise.allSettled([
       getDashboardStats(),
-      getTimeline({ grain: "year" }),
+      withTimeout(getTimeline({ grain: "year" }), 2500, "timeline"),
       getDiscover(3),
       getMe(),
       getNotableEvents(6),

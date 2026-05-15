@@ -58,6 +58,18 @@ class Episode(Base, TimestampMixin):
     promoted_from_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sensemaking_candidates.id", ondelete="SET NULL")
     )
+    # When set, this Event is a soft-deleted duplicate pointing at
+    # the canonical Event. Members were copied to canonical at merge
+    # time. Home / list / search filter merged-into-not-null out.
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="SET NULL"),
+    )
+    # When a fact lands in the Event's date window AFTER the saved
+    # intelligence payload was generated, this is set to that fact's
+    # created_at. UI shows "refresh" affordance.
+    intelligence_stale_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+    )
     # heuristic | llm | user | imported
     created_by: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

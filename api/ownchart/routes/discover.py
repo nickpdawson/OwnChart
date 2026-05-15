@@ -342,13 +342,15 @@ async def _connected_episodes(db: AsyncSession) -> list[DiscoverItem]:
         # the V1 path.
         action_href = f"/discover?fact={primary['fact_id']}"
 
+        # Internal `type` stays `connected_episode` for clients that
+        # already key off it; user-facing copy now reads "Event".
         out.append(DiscoverItem(
             id=f"connected_episode:{date_str}:{source_id}",
             type="connected_episode",
-            title=f"Connected episode: {primary_label} ({date_pretty})",
+            title=f"Connected Event: {primary_label} ({date_pretty})",
             why_surfaced=(
                 f"{src_name} added {fact_count} clinical facts on {date_str}. "
-                f"OwnChart thinks these are parts of one event, "
+                f"OwnChart thinks these are parts of one Event, "
                 f"not separate moments."
             ),
             evidence_window=EvidenceWindow(
@@ -356,7 +358,7 @@ async def _connected_episodes(db: AsyncSession) -> list[DiscoverItem]:
                 end=datetime.combine(date, datetime.max.time(), tzinfo=timezone.utc),
             ),
             signal_strength=strength,
-            suggested_action="Open the episode to see what happened.",
+            suggested_action="Open the Event to see what happened.",
             action_href=action_href,
         ))
 

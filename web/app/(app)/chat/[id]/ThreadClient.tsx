@@ -49,7 +49,58 @@ function fmtTime(iso: string): string {
 //
 // Safety: all input is converted via React text nodes (never
 // dangerouslySetInnerHTML), so untrusted content can't inject HTML.
+// Citation-chip helper. The EI LLM emits citations inline as
+// `[fact:UUID]`, `[source:UUID]`, `[fact:UUID — Note Kind]`, and
+// sometimes shorthand `[fact:b928e750]` with a UUID prefix. Nick
+// flagged 2026-05-14 PM that these were rendering as raw text —
+// the user couldn't open them. This regex catches all three
+// shapes; the chip's href routes to a fact-context sheet or
+// source-detail page. UUID-prefix shorthand opens the same sheet
+// because the existing sidesheet accepts partial prefixes.
+const CITATION_PATTERN =
+  /\[(fact|source):([0-9a-fA-F]{6,36})(?:\s*[—-]\s*([^\]]+))?\]/g;
+
 function renderInline(text: string, keyBase: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  // First split on citation chips, then run the markdown pattern
+  // on each non-chip segment. Two-pass keeps regex simple.
+  let lastIdx = 0;
+  let citationIdx = 0;
+  for (const m of text.matchAll(CITATION_PATTERN)) {
+    const mi = m.index ?? 0;
+    if (mi > lastIdx) {
+      out.push(
+        ...renderMarkdownSegment(text.slice(lastIdx, mi), `${keyBase}-md${citationIdx}`),
+      );
+    }
+    const kind = m[1];
+    const id = m[2];
+    const label = m[3]?.trim();
+    const href = kind === "source"
+      ? `/sources/${id}`
+      : `/discover?fact=${encodeURIComponent(id)}`;
+    out.push(
+      <a
+        key={`${keyBase}-cite${citationIdx}`}
+        href={href}
+        className="mx-0.5 inline-flex items-center rounded-md border border-accent/30 bg-accent/5 px-1.5 py-0.5 text-[0.85em] font-mono text-accent hover:bg-accent/10"
+        title={`${kind}: ${id}${label ? ` — ${label}` : ""}`}
+      >
+        {label || `${kind} ${id.slice(0, 8)}`}
+      </a>,
+    );
+    citationIdx += 1;
+    lastIdx = mi + m[0].length;
+  }
+  if (lastIdx < text.length) {
+    out.push(
+      ...renderMarkdownSegment(text.slice(lastIdx), `${keyBase}-md${citationIdx}`),
+    );
+  }
+  return out;
+}
+
+function renderMarkdownSegment(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
   // Token order matters: **bold** before *italic* so the inner
   // match doesn't eat the bold markers.

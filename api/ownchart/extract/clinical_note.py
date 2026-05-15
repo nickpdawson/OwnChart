@@ -235,6 +235,28 @@ async def extract_clinical_note(
     pending: list[tuple[EvidenceAnchor, ExtractedFact]] = []
     fact_count = 0
 
+    # Heuristic: any label that opens with these phrases is a HISTORY
+    # entry on a note's review-of-systems / past-medical-history block.
+    # The clinician wrote it down today; the event itself happened
+    # months or years earlier. Default-dating these to the note's
+    # creation date would lie. Caught 2026-05-14 PM during the RC
+    # walk: Home was showing "Connected event: History of ACL
+    # repair (May 9, 2026)" because the note's creation date leaked.
+    historical_label_prefixes = (
+        "history of ", "hx of ", "h/o ", "status post ", "s/p ",
+        "prior ", "previous ", "former ", "past ",
+    )
+
+    def _looks_historical(label: str, status: str | None) -> bool:
+        s = (label or "").lower().strip()
+        if any(s.startswith(p) for p in historical_label_prefixes):
+            return True
+        if "(history" in s or "(hx" in s or "(prior" in s or "(former" in s:
+            return True
+        if (status or "").lower() in ("history_of", "resolved"):
+            return True
+        return False
+
     def add(fact_type: str, **kwargs: Any) -> None:
         nonlocal fact_count
         excerpt = (kwargs.get("text_excerpt") or "")
@@ -247,6 +269,33 @@ async def extract_clinical_note(
         label = str(kwargs.get("label", ""))[:512] or "(unlabeled)"
         confidence_label = str(kwargs.get("confidence_label") or "").lower()
         review_state = review_state_for_vision(label, confidence_label)
+
+        # Date semantics — distinguish where the date came from so
+        # downstream surfaces (Home, Timeline, Event Intelligence)
+        # don't treat note-date leak as event date.
+        #
+        # - explicit_date passed in (LLM extracted it from the prose):
+        #     date_start = that date           , date_origin="explicit"
+        # - historical fact, no explicit date:
+        #     date_start = NULL                , date_origin="historical_undated"
+        # - everything else (same-day clinical finding):
+        #     date_start = default_date        , date_origin="note_date"
+        is_historical = bool(kwargs.get("historical"))
+        explicit_date = kwargs.get("date_start")
+        if explicit_date is not None:
+            resolved_date = explicit_date
+            date_origin = "explicit"
+        elif is_historical:
+            resolved_date = None
+            date_origin = "historical_undated"
+        else:
+            resolved_date = default_date
+            date_origin = "note_date" if default_date else "unknown"
+
+        cc = dict(kwargs.get("coded_concepts") or {})
+        cc.setdefault("date_origin", date_origin)
+        if is_historical:
+            cc.setdefault("historical", True)
 
         why_code: str | None = None
         why_text: str | None = None
@@ -273,12 +322,12 @@ async def extract_clinical_note(
             fact_type=fact_type,
             label=label,
             description=kwargs.get("description"),
-            date_start=kwargs.get("date_start") or default_date,
+            date_start=resolved_date,
             date_end=kwargs.get("date_end"),
             date_precision=kwargs.get("date_precision"),
             body_site=kwargs.get("body_site"),
             laterality=kwargs.get("laterality"),
-            coded_concepts=kwargs.get("coded_concepts"),
+            coded_concepts=cc or None,
             confidence=_CONFIDENCE_INT.get(confidence_label),
             review_state=review_state,
             evidence_anchor_ids=[],
@@ -294,22 +343,26 @@ async def extract_clinical_note(
 
     # Conditions
     for c in emitted.get("conditions", []) or []:
+        status = c.get("status")
+        label = c.get("label") or ""
         add(
             "condition",
-            label=c.get("label"),
-            description=c.get("status"),
+            label=label,
+            description=status,
             body_site=c.get("body_site"),
             laterality=c.get("laterality"),
             date_start=_date_from_emit(c.get("date_observed")),
             date_precision=c.get("date_precision"),
             confidence_label=c.get("confidence"),
             text_excerpt=c.get("text_excerpt"),
+            historical=_looks_historical(label, status),
         )
     # Procedures
     for c in emitted.get("procedures", []) or []:
+        label = c.get("label") or ""
         add(
             "procedure",
-            label=c.get("label"),
+            label=label,
             description=c.get("provider"),
             body_site=c.get("body_site"),
             laterality=c.get("laterality"),
@@ -317,6 +370,7 @@ async def extract_clinical_note(
             date_precision=c.get("date_precision"),
             confidence_label=c.get("confidence"),
             text_excerpt=c.get("text_excerpt"),
+            historical=_looks_historical(label, None),
         )
     # Medications — intent goes into coded_concepts.intent + description.
     for c in emitted.get("medications", []) or []:

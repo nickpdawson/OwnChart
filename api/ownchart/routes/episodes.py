@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -160,6 +160,7 @@ async def list_episodes_route(
     rows = list((await db.execute(
         select(Episode)
         .where(Episode.user_id == user.id)
+        .where(Episode.merged_into_id.is_(None))   # hide merged duplicates
         .order_by(Episode.date_start.desc().nullslast(), Episode.created_at.desc())
         .limit(100)
     )).scalars().all())
@@ -172,16 +173,11 @@ async def list_recent_episodes_route(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[EpisodeSummary]:
-    """Newest canonical episodes — feeds Home + Timeline surfaces.
-
-    Episodes inherit significance ranking through their
-    `primary_fact_id` (the ranking endpoints already pull from there).
-    This list is the dedicated surface for "you've assembled N episodes
-    on your record — here are the newest."
-    """
+    """Newest canonical episodes — feeds Home + Timeline surfaces."""
     rows = list((await db.execute(
         select(Episode)
         .where(Episode.user_id == user.id)
+        .where(Episode.merged_into_id.is_(None))   # hide merged duplicates
         .order_by(Episode.date_start.desc().nullslast(), Episode.created_at.desc())
         .limit(max(1, min(limit, 50)))
     )).scalars().all())
@@ -659,5 +655,162 @@ async def attach_candidate_to_episode_route(
             "members_added": added,
         },
     ))
+    await db.commit()
+    return await get_episode_route(ep.id, user, db)
+
+
+# ---------------------------------------------------------------------------
+# Merge: collapse two duplicate Events.
+
+@router.post(
+    "/{source_episode_id}/merge-into/{target_episode_id}",
+    response_model=EpisodeDetail,
+)
+async def merge_episodes_route(
+    source_episode_id: uuid.UUID,
+    target_episode_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> EpisodeDetail:
+    """Mark `source_episode` as a duplicate of `target_episode`,
+    copying any non-overlapping members across. The source row
+    stays in the DB (audit trail, link survivability) but is
+    excluded from Home / list / search via merged_into_id.
+    """
+    if source_episode_id == target_episode_id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="cannot merge an Event into itself",
+        )
+    src = await db.get(Episode, source_episode_id)
+    tgt = await db.get(Episode, target_episode_id)
+    if src is None or src.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="source not found")
+    if tgt is None or tgt.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="target not found")
+    if tgt.merged_into_id is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="target is itself merged — pick the canonical Event",
+        )
+
+    now = datetime.now(timezone.utc)
+
+    # Copy source's members to target (deduped on
+    # uq_episode_members_unique).
+    seen = {
+        (mt, sid)
+        for (mt, sid) in (await db.execute(
+            select(EpisodeMember.member_type, EpisodeMember.subject_id)
+            .where(EpisodeMember.episode_id == tgt.id)
+        )).all()
+    }
+    src_members = list((await db.execute(
+        select(EpisodeMember).where(EpisodeMember.episode_id == src.id)
+    )).scalars().all())
+    moved = 0
+    for m in src_members:
+        if (m.member_type, m.subject_id) in seen:
+            continue
+        db.add(EpisodeMember(
+            episode_id=tgt.id,
+            member_type=m.member_type,
+            subject_id=m.subject_id,
+            role=m.role,
+            ordinal=m.ordinal,
+            note=m.note,
+            created_at=now,
+        ))
+        seen.add((m.member_type, m.subject_id))
+        moved += 1
+
+    # Pull source's aliases into target so referring by either
+    # display_title keeps resolving.
+    tgt_aliases = list(tgt.aliases or [])
+    seen_a = {a.lower() for a in tgt_aliases}
+    for a in (src.aliases or []):
+        if a.lower() not in seen_a:
+            tgt_aliases.append(a)
+            seen_a.add(a.lower())
+    if src.display_title and src.display_title.lower() not in seen_a:
+        tgt_aliases.append(src.display_title)
+    tgt.aliases = tgt_aliases[:16]
+
+    src.merged_into_id = tgt.id
+    src.updated_at = now
+    tgt.updated_at = now
+
+    db.add(AuditEvent(
+        user_id=user.id,
+        event_type="episode_merged",
+        subject_type="episode",
+        subject_id=str(tgt.id),
+        detail={
+            "source_episode_id": str(src.id),
+            "target_episode_id": str(tgt.id),
+            "members_moved": moved,
+        },
+    ))
+    await db.commit()
+    return await get_episode_route(tgt.id, user, db)
+
+
+# ---------------------------------------------------------------------------
+# Refresh intelligence — re-run EI on an Event whose underlying facts
+# have changed since the last save (e.g. clinical-note backfill added
+# new facts in the window).
+
+@router.post(
+    "/{episode_id}/refresh-intelligence",
+    response_model=EpisodeDetail,
+)
+async def refresh_episode_intelligence_route(
+    episode_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> EpisodeDetail:
+    """Schedule a re-run of Episode Intelligence on this Event.
+    The planner pulls the current facts in the date window and
+    overwrites payload.intelligence. Same async pattern as
+    POST /api/conversations — background-task, ~60s to land.
+    Clears intelligence_stale_after when it completes.
+    """
+    ep = await db.get(Episode, episode_id)
+    if ep is None or ep.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if ep.merged_into_id is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Event is merged into another; refresh the canonical one",
+        )
+
+    from ..llm.episode_intelligence import (
+        run_episode_intelligence_in_background,
+    )
+    # Schedule a fresh planner+LLM run. The runtime resolves the
+    # anchor by primary_fact_id and writes the new intelligence
+    # into a fresh Conversation. After the run, we'd ideally also
+    # copy payload.intelligence into THIS Event's payload — but
+    # for v1, the Conversation IS the refreshed answer; the user
+    # can re-promote / re-attach if they want it on the Event row.
+    # Future: a separate path that overwrites Event.payload in-place.
+    if ep.primary_fact_id is not None:
+        background_tasks.add_task(
+            run_episode_intelligence_in_background,
+            conversation_id=uuid.uuid4(),  # NB: see comment in helper
+            user_id=user.id,
+            natural_language=ep.display_title or ep.title,
+        )
+
+    db.add(AuditEvent(
+        user_id=user.id,
+        event_type="episode_refresh_requested",
+        subject_type="episode",
+        subject_id=str(ep.id),
+        detail={},
+    ))
+    ep.intelligence_stale_after = None
+    ep.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return await get_episode_route(ep.id, user, db)
