@@ -164,6 +164,13 @@ export function ThreadClient({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
+  // Stuck-EI detector: if the spinner has been up for >90s without an
+  // assistant reply and the scope hasn't flipped to "failed", surface
+  // a recoverable message. Most common cause: Anthropic credits / key
+  // exhausted, so the background task errored before stamping
+  // status="failed". Prevents the infinite spinner Nick hit on
+  // 2026-05-15 while testing #89.
+  const [stuckPendingEi, setStuckPendingEi] = useState(false);
 
   // Save-as-Dossier modal state
   type Suggestion = {
@@ -193,6 +200,16 @@ export function ThreadClient({
     thread.kind === "episode_intelligence" &&
     !hasAssistantReply &&
     (thread.scope?.status === "running" || !thread.scope?.status);
+
+  // 90s after the thread loads, if it's still pending, mark stuck.
+  useEffect(() => {
+    if (!isPendingEi) {
+      setStuckPendingEi(false);
+      return;
+    }
+    const t = setTimeout(() => setStuckPendingEi(true), 90_000);
+    return () => clearTimeout(t);
+  }, [isPendingEi, thread.id]);
   useEffect(() => {
     if (!isPendingEi) return;
     let cancelled = false;
@@ -402,8 +419,13 @@ export function ThreadClient({
           Dossier" prompt — the SaveMenu covers all four paths:
           new Event, attach Event, new Dossier (via /save-as-topic),
           attach Dossier. No LLM. The EI-candidate "Save as Event"
-          banner above still renders when an EI candidate is pending. */}
-      {hasAssistantReply && !dossierOpen && (
+          banner above still renders when an EI candidate is pending.
+          Intentionally NOT gated on hasAssistantReply: the save path
+          is LLM-free, so a chat that's stuck waiting on an answer
+          (LLM credits exhausted, EI background task crashed, etc.)
+          still needs to be savable. The thread itself existing is
+          enough — we're attaching a *conversation*, not an answer. */}
+      {!dossierOpen && (
         <SaveMenu conversationId={thread.id} />
       )}
 
@@ -495,7 +517,7 @@ export function ThreadClient({
         {messages.map((m) => (
           <Bubble key={m.id} msg={m} />
         ))}
-        {isPendingEi && (
+        {isPendingEi && !stuckPendingEi && (
           <li className="rounded-xl border border-muted/15 bg-surface p-4">
             <p className="text-[10px] uppercase tracking-widest text-muted">
               assistant · reading your record
@@ -507,6 +529,27 @@ export function ThreadClient({
             <p className="mt-1 text-xs text-muted">
               Pulling the procedure, anesthesia notes, discharge instructions,
               and the wearable windows around the date. Usually 30–60 seconds.
+            </p>
+          </li>
+        )}
+        {isPendingEi && stuckPendingEi && (
+          <li className="rounded-xl border border-caution/30 bg-caution/5 p-4">
+            <p className="text-[10px] uppercase tracking-widest text-caution">
+              assistant · looks stuck
+            </p>
+            <p className="mt-2 text-sm text-ink">
+              This Episode Intelligence run has been pending for over 90
+              seconds. Most likely the LLM call failed (no Anthropic
+              credits, missing API key, or background task crashed)
+              and never wrote back the failure status.
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              You can still save / attach this chat below — the save
+              path doesn&apos;t depend on the LLM. Or check{" "}
+              <a href="/audit" className="underline-offset-4 hover:underline">
+                /audit
+              </a>{" "}
+              for the matching model run.
             </p>
           </li>
         )}
