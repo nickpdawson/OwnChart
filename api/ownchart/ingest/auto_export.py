@@ -54,6 +54,7 @@ labs belong in the clinical lane, not the wearable lane.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -129,6 +130,16 @@ class AutoExportFact:
     # collapse to one canonical event. None for facts without a clean
     # canonicalization rule (medications, workouts in V1, symptoms).
     equivalence_key: str | None = None
+    # Idempotency key for re-pushes of the same logical sample.
+    # Populated for medications since the Health Auto Export iOS app
+    # ships the full medication history on every push instead of
+    # deltas — without this, every push re-inserts the same scheduled
+    # dose (16 "Celebrex / Taken" rows for one day, observed
+    # 2026-05-15). Native-HK ingest uses the client-provided
+    # client_sample_key from the device; here we derive a deterministic
+    # one from (label, scheduled timestamp, status). Re-pushes hash
+    # to the same key → ON CONFLICT DO NOTHING dedupes silently.
+    client_sample_key: str | None = None
     # docs/07 Priority 1: reason copy for the Review Inbox. Only set
     # when the emitter has confident classification (e.g. Auto Export
     # medication with status=Skipped → "you logged this as Skipped").
@@ -412,6 +423,24 @@ def _emit_medication(out: AutoExportIngest, m: dict[str, Any]) -> None:
         else None
     )
 
+    # Deterministic dedup key. The Auto Export iOS app re-pushes the
+    # full medication history on every push instead of deltas. Without
+    # this key the same scheduled dose lands as N copies in
+    # extracted_facts (observed: 16 identical Celebrex / Taken rows
+    # for 2026-05-13). The key includes drug + exact scheduled time
+    # (second precision) + adherence status, so:
+    #   - Re-pushes of the same scheduled dose collapse on the partial
+    #     unique index over client_sample_key (ON CONFLICT DO NOTHING).
+    #   - Two real distinct doses on the same day (morning Taken,
+    #     evening Skipped) keep separate keys.
+    blob = (
+        f"auto-export:medication:"
+        f"{name.lower().strip()}:"
+        f"{ds.replace(microsecond=0).isoformat()}:"
+        f"{(status or '').lower()}"
+    )
+    csk = "ae-med-" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+
     out.facts.append(
         AutoExportFact(
             fact_type="medication",
@@ -426,6 +455,7 @@ def _emit_medication(out: AutoExportIngest, m: dict[str, Any]) -> None:
             why_needs_review_code=why_code,
             why_needs_review_text=why_text,
             review_task_type="medication_dose_log" if review == "needs_review" else None,
+            client_sample_key=csk,
         )
     )
     out.medication_count += 1

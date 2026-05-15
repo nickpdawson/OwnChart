@@ -40,16 +40,23 @@ if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${REMOTE_USER}@${REMOTE_HOST}" tr
   exit 1
 fi
 
-KEY_FILE="${REPO_ROOT}/anthropic_dev_key.txt"
+: "${ANTHROPIC_KEY_VAL:=}"
 # The key file is a convenience for refreshing ANTHROPIC_API_KEY on
-# the remote. When absent or empty, skip the refresh and leave the
-# existing remote value alone — the user may have intentionally
-# omitted it (e.g. credits not repaired, BYOK rotation in flight).
-if [[ -s "$KEY_FILE" ]]; then
-  ANTHROPIC_KEY_VAL="$(tr -d '[:space:]' < "$KEY_FILE")"
-else
-  echo "→ no local anthropic_dev_key.txt — leaving remote ANTHROPIC_API_KEY untouched"
-  ANTHROPIC_KEY_VAL=""
+# the remote. Check both the legacy repo-root path and the
+# "Working Docs/" scratchpad (Nick's preferred location for
+# sensitive dev files). When absent or empty, skip the refresh and
+# leave the existing remote value alone — the user may have
+# intentionally omitted it (e.g. credits not repaired, BYOK
+# rotation in flight).
+for candidate in "${REPO_ROOT}/anthropic_dev_key.txt" "${REPO_ROOT}/Working Docs/anthropic_dev_key.txt"; do
+  if [[ -s "$candidate" ]]; then
+    ANTHROPIC_KEY_VAL="$(tr -d '[:space:]' < "$candidate")"
+    echo "→ using anthropic_dev_key.txt from: $candidate"
+    break
+  fi
+done
+if [[ -z "$ANTHROPIC_KEY_VAL" ]]; then
+  echo "→ no anthropic_dev_key.txt found — leaving remote ANTHROPIC_API_KEY untouched"
 fi
 
 case "${1:-}" in

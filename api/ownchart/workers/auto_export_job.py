@@ -95,7 +95,28 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
     # transaction open forever.
     BATCH = 500
     fact_count = 0
+    skipped_dupe_count = 0
     pending: list[tuple[EvidenceAnchor, ExtractedFact]] = []
+
+    # Cross-push dedup (2026-05-15): the Health Auto Export iOS app
+    # re-pushes the full medication history on every push, not just
+    # deltas. Without this filter, the same scheduled dose lands as
+    # N copies (observed: 16 identical Celebrex / Taken rows). Each
+    # auto-export medication fact carries a deterministic
+    # `client_sample_key` derived from (drug, exact scheduled time,
+    # status); facts whose key already exists in the DB are dropped
+    # before they reach the insert path. Anchors for dropped facts
+    # are skipped too — no orphans.
+    csks_in_payload = [
+        f.client_sample_key for f in parsed.facts if f.client_sample_key
+    ]
+    existing_csks: set[str] = set()
+    if csks_in_payload:
+        async with SessionLocal() as db:
+            existing_csks = set((await db.execute(
+                select(ExtractedFact.client_sample_key)
+                .where(ExtractedFact.client_sample_key.in_(csks_in_payload))
+            )).scalars().all())
 
     async def _flush() -> None:
         nonlocal fact_count, pending
@@ -113,6 +134,10 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
         pending = []
 
     for f in parsed.facts:
+        # Skip facts that already exist (cross-push dupes).
+        if f.client_sample_key and f.client_sample_key in existing_csks:
+            skipped_dupe_count += 1
+            continue
         anchor = EvidenceAnchor(
             source_document_id=src_uuid,
             # Default anchor_type is "auto_export_metric" for the
@@ -157,7 +182,17 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
             why_needs_review_text=f.why_needs_review_text,
             review_task_type=f.review_task_type,
             source_context_only_eligible=f.source_context_only_eligible,
+            # Idempotency for medications (and any future emitter that
+            # sets one). Partial unique index on the column drops
+            # within-push dupes; the pre-filter above drops
+            # across-push dupes.
+            client_sample_key=f.client_sample_key,
         )
+        # Track keys we've added in this push so the same key emitted
+        # twice in one payload (defense-in-depth) doesn't go to the
+        # batch twice.
+        if f.client_sample_key:
+            existing_csks.add(f.client_sample_key)
         pending.append((anchor, ef))
         if len(pending) >= BATCH:
             await _flush()
@@ -175,6 +210,12 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
             m["medication_count"] = parsed.medication_count
             m["symptom_count"] = parsed.symptom_count
             m["fact_count"] = fact_count
+            # Cross-push dedup count: rows in this push that hashed to
+            # the same client_sample_key as something already in the DB.
+            # Healthy chronic-med setup will see this >0 on every push
+            # because the iOS app re-sends history; if it's 0 on a fresh
+            # push the dedup may not be firing.
+            m["dedup_skipped_count"] = skipped_dupe_count
             m["skipped_metrics"] = sorted(set(parsed.skipped_metrics))
             m["unhandled_sections"] = sorted(set(parsed.unhandled_sections))
             m["parse_warnings"] = parsed.parse_warnings[:50]
@@ -185,6 +226,7 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
         "auto_export_push_processed",
         source_id=source_id,
         fact_count=fact_count,
+        dedup_skipped=skipped_dupe_count,
         workouts=parsed.workout_count,
         sleep_sessions=parsed.sleep_session_count,
         medications=parsed.medication_count,
