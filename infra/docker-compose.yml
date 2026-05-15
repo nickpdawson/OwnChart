@@ -74,6 +74,10 @@ services:
       OWNCHART_EPIC_CLIENT_ID: ${OWNCHART_EPIC_CLIENT_ID:-}
       OWNCHART_EPIC_CLIENT_ID_SANDBOX: ${OWNCHART_EPIC_CLIENT_ID_SANDBOX:-}
       OWNCHART_ATHENA_CLIENT_ID: ${OWNCHART_ATHENA_CLIENT_ID:-}
+      # ModMed: Drummond-certified FHIR R4, per-practice fhir_base.
+      # Public client (PKCE), no secret needed. Read by
+      # connectors.py::_client_id_env_for("modmed").
+      OWNCHART_MODMED_CLIENT_ID: ${OWNCHART_MODMED_CLIENT_ID:-}
       OWNCHART_CONNECTORS_SEED_PATH: /app/infra/connectors.seed.yaml
       OWNCHART_CONFIG_PATH: /app/infra/config.yaml
     volumes:

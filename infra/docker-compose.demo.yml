@@ -77,6 +77,8 @@ services:
       # when an operator wants to connect a real Epic tenant from the demo.
       OWNCHART_EPIC_CLIENT_ID: ${OWNCHART_EPIC_CLIENT_ID:-}
       OWNCHART_EPIC_CLIENT_ID_SANDBOX: ${OWNCHART_EPIC_CLIENT_ID_SANDBOX:-}
+      OWNCHART_ATHENA_CLIENT_ID: ${OWNCHART_ATHENA_CLIENT_ID:-}
+      OWNCHART_MODMED_CLIENT_ID: ${OWNCHART_MODMED_CLIENT_ID:-}
       # Public URL the demo answers on. NPM forwards demo.ownchart.me to
       # host:9988; the API uses this for OAuth redirect_uri composition.
       OWNCHART_PUBLIC_BASE_URL: ${OWNCHART_PUBLIC_BASE_URL:-https://demo.ownchart.me}
