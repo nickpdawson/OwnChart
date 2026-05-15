@@ -6,7 +6,7 @@
 
 **Your life tells the story of your health. OwnChart helps you read it.**
 
-OwnChart is a private, self-hosted AI research partner for your body, your care, and your life. It brings together medical records, wearable data, clinical notes, PDFs, CCDAs, FHIR bundles, photos, voice notes, supplements, workouts, and life events, then lets you ask questions across all of it with citations back to the evidence.
+OwnChart is a private, self-hosted AI research partner for your body, your care, and your life. It brings together medical records, wearable data, clinical notes, PDFs, CCDAs, FHIR bundles, photos, transcribed voice notes, supplements, workouts, and life events, then lets you ask questions across all of it with citations back to the evidence.
 
 OwnChart is not a patient portal. It is not an EMR clone. It is a patient-owned, person-owned tool for understanding the story your data is already telling.
 
@@ -35,7 +35,7 @@ Examples:
 - "When did my knee problems start showing up in the record?"
 - "What did the operative note actually say, in plain English?"
 - "Which medications show up in multiple systems, and are any duplicates?"
-- "What do my wearable data and calendar suggest about the weeks before this flare?"
+- "What do my wearable data, notes, and workouts suggest about the weeks before this flare?"
 - "What should I review before my next appointment?"
 - "What does OwnChart know, what is inferred, and what is still missing?"
 
@@ -59,9 +59,9 @@ Most of us do not have one health record. We have fragments:
 - workouts
 - sleep and HRV
 - medications and supplements
-- calendars and travel
+- calendar and travel context, planned
 - photos
-- voice notes
+- transcribed voice notes
 - memory
 
 Institutions have systems for storing, coding, billing, and reviewing those fragments. People usually do not.
