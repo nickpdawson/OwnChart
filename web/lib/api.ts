@@ -802,6 +802,10 @@ export type ProviderShape = {
   label: string;
   configured: boolean;
   capabilities: Record<string, unknown>;
+  // Present on /api/llm-providers (the BYOK catalog). Absent on
+  // /api/conversations/providers (the chat provider list). Optional
+  // so both endpoints can deserialize into the same type.
+  user_credential_count?: number;
 };
 
 export async function listConversations(
@@ -954,15 +958,9 @@ export async function listEpisodes(): Promise<EpisodeDetail[]> {
 }
 
 // ---------------------------------------------------------------------------
-// LLM providers — BYOK settings UI.
-
-export type ProviderShape = {
-  key: string;
-  label: string;
-  configured: boolean;
-  capabilities: Record<string, unknown>;
-  user_credential_count: number;
-};
+// LLM providers — BYOK settings UI. (ProviderShape is declared above
+// next to the chat provider list — same shape, with an optional
+// `user_credential_count` set only by the /api/llm-providers catalog.)
 
 export type ProviderCatalog = {
   providers: ProviderShape[];

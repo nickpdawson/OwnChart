@@ -1,6 +1,9 @@
 import Link from "next/link";
 
-export const dynamic = "force-static";
+// The (app) layout fetches /api/auth/me at request time, which means
+// every page under it has to be dynamic — prerendering this static
+// page would force the layout to fetch the api at build time and fail.
+export const dynamic = "force-dynamic";
 
 // "Sign in with Claude" stub.
 //
