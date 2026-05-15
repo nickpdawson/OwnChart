@@ -41,10 +41,15 @@ if ! ssh -o ConnectTimeout=5 -o BatchMode=yes "${REMOTE_USER}@${REMOTE_HOST}" tr
 fi
 
 KEY_FILE="${REPO_ROOT}/anthropic_dev_key.txt"
-if [[ ! -s "$KEY_FILE" ]]; then
-  echo "❌ Missing or empty: ${KEY_FILE}" >&2
-  echo "   Drop the Anthropic dev key in that file (gitignored)." >&2
-  exit 1
+# The key file is a convenience for refreshing ANTHROPIC_API_KEY on
+# the remote. When absent or empty, skip the refresh and leave the
+# existing remote value alone — the user may have intentionally
+# omitted it (e.g. credits not repaired, BYOK rotation in flight).
+if [[ -s "$KEY_FILE" ]]; then
+  ANTHROPIC_KEY_VAL="$(tr -d '[:space:]' < "$KEY_FILE")"
+else
+  echo "→ no local anthropic_dev_key.txt — leaving remote ANTHROPIC_API_KEY untouched"
+  ANTHROPIC_KEY_VAL=""
 fi
 
 case "${1:-}" in
@@ -87,7 +92,8 @@ rsync -az --delete \
 # the data volume.
 echo "→ checking remote infra/.env"
 
-ANTHROPIC_KEY_VAL="$(tr -d '[:space:]' < "$KEY_FILE")"
+# ANTHROPIC_KEY_VAL is set above (empty when the local key file is
+# absent — the remote .env stays untouched in that case).
 
 # Disable -e for this lookup so an absent file doesn't abort.
 set +e
@@ -100,9 +106,13 @@ if [[ $ssh_rc -ne 0 ]]; then
 fi
 
 if [[ "$remote_env_exists" == "yes" ]]; then
-  echo "→ remote infra/.env exists — refreshing ANTHROPIC_API_KEY (preserving Postgres + session + token DEK)"
-  ssh "${REMOTE_USER}@${REMOTE_HOST}" \
-    "umask 077 && sed -i.bak -E 's|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${ANTHROPIC_KEY_VAL}|' ${REMOTE_DIR}/infra/.env && rm -f ${REMOTE_DIR}/infra/.env.bak"
+  if [[ -n "$ANTHROPIC_KEY_VAL" ]]; then
+    echo "→ remote infra/.env exists — refreshing ANTHROPIC_API_KEY (preserving Postgres + session + token DEK)"
+    ssh "${REMOTE_USER}@${REMOTE_HOST}" \
+      "umask 077 && sed -i.bak -E 's|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${ANTHROPIC_KEY_VAL}|' ${REMOTE_DIR}/infra/.env && rm -f ${REMOTE_DIR}/infra/.env.bak"
+  else
+    echo "→ remote infra/.env exists — local key file absent, leaving ANTHROPIC_API_KEY as-is"
+  fi
 
   # Backfill OWNCHART_TOKEN_DEK if absent (older deployments). Generate
   # ONLY when missing — losing the DEK invalidates encrypted tokens.
