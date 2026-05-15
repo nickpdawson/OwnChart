@@ -31,6 +31,15 @@ export default async function ProvidersPage() {
         path until that changes upstream.
       </p>
 
+      <div className="mt-4">
+        <a
+          href="/settings/providers/usage"
+          className="inline-block rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/5"
+        >
+          Where the spend went →
+        </a>
+      </div>
+
       <ProvidersClient
         catalog={catalog.providers}
         initialCredentials={credentials}
