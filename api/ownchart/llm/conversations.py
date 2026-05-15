@@ -230,10 +230,32 @@ async def _gather_evidence(
                             m = w.get("metrics", {})
                             if not m:
                                 continue
-                            metric_summary = ", ".join(
-                                f"{k}={v.get('mean')}{v.get('unit') or ''} (n={v.get('n')})"
-                                for k, v in m.items()
-                            )
+                            metric_parts: list[str] = []
+                            for k, v in m.items():
+                                # Planner mixes shapes: mean-based dicts
+                                # ({mean, unit, n}), sum-based dicts
+                                # ({total, daily_mean, active_days}), and
+                                # scalar ints/floats (training_gap_days).
+                                # Caught 2026-05-15 PM: assuming dict-only
+                                # crashed chat send with AttributeError.
+                                if isinstance(v, dict):
+                                    if "mean" in v:
+                                        metric_parts.append(
+                                            f"{k}={v.get('mean')}{v.get('unit') or ''} (n={v.get('n')})"
+                                        )
+                                    elif "total" in v:
+                                        unit = v.get("unit") or ""
+                                        bits = [f"total={v.get('total')}{unit}"]
+                                        if v.get("daily_mean") is not None:
+                                            bits.append(f"daily_mean={v.get('daily_mean')}{unit}")
+                                        if v.get("active_days") is not None:
+                                            bits.append(f"active_days={v.get('active_days')}")
+                                        metric_parts.append(f"{k}={{ {', '.join(bits)} }}")
+                                    else:
+                                        metric_parts.append(f"{k}={v}")
+                                else:
+                                    metric_parts.append(f"{k}={v}")
+                            metric_summary = ", ".join(metric_parts)
                             summary_bits.append(f"{w['name']}: {metric_summary}")
                         if summary_bits:
                             from ..models.extracted_fact import ExtractedFact as _EF
@@ -292,7 +314,88 @@ def _scope_description(scope: dict[str, Any]) -> str:
     return kind
 
 
-def _evidence_block(facts: list[ExtractedFact]) -> str:
+# Source-quality heuristic (2026-05-15 PM, Nick's ACL retrieval read).
+#
+# The Ask LLM was citing a Stanford pre-op anesthesia note's "Right
+# ACL surgery x3" — patient self-reported surgical history — instead
+# of the OrthoVirginia operative/specialty record. The LLM literally
+# couldn't see the source-quality difference because the evidence
+# block surfaced fact label + significance only, not provenance.
+#
+# This classifier inspects the source document's `original_filename`
+# and `source_label` and assigns a coarse quality tier. The Ask
+# prompt instructs the LLM to prefer higher-tier evidence and to
+# flag explicitly when only lower-tier evidence is available.
+#
+# Tiers (highest first):
+#   "operative_report"     — actual op note from the performing site
+#   "specialty_primary"    — specialist encounter / progress note
+#   "primary_care"         — PCP encounter / progress note
+#   "imaging_pathology"    — radiology, pathology, lab
+#   "self_reported_history"— pre-op H&P, surgical history list
+#   "summary_overview"     — patient summary / continuity-of-care doc
+#   "unknown"
+_FILENAME_TIER_RULES: tuple[tuple[str, str], ...] = (
+    ("operative_report", "operative"),
+    ("operative_report", "op note"),
+    ("operative_report", "surgical report"),
+    ("self_reported_history", "anesthesia preprocedure"),
+    ("self_reported_history", "preprocedure evaluation"),
+    ("self_reported_history", "pre-op"),
+    ("self_reported_history", "preop"),
+    ("self_reported_history", "surgical history"),
+    ("self_reported_history", "past surgical"),
+    ("imaging_pathology", "radiology"),
+    ("imaging_pathology", "imaging"),
+    ("imaging_pathology", "pathology"),
+    ("imaging_pathology", "lab"),
+    ("summary_overview", "patient summary"),
+    ("summary_overview", "continuity of care"),
+    ("summary_overview", "ccd "),
+    ("summary_overview", "ccda"),
+    ("specialty_primary", "encounter summary"),
+    ("specialty_primary", "progress notes"),
+    ("specialty_primary", "consult"),
+    ("specialty_primary", "office visit"),
+)
+
+_SPECIALTY_LABEL_HINTS = (
+    "orthovirginia", "ortho", "stanford orthopedics", "kaiser ortho",
+    "bridger ortho", "cardiology", "dermatology", "endocrinology",
+    "gastroenterology", "neurology", "ophthalmology", "ent",
+    "pulmonology", "rheumatology", "urology", "nephrology",
+)
+
+
+def _source_quality_tier(source_label: str | None, filename: str | None) -> str:
+    s = (source_label or "").lower()
+    f = (filename or "").lower()
+    # File-name heuristics first — they're the most diagnostic.
+    for tier, needle in _FILENAME_TIER_RULES:
+        if needle in f:
+            # Bump specialty-primary to specialty if the source_label
+            # itself names a specialty practice.
+            if tier == "specialty_primary" and any(h in s for h in _SPECIALTY_LABEL_HINTS):
+                return "specialty_primary"
+            return tier
+    # No filename hit — fall back to source_label inspection.
+    if any(h in s for h in _SPECIALTY_LABEL_HINTS):
+        return "specialty_primary"
+    return "unknown"
+
+
+def _evidence_block(
+    facts: list[ExtractedFact],
+    fact_source_meta: dict[uuid.UUID, dict[str, Any]] | None = None,
+) -> str:
+    """Render the retrieved-evidence block for the Ask LLM.
+
+    `fact_source_meta` maps fact_id → {source_label, original_filename,
+    source_quality}. When supplied, each line carries provenance so
+    the LLM can rank citations (P0-3 from 2026-05-15 PM read: ACL
+    answer was citing Stanford pre-op surgical history instead of the
+    OrthoVirginia primary record).
+    """
     if not facts:
         return "(none retrieved)"
     lines: list[str] = []
@@ -300,11 +403,20 @@ def _evidence_block(facts: list[ExtractedFact]) -> str:
         date = f.date_start.date().isoformat() if f.date_start else "?"
         label = f.display_label or f.label
         sig = f.significance or "background"
-        lines.append(
-            f"- fact_id={f.id} type={f.fact_type} date={date} sig={sig}\n"
-            f"  label: {label}"
-            + (f"\n  desc: {f.description[:200]}" if f.description else "")
+        meta = (fact_source_meta or {}).get(f.id) or {}
+        src_label = meta.get("source_label") or ""
+        src_file = meta.get("original_filename") or ""
+        quality = meta.get("source_quality") or "unknown"
+        head = (
+            f"- fact_id={f.id} type={f.fact_type} date={date} sig={sig}"
+            f" quality={quality}"
         )
+        body = f"  label: {label}"
+        if src_label or src_file:
+            body += f"\n  source: {src_label or '?'} · {src_file or '?'}"
+        if f.description:
+            body += f"\n  desc: {f.description[:200]}"
+        lines.append(head + "\n" + body)
     return "\n".join(lines)
 
 
@@ -405,6 +517,40 @@ async def add_user_message_and_reply(
         s = await setting_effective(db, user, "ai.default_provider")
         if isinstance(s, str) and s not in ("auto", ""):
             preferred = s
+    # Build a fact_id → source-meta map for evidence-block provenance.
+    # P0-3 (2026-05-15): without source_label / filename / quality
+    # tier visible to the LLM, Ask can't distinguish a primary
+    # specialty record from a copy-forward pre-op surgical history.
+    fact_source_meta: dict[uuid.UUID, dict[str, Any]] = {}
+    if facts:
+        from ..models.evidence_anchor import EvidenceAnchor
+        # Anchor id → fact id (1:1 in practice; we read the first
+        # anchor per fact as the "primary citation").
+        anchor_to_fact: dict[uuid.UUID, uuid.UUID] = {}
+        for ff in facts:
+            if ff.evidence_anchor_ids:
+                anchor_to_fact[ff.evidence_anchor_ids[0]] = ff.id
+        if anchor_to_fact:
+            rows = list((await db.execute(
+                select(EvidenceAnchor.id, EvidenceAnchor.source_document_id)
+                .where(EvidenceAnchor.id.in_(list(anchor_to_fact.keys())))
+            )).all())
+            anchor_to_source: dict[uuid.UUID, uuid.UUID] = {
+                aid: sid for (aid, sid) in rows if sid is not None
+            }
+            source_by_id = {s.id: s for s in sources}
+            for aid, fid in anchor_to_fact.items():
+                sid = anchor_to_source.get(aid)
+                src = source_by_id.get(sid) if sid else None
+                if src is None:
+                    continue
+                fact_source_meta[fid] = {
+                    "source_label": src.source_label,
+                    "original_filename": src.original_filename,
+                    "source_quality": _source_quality_tier(
+                        src.source_label, src.original_filename
+                    ),
+                }
     prompt = get_registry().get("general_ask")
     result = await call_with_tool(
         db,
@@ -414,7 +560,7 @@ async def add_user_message_and_reply(
             "question": content,
             "scope_description": _scope_description(conv.scope or {}),
             "evidence_count": str(len(facts)),
-            "evidence_block": _evidence_block(facts),
+            "evidence_block": _evidence_block(facts, fact_source_meta),
             "history_block": _history_block(history),
             "needs_title": "yes" if not conv.title else "no",
         },

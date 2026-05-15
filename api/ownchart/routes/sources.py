@@ -95,11 +95,36 @@ async def list_sources(
 
 @router.get("/{source_id}")
 async def get_source(
-    source_id: uuid.UUID,
+    source_id: str,
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
-    src = await db.get(SourceDocument, source_id)
+    # Accept UUID prefixes (>=8 chars) so citation chips like
+    # `[source:affdb681]` from the LLM resolve to a real row instead
+    # of 422-ing the Next.js server render. The chip emitter (see
+    # ThreadClient.tsx CITATION_PATTERN) captures 6-36 hex chars,
+    # so we mirror that range here. Full UUIDs still take the fast
+    # path via db.get; prefixes do an indexed text-LIKE lookup.
+    sid = (source_id or "").strip()
+    if not sid:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    src: SourceDocument | None = None
+    try:
+        src = await db.get(SourceDocument, uuid.UUID(sid))
+    except ValueError:
+        # Not a full UUID — try prefix resolution.
+        if len(sid) < 8 or not all(c in "0123456789abcdefABCDEF-" for c in sid):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        from sqlalchemy import text as _text
+        like_pat = f"{sid.lower()}%"
+        matches = list((await db.execute(
+            select(SourceDocument)
+            .where(_text("cast(id as text) like :pat").bindparams(pat=like_pat))
+            .limit(2)
+        )).scalars().all())
+        if len(matches) == 1:
+            src = matches[0]
+        # 0 or >1 → fall through to 404 below
     if src is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     has_gps = bool((src.exif_metadata or {}).get("GPSInfo"))
