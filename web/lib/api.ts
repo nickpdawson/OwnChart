@@ -143,8 +143,11 @@ export async function getDossier(slug: string): Promise<Dossier> {
   return (await r.json()) as Dossier;
 }
 
-export async function listTopics(): Promise<TopicSummary[]> {
-  const r = await fetch(`${INTERNAL_API}/api/topics`, {
+export async function listTopics(q?: string): Promise<TopicSummary[]> {
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  const url = `${INTERNAL_API}/api/topics${params.toString() ? `?${params}` : ""}`;
+  const r = await fetch(url, {
     headers: await withSessionHeaders(),
     cache: "no-store",
   });
@@ -923,7 +926,17 @@ export type EpisodeMember = {
   note: string | null;
 };
 
-export type EpisodeDetail = {
+export type RelatedConversation = {
+  id: string;
+  title: string | null;
+  kind: string;
+  last_message_at: string | null;
+  // "member" = explicit attach via episode_members.
+  // "anchor_fact" = legacy EI link via scope.anchor_fact_id.
+  link_source: "member" | "anchor_fact";
+};
+
+export type EpisodeSummary = {
   id: string;
   title: string;
   display_title: string | null;
@@ -935,8 +948,12 @@ export type EpisodeDetail = {
   primary_fact_id: string | null;
   created_by: string;
   created_at: string;
+};
+
+export type EpisodeDetail = EpisodeSummary & {
   payload: Record<string, unknown>;
   members: EpisodeMember[];
+  related_conversations: RelatedConversation[];
 };
 
 export async function getEpisode(id: string): Promise<EpisodeDetail> {
@@ -948,14 +965,60 @@ export async function getEpisode(id: string): Promise<EpisodeDetail> {
   return (await r.json()) as EpisodeDetail;
 }
 
-export async function listEpisodes(): Promise<EpisodeDetail[]> {
-  const r = await fetch(`${INTERNAL_API}/api/episodes`, {
+export async function listEpisodes(opts?: {
+  q?: string;
+  kind?: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+}): Promise<EpisodeSummary[]> {
+  const params = new URLSearchParams();
+  if (opts?.q) params.set("q", opts.q);
+  if (opts?.kind) params.set("kind", opts.kind);
+  if (opts?.date_from) params.set("date_from", opts.date_from);
+  if (opts?.date_to) params.set("date_to", opts.date_to);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  const url = `${INTERNAL_API}/api/episodes${params.toString() ? `?${params}` : ""}`;
+  const r = await fetch(url, {
     headers: await withSessionHeaders(),
     cache: "no-store",
   });
   if (!r.ok) throw new Error(`listEpisodes failed: ${r.status}`);
-  return (await r.json()) as EpisodeDetail[];
+  return (await r.json()) as EpisodeSummary[];
 }
+
+// ---------------------------------------------------------------------------
+// Save / attach a Conversation to an Event or Dossier. Used by the chat
+// Save menu (#89). No LLM calls — pure structural plumbing.
+
+export type SaveAsEventBody = {
+  title: string;
+  display_title?: string | null;
+  aliases?: string[];
+  summary?: string | null;
+  kind?: string | null;
+  date_start?: string | null;
+};
+
+export type SaveAsEventResult = { episode_id: string };
+
+export type SaveAsTopicBody = {
+  name: string;
+  aliases?: string[];
+  description?: string | null;
+};
+
+export type SaveAsTopicResult = {
+  topic_id: string;
+  slug: string;
+  conflict: boolean;
+};
+
+export type AttachToTopicResult = {
+  slug: string;
+  conversation_id: string;
+  already_attached: boolean;
+};
 
 // ---------------------------------------------------------------------------
 // LLM providers — BYOK settings UI. (ProviderShape is declared above

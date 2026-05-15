@@ -5,17 +5,16 @@ import Link from "next/link";
 // page would force the layout to fetch the api at build time and fail.
 export const dynamic = "force-dynamic";
 
-// "Sign in with Claude" stub.
+// "Sign in with Claude" status page.
 //
-// As of 2026-05-15, Anthropic does NOT expose a consumer OAuth flow
-// that exchanges a claude.ai login for an API-callable token. Their
-// API requires a console.anthropic.com API key (BYOK).
+// This isn't on OwnChart's roadmap — it's blocked upstream. Anthropic
+// has not exposed a consumer OAuth flow for API access. claude.ai is
+// a separate product with separate billing from console.anthropic.com.
 //
-// This page exists so the link from /settings/providers goes
-// somewhere honest — it explains the gap rather than leaving a
-// dead button. When Anthropic ships consumer OAuth, this page
-// becomes the OAuth start endpoint and we wire the callback into
-// /api/connectors/callback (or a sibling).
+// Copy here is deliberately not "coming soon." That implies an
+// OwnChart-side timeline. The honest framing: "Not currently
+// supported by Anthropic." If Anthropic exposes it later, the
+// wiring is in place.
 
 export default function ClaudeOAuthPage() {
   return (
@@ -27,12 +26,13 @@ export default function ClaudeOAuthPage() {
         · Sign in with Claude
       </p>
       <h1 className="mt-2 font-serif text-3xl">
-        Coming soon — when Anthropic exposes it
+        Not currently supported by Anthropic
       </h1>
 
       <div className="mt-6 space-y-5 text-sm leading-relaxed">
         <p>
-          OwnChart will let you log in with your{" "}
+          OwnChart supports Anthropic <strong>API keys</strong> today.
+          A &quot;Sign in with Claude&quot; flow that uses your{" "}
           <a
             href="https://claude.ai"
             target="_blank"
@@ -41,15 +41,13 @@ export default function ClaudeOAuthPage() {
           >
             claude.ai
           </a>{" "}
-          account and use your Pro / Max subscription instead of
-          paying per-token for an API key. The UI is here, the
-          wiring is here. What&apos;s missing is the upstream:
-          Anthropic doesn&apos;t yet expose a consumer OAuth flow
-          that exchanges a claude.ai session for an API-callable
-          token.
+          subscription for API calls would require Anthropic to expose
+          consumer OAuth for API access. They haven&apos;t. claude.ai
+          and console.anthropic.com are separate products with
+          separate accounts and separate billing.
         </p>
         <p>
-          Until they do, the realistic path is:
+          What works today, in two steps:
         </p>
         <ol className="ml-5 list-decimal space-y-2">
           <li>
@@ -62,9 +60,9 @@ export default function ClaudeOAuthPage() {
             >
               console.anthropic.com
             </a>
-            . That account is separate from your claude.ai
-            account, has its own billing, and ships per-token
-            pricing rather than a flat monthly fee.
+            . The Console account is separate from your claude.ai
+            account, has its own billing, and uses per-token pricing
+            instead of a flat monthly fee.
           </li>
           <li>
             Drop the key into{" "}
@@ -80,14 +78,18 @@ export default function ClaudeOAuthPage() {
         </ol>
 
         <div className="rounded-xl border border-muted/15 bg-bg/40 p-4 text-xs text-muted">
-          <p className="font-medium text-ink">Why we&apos;re honest about this</p>
+          <p className="font-medium text-ink">If Anthropic ships consumer OAuth</p>
           <p className="mt-1">
-            A button that lies (&quot;Sign in with Claude&quot; that
-            then asks for an API key) erodes trust. A button that
-            tells you what&apos;s actually possible — and links to the
-            real path — is the same UX with less surprise. The
-            wiring is here so the day Anthropic ships consumer
-            OAuth, this page becomes the start of the flow.
+            The OwnChart side of this is already wired. The
+            <code className="mx-1 rounded bg-muted/10 px-1 py-0.5">
+              llm_provider_credentials
+            </code>
+            table already supports an
+            <code className="mx-1 rounded bg-muted/10 px-1 py-0.5">
+              auth_kind = &quot;oauth&quot;
+            </code>
+            row with access/refresh tokens. The day Anthropic exposes
+            it, this page flips from explainer to sign-in flow.
           </p>
         </div>
 

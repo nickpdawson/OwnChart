@@ -24,6 +24,12 @@ export default async function ProvidersPage() {
         Intelligence, Ask, sensemaking, the lot. Keys are encrypted
         at rest and only decrypted in memory for the call.
       </p>
+      <p className="mt-2 max-w-2xl text-xs text-muted">
+        &quot;Sign in with Claude&quot; and &quot;Sign in with ChatGPT&quot;
+        aren&apos;t available — neither Anthropic nor OpenAI exposes
+        consumer OAuth for API access. API keys are the supported
+        path until that changes upstream.
+      </p>
 
       <ProvidersClient
         catalog={catalog.providers}

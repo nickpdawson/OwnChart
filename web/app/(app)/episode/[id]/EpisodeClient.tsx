@@ -285,6 +285,37 @@ export function EpisodeClient({ episode }: { episode: EpisodeDetail }) {
         </Section>
       )}
 
+      {/* 3b. RELATED CONVERSATIONS — chats explicitly attached via
+          the chat Save menu (#89), plus legacy EI conversations
+          linked via scope.anchor_fact_id. Merged + deduped on the
+          backend; link_source indicates which path created the
+          association. */}
+      {ep.related_conversations.length > 0 && (
+        <Section title={`Conversations about this Event (${ep.related_conversations.length})`}>
+          <ul className="space-y-2">
+            {ep.related_conversations.map((c) => (
+              <li key={c.id}>
+                <a
+                  href={`/chat/${c.id}`}
+                  className="block rounded-xl border border-muted/15 bg-surface p-3 hover:border-accent/40"
+                >
+                  <p className="font-medium">
+                    {c.title || "(untitled chat)"}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">
+                    {c.kind.replace(/_/g, " ")}
+                    {c.last_message_at && (
+                      <>{" · "}{new Date(c.last_message_at).toLocaleString()}</>
+                    )}
+                    {c.link_source === "anchor_fact" && <> · linked via anchor</>}
+                  </p>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
       {/* 4. RECOVERY / BODY SIGNAL — wearable summary + body response
           interpretation. */}
       {(bodyResponse || medsFound || medsMissing) && (

@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -239,10 +239,25 @@ async def _fact_readouts(db: AsyncSession, facts: list[ExtractedFact]) -> list[F
 
 @router.get("")
 async def list_topics(
+    q: str | None = Query(default=None, description="Match name, slug, or any alias (ILIKE)."),
+    limit: int = Query(default=200, ge=1, le=500),
     _user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[TopicSummary]:
-    result = await db.execute(select(Topic).order_by(Topic.name))
+    """List Dossiers. `q` powers the chat Save menu's attach picker."""
+    from sqlalchemy import text as _text
+    stmt = select(Topic).order_by(Topic.name).limit(limit)
+    if q:
+        pat = f"%{q.strip()}%"
+        alias_match = _text(
+            "EXISTS (SELECT 1 FROM unnest(topics.aliases) a WHERE a ILIKE :pat)"
+        ).bindparams(pat=pat)
+        stmt = stmt.where(or_(
+            func.lower(Topic.name).like(func.lower(pat)),
+            func.lower(Topic.slug).like(func.lower(pat)),
+            alias_match,
+        ))
+    result = await db.execute(stmt)
     return [_topic_summary(t) for t in result.scalars().all()]
 
 
@@ -814,6 +829,55 @@ async def get_or_create_topic_conversation(
         scope={"type": "topic", "topic_slug": topic.slug},
     )
     return TopicConversationOut(conversation_id=str(conv.id), created=True)
+
+
+class AttachConversationToTopicRequest(BaseModel):
+    conversation_id: uuid.UUID
+
+
+class AttachConversationToTopicResponse(BaseModel):
+    slug: str
+    conversation_id: str
+    already_attached: bool
+
+
+@router.post("/{slug}/attach-conversation",
+             response_model=AttachConversationToTopicResponse)
+async def attach_conversation_to_topic_route(
+    slug: str,
+    body: AttachConversationToTopicRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> AttachConversationToTopicResponse:
+    """Attach an existing Conversation to an existing Dossier.
+
+    Re-scopes the conversation so retrieval picks up the dossier's
+    membership clause on future messages. Idempotent — if the
+    conversation already points at this slug, returns
+    already_attached=true without changing anything else.
+    """
+    from ..models.conversation import Conversation
+
+    topic = await _resolve_topic_or_404(db, slug)
+    conv = await db.get(Conversation, body.conversation_id)
+    if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    current_scope = conv.scope or {}
+    already = (
+        isinstance(current_scope, dict)
+        and current_scope.get("type") == "topic"
+        and current_scope.get("topic_slug") == topic.slug
+    )
+    if not already:
+        conv.scope = {"type": "topic", "topic_slug": topic.slug}
+        conv.kind = "dossier_followup"
+        await db.commit()
+    return AttachConversationToTopicResponse(
+        slug=topic.slug,
+        conversation_id=str(conv.id),
+        already_attached=already,
+    )
 
 
 @router.post("/{slug}/ask")

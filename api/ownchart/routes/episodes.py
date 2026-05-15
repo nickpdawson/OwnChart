@@ -19,9 +19,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session
@@ -131,9 +131,21 @@ class EpisodeSummary(BaseModel):
     created_at: datetime
 
 
+class RelatedConversationOut(BaseModel):
+    id: str
+    title: str | None
+    kind: str
+    last_message_at: datetime | None
+    # How this conversation got linked: "member" = explicit attach via
+    # episode_members; "anchor_fact" = EI conversation that stamped
+    # scope.anchor_fact_id matching the Event's primary_fact_id.
+    link_source: str
+
+
 class EpisodeDetail(EpisodeSummary):
     payload: dict[str, Any]
     members: list[EpisodeMemberOut] = Field(default_factory=list)
+    related_conversations: list[RelatedConversationOut] = Field(default_factory=list)
 
 
 def _summary(e: Episode) -> EpisodeSummary:
@@ -154,16 +166,65 @@ def _summary(e: Episode) -> EpisodeSummary:
 
 @router.get("", response_model=list[EpisodeSummary])
 async def list_episodes_route(
+    q: str | None = Query(default=None, description="Match against title, display_title, or any alias (ILIKE)."),
+    kind: str | None = Query(default=None),
+    date_from: str | None = Query(default=None, description="ISO date — only include events on/after this date."),
+    date_to: str | None = Query(default=None, description="ISO date — only include events on/before this date."),
+    limit: int = Query(default=100, ge=1, le=500),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[EpisodeSummary]:
-    rows = list((await db.execute(
+    """List Events, optionally filtered for an attach-picker UI.
+
+    `q` matches title / display_title / aliases (Postgres array @>
+    pattern) case-insensitively. `kind` is exact match. `date_from` /
+    `date_to` filter on `date_start` and accept ISO `YYYY-MM-DD`.
+    Merged events stay hidden.
+    """
+    stmt = (
         select(Episode)
         .where(Episode.user_id == user.id)
-        .where(Episode.merged_into_id.is_(None))   # hide merged duplicates
+        .where(Episode.merged_into_id.is_(None))
         .order_by(Episode.date_start.desc().nullslast(), Episode.created_at.desc())
-        .limit(100)
-    )).scalars().all())
+        .limit(limit)
+    )
+    if q:
+        from sqlalchemy import func, or_
+        pat = f"%{q.strip()}%"
+        # Postgres ARRAY ILIKE pattern: unnest and any() match. Cast
+        # aliases to text[] is already typed; use a subquery EXISTS so
+        # we don't multiply rows.
+        alias_match = text(
+            "EXISTS (SELECT 1 FROM unnest(episodes.aliases) a "
+            "WHERE a ILIKE :pat)"
+        ).bindparams(pat=pat)
+        stmt = stmt.where(or_(
+            func.lower(Episode.title).like(func.lower(pat)),
+            func.lower(Episode.display_title).like(func.lower(pat)),
+            alias_match,
+        ))
+    if kind:
+        stmt = stmt.where(Episode.kind == kind)
+    if date_from:
+        try:
+            d = datetime.fromisoformat(date_from)
+            stmt = stmt.where(Episode.date_start >= d)
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"date_from must be ISO date, got {date_from!r}",
+            )
+    if date_to:
+        try:
+            d = datetime.fromisoformat(date_to)
+            stmt = stmt.where(Episode.date_start <= d)
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"date_to must be ISO date, got {date_to!r}",
+            )
+
+    rows = list((await db.execute(stmt)).scalars().all())
     return [_summary(e) for e in rows]
 
 
@@ -369,6 +430,8 @@ async def get_episode_route(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
+    from ..models.conversation import Conversation
+
     ep = await db.get(Episode, episode_id)
     if ep is None or ep.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -377,6 +440,48 @@ async def get_episode_route(
         .where(EpisodeMember.episode_id == ep.id)
         .order_by(EpisodeMember.ordinal, EpisodeMember.created_at)
     )).scalars().all())
+
+    # Conversations explicitly attached via episode_members.
+    member_conv_ids = [m.subject_id for m in members if m.member_type == "conversation"]
+    related_by_member: list[Conversation] = []
+    if member_conv_ids:
+        related_by_member = list((await db.execute(
+            select(Conversation).where(Conversation.id.in_(member_conv_ids))
+        )).scalars().all())
+
+    # Conversations linked implicitly via scope.anchor_fact_id matching
+    # this Event's primary_fact_id (legacy EI behavior).
+    related_by_anchor: list[Conversation] = []
+    if ep.primary_fact_id is not None:
+        related_by_anchor = list((await db.execute(
+            select(Conversation)
+            .where(Conversation.user_id == user.id)
+            .where(Conversation.archived.is_(False))
+            .where(text("conversations.scope->>'anchor_fact_id' = :afid")
+                   .bindparams(afid=str(ep.primary_fact_id)))
+            .order_by(Conversation.last_message_at.desc().nullslast())
+        )).scalars().all())
+
+    # Merge, dedupe on id, prefer member attribution for source label.
+    seen_ids: set[uuid.UUID] = set()
+    related_out: list[RelatedConversationOut] = []
+    for c in related_by_member:
+        if c.id in seen_ids:
+            continue
+        seen_ids.add(c.id)
+        related_out.append(RelatedConversationOut(
+            id=str(c.id), title=c.title, kind=c.kind,
+            last_message_at=c.last_message_at, link_source="member",
+        ))
+    for c in related_by_anchor:
+        if c.id in seen_ids:
+            continue
+        seen_ids.add(c.id)
+        related_out.append(RelatedConversationOut(
+            id=str(c.id), title=c.title, kind=c.kind,
+            last_message_at=c.last_message_at, link_source="anchor_fact",
+        ))
+
     return EpisodeDetail(
         **_summary(ep).model_dump(),
         payload=ep.payload or {},
@@ -388,6 +493,7 @@ async def get_episode_route(
             )
             for m in members
         ],
+        related_conversations=related_out,
     )
 
 
@@ -655,6 +761,176 @@ async def attach_candidate_to_episode_route(
             "members_added": added,
         },
     ))
+    await db.commit()
+    return await get_episode_route(ep.id, user, db)
+
+
+# ---------------------------------------------------------------------------
+# Direct save / attach from a Conversation. These power the chat Save
+# menu without requiring an Episode Intelligence candidate to exist —
+# any chat (Ask, dossier_followup, etc.) can become an Event via
+# /save-as-event or attach to an existing one via /attach-conversation.
+
+
+class SaveAsEventRequest(BaseModel):
+    """Direct save of a Conversation to a new Event, without an EI candidate."""
+    title: str
+    display_title: str | None = None
+    aliases: list[str] | None = None
+    summary: str | None = None
+    kind: str | None = None  # surgery | diagnosis | medication | other
+    date_start: str | None = None  # ISO date
+
+
+class SaveAsEventResponse(BaseModel):
+    episode_id: str
+
+
+@router.post("/from-conversation/{conv_id}", response_model=SaveAsEventResponse,
+             status_code=status.HTTP_201_CREATED)
+async def save_conversation_as_event_route(
+    conv_id: uuid.UUID,
+    body: SaveAsEventRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> SaveAsEventResponse:
+    """Create a new Event whose first member is this Conversation.
+
+    No LLM, no candidate. Adds the conversation as a primary
+    `episode_member(member_type='conversation')` so the Event
+    detail page surfaces it under "Conversations about this Event".
+    """
+    from ..models.conversation import Conversation
+
+    conv = await db.get(Conversation, conv_id)
+    if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="title is required",
+        )
+
+    aliases_clean: list[str] = []
+    if body.aliases:
+        seen: set[str] = set()
+        for a in body.aliases:
+            s = (a or "").strip()
+            if not s or s.lower() in seen:
+                continue
+            seen.add(s.lower())
+            aliases_clean.append(s[:128])
+            if len(aliases_clean) >= 16:
+                break
+
+    date_start = None
+    if body.date_start:
+        try:
+            date_start = datetime.fromisoformat(body.date_start)
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"date_start must be ISO date, got {body.date_start!r}",
+            )
+
+    now = datetime.now(timezone.utc)
+    ep = Episode(
+        user_id=user.id,
+        title=title[:512],
+        display_title=(body.display_title or "").strip()[:512] or None,
+        aliases=aliases_clean,
+        summary=(body.summary or "").strip() or None,
+        kind=(body.kind or "other").strip()[:48],
+        date_start=date_start,
+        date_end=date_start,
+        primary_fact_id=None,
+        created_by="user",
+        payload={},
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(ep)
+    await db.flush()
+
+    db.add(EpisodeMember(
+        episode_id=ep.id,
+        member_type="conversation",
+        subject_id=conv.id,
+        role="primary",
+        ordinal=0,
+        created_at=now,
+    ))
+
+    db.add(AuditEvent(
+        user_id=user.id,
+        event_type="episode_saved_from_conversation",
+        subject_type="episode",
+        subject_id=str(ep.id),
+        detail={"conversation_id": str(conv.id), "title": title},
+    ))
+    await db.commit()
+    return SaveAsEventResponse(episode_id=str(ep.id))
+
+
+class AttachConversationRequest(BaseModel):
+    conversation_id: uuid.UUID
+
+
+@router.post("/{episode_id}/attach-conversation", response_model=EpisodeDetail)
+async def attach_conversation_to_episode_route(
+    episode_id: uuid.UUID,
+    body: AttachConversationRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> EpisodeDetail:
+    """Add an existing Conversation as a member of an Event.
+
+    Idempotent: the (episode_id, member_type, subject_id) unique
+    constraint silently swallows duplicates. The conversation's
+    own scope is left alone — conversations can be attached to
+    multiple Events without overwriting any topic_slug or
+    anchor_fact_id that may already live there.
+    """
+    from ..models.conversation import Conversation
+
+    ep = await db.get(Episode, episode_id)
+    if ep is None or ep.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Event not found")
+    if ep.merged_into_id is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Event is merged into another; attach to the canonical one",
+        )
+    conv = await db.get(Conversation, body.conversation_id)
+    if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    existing = (await db.execute(
+        select(EpisodeMember.id)
+        .where(EpisodeMember.episode_id == ep.id)
+        .where(EpisodeMember.member_type == "conversation")
+        .where(EpisodeMember.subject_id == conv.id)
+    )).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    if existing is None:
+        db.add(EpisodeMember(
+            episode_id=ep.id,
+            member_type="conversation",
+            subject_id=conv.id,
+            role="context",
+            ordinal=0,
+            created_at=now,
+        ))
+        db.add(AuditEvent(
+            user_id=user.id,
+            event_type="episode_conversation_attached",
+            subject_type="episode",
+            subject_id=str(ep.id),
+            detail={"conversation_id": str(conv.id)},
+        ))
+        ep.updated_at = now
     await db.commit()
     return await get_episode_route(ep.id, user, db)
 

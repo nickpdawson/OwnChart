@@ -9,6 +9,7 @@ import type {
   ConvMessage,
   ProviderShape,
 } from "@/lib/api";
+import { SaveMenu } from "./SaveMenu";
 
 function fmtTime(iso: string): string {
   try {
@@ -397,25 +398,13 @@ export function ThreadClient({
         </section>
       )}
 
+      {/* Unified save/attach menu (#89). Replaces the inline "Save as
+          Dossier" prompt — the SaveMenu covers all four paths:
+          new Event, attach Event, new Dossier (via /save-as-topic),
+          attach Dossier. No LLM. The EI-candidate "Save as Event"
+          banner above still renders when an EI candidate is pending. */}
       {hasAssistantReply && !dossierOpen && (
-        <section className="rounded-xl border border-muted/15 bg-surface p-4">
-          <p className="text-xs uppercase tracking-widest text-muted">
-            Long-running concern?
-          </p>
-          <p className="mt-1 text-sm">
-            Save this conversation as a Dossier — a topic that
-            accumulates related facts over time. You can keep chatting
-            inside the dossier and any new ingestion that matches the
-            topic will land there automatically.
-          </p>
-          <button
-            type="button"
-            onClick={openSaveAsDossier}
-            className="mt-3 rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/5"
-          >
-            Save as Dossier
-          </button>
-        </section>
+        <SaveMenu conversationId={thread.id} />
       )}
 
       {dossierOpen && (

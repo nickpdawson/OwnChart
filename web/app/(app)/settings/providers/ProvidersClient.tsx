@@ -3,17 +3,18 @@
 import { useState } from "react";
 import type { CredentialOut, ProviderShape } from "@/lib/api";
 
-// V1 provider menu — Anthropic is fully wired; the others are
-// "Coming soon" placeholders so the picker is honest about what
-// actually works today. The Anthropic-OAuth ("Sign in with Claude")
-// row links to /settings/providers/claude-oauth which explains
-// why it isn't live yet (Anthropic doesn't expose consumer OAuth
-// for API access). Wiring is ready when they do.
+// V1 provider menu — Anthropic API key is fully wired.
+// "Sign in with Claude / ChatGPT" rows are honest about the upstream
+// gap: consumer OAuth for API access isn't something Anthropic or
+// OpenAI offers today. "Coming soon" would imply OwnChart-side roadmap;
+// "Not currently supported" puts the gap where it belongs — with the
+// provider, not us. If/when the upstream ships it, our wiring is
+// already in place to flip status="live".
 const PROVIDER_ROWS: {
   key: string;
   label: string;
   blurb: string;
-  status: "live" | "coming_soon" | "stub";
+  status: "live" | "unsupported_upstream" | "stub";
   href?: string;
 }[] = [
   {
@@ -27,8 +28,8 @@ const PROVIDER_ROWS: {
     key: "claude_oauth",
     label: "Sign in with Claude (claude.ai)",
     blurb:
-      "Use your Claude subscription instead of an API key. Anthropic doesn't expose consumer OAuth for API access yet — wired and waiting.",
-    status: "coming_soon",
+      "Not currently supported by Anthropic. OwnChart supports API keys today. If Anthropic exposes consumer OAuth for API access later, this can become a sign-in flow.",
+    status: "unsupported_upstream",
     href: "/settings/providers/claude-oauth",
   },
   {
@@ -42,8 +43,8 @@ const PROVIDER_ROWS: {
     key: "chatgpt_oauth",
     label: "Sign in with ChatGPT",
     blurb:
-      "Use your ChatGPT subscription. Not exposed by OpenAI; placeholder while we wait.",
-    status: "coming_soon",
+      "Not currently supported by OpenAI. Same situation as Claude — API access requires an API key, not a consumer subscription login.",
+    status: "unsupported_upstream",
   },
   {
     key: "local_openai",
@@ -196,7 +197,7 @@ function ProviderCard({
 
   const isLive = row.status === "live";
   const isStub = row.status === "stub";
-  const isComingSoon = row.status === "coming_soon";
+  const isUnsupportedUpstream = row.status === "unsupported_upstream";
 
   return (
     <section className="rounded-xl border border-muted/15 bg-surface p-5">
@@ -277,12 +278,12 @@ function ProviderCard({
         </form>
       )}
 
-      {isComingSoon && row.href && (
+      {isUnsupportedUpstream && row.href && (
         <a
           href={row.href}
           className="mt-4 inline-block text-sm text-accent underline-offset-4 hover:underline"
         >
-          Why it&apos;s not live yet →
+          Why it&apos;s not available →
         </a>
       )}
 
@@ -297,7 +298,7 @@ function ProviderCard({
   );
 }
 
-function StatusBadge({ status }: { status: "live" | "coming_soon" | "stub" }) {
+function StatusBadge({ status }: { status: "live" | "unsupported_upstream" | "stub" }) {
   if (status === "live") {
     return (
       <span className="rounded-md bg-evidence/15 px-2 py-0.5 text-xs text-evidence">
@@ -305,10 +306,10 @@ function StatusBadge({ status }: { status: "live" | "coming_soon" | "stub" }) {
       </span>
     );
   }
-  if (status === "coming_soon") {
+  if (status === "unsupported_upstream") {
     return (
       <span className="rounded-md bg-muted/15 px-2 py-0.5 text-xs text-muted">
-        Coming soon
+        Not currently supported
       </span>
     );
   }
