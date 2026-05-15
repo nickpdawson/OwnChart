@@ -187,3 +187,10 @@ VOICE_MEMOS_NOTE.md
 # Personal session logs / morning notes — not for public history.
 MORNING_LOG_*.md
 IOS_PARITY_2026_*.md
+
+# Working Docs — local scratchpad for drafts, raw screenshots, private creds,
+# and dated personal logs. Anything that should appear on GitHub belongs at
+# repo root or under docs/ / user-docs/, never inside Working Docs/.
+/Working Docs/
+# Output of the /play creative skill — local-only.
+/play/
