@@ -247,7 +247,18 @@ export function UsageClient() {
         <section>
           <h2 className="font-serif text-lg">Rows</h2>
           {data.rows.length === 0 ? (
-            <p className="mt-2 text-sm text-muted">No model runs in this window.</p>
+            <div className="mt-2 space-y-1 text-sm">
+              <p className="text-muted">No model runs in this window.</p>
+              <p className="text-xs text-muted">
+                Filters applied: <code>{dateFrom || "(none)"}</code> →{" "}
+                <code>{dateTo || "(none)"}</code>
+                {provider && <> · provider <code>{provider}</code></>}
+                {purpose && <> · purpose <code>{purpose}</code></>}
+                {billedTo && <> · billed_to <code>{billedTo}</code></>}
+                . Try widening the date range — defaults use the
+                browser&apos;s local date, but rows are stamped in UTC.
+              </p>
+            </div>
           ) : (
             <div className="mt-2 overflow-x-auto rounded-xl border border-muted/15 bg-surface">
               <table className="w-full min-w-[920px] text-xs">

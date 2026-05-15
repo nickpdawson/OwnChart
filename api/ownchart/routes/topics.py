@@ -755,16 +755,25 @@ async def list_topic_conversations(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[DossierConversationOut]:
-    """List conversations that have been promoted into this dossier.
+    """List conversations attached to this dossier.
 
-    Includes conversations promoted via `POST /api/conversations/{id}/
-    save-as-topic` and any dossier_followup threads created via
-    `POST /api/topics/{slug}/conversation`. Newest-active first.
+    Two kinds of attachment surface here:
+      1. **Explicit attach** — conversation re-scoped via
+         `POST /api/topics/{slug}/attach-conversation` (carries
+         `scope.attached_at`). These rank first so a freshly
+         attached chat lands at the top of the user's "I just
+         saved this here" view.
+      2. **Legacy / scope-derived** — conversations created via
+         `POST /api/topics/{slug}/conversation` or auto-flipped
+         by save-as-topic conflict handling. Sorted below
+         explicit attaches by last_message_at.
+
+    Newest-active wins inside each band.
     """
     from sqlalchemy import text as _text
     from ..models.conversation import Conversation
     topic = await _resolve_topic_or_404(db, slug)
-    rows = (await db.execute(
+    rows = list((await db.execute(
         select(Conversation)
         .where(Conversation.user_id == user.id)
         .where(Conversation.archived.is_(False))
@@ -773,7 +782,20 @@ async def list_topic_conversations(
             Conversation.last_message_at.desc().nullslast(),
             Conversation.created_at.desc(),
         )
-    )).scalars().all()
+    )).scalars().all())
+
+    def _attached_at_key(r: Conversation):
+        # Returns (has_explicit_attach: 0|1, attached_at_iso_string)
+        # so reverse-sorted: explicit attaches first, then by most
+        # recent attached_at within that group.
+        sc = r.scope if isinstance(r.scope, dict) else {}
+        at = sc.get("attached_at")
+        if isinstance(at, str):
+            return (1, at)
+        return (0, "")
+
+    rows.sort(key=_attached_at_key, reverse=True)
+
     return [
         DossierConversationOut(
             id=str(r.id),
@@ -855,7 +877,18 @@ async def attach_conversation_to_topic_route(
     membership clause on future messages. Idempotent — if the
     conversation already points at this slug, returns
     already_attached=true without changing anything else.
+
+    Stamps `scope.attached_at` (ISO timestamp) when this is an
+    explicit attach so the dossier conversations list can sort
+    explicit attaches above legacy scope-derived ones.
+
+    Writes a `topic_conversation_attached` AuditEvent so the action
+    has a paper trail (the bug Nick caught 2026-05-15: a
+    SaveMenu picker that confused Event and Dossier left no audit
+    trail to distinguish the two).
     """
+    from datetime import datetime, timezone as _tz
+    from ..models.audit_event import AuditEvent
     from ..models.conversation import Conversation
 
     topic = await _resolve_topic_or_404(db, slug)
@@ -870,8 +903,22 @@ async def attach_conversation_to_topic_route(
         and current_scope.get("topic_slug") == topic.slug
     )
     if not already:
-        conv.scope = {"type": "topic", "topic_slug": topic.slug}
+        conv.scope = {
+            "type": "topic",
+            "topic_slug": topic.slug,
+            "attached_at": datetime.now(_tz.utc).isoformat(),
+        }
         conv.kind = "dossier_followup"
+        db.add(AuditEvent(
+            user_id=user.id,
+            event_type="topic_conversation_attached",
+            subject_type="topic",
+            subject_id=str(topic.id),
+            detail={
+                "conversation_id": str(conv.id),
+                "topic_slug": topic.slug,
+            },
+        ))
         await db.commit()
     return AttachConversationToTopicResponse(
         slug=topic.slug,

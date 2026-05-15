@@ -352,9 +352,16 @@ async def get_usage(
 
     from ..models.model_run import ModelRun
 
-    # Date parsing — accept YYYY-MM-DD or full ISO datetimes.
+    # Date parsing — accept YYYY-MM-DD or full ISO datetimes. For a
+    # date-only `date_to`, treat the value as end-of-day inclusive
+    # (add 1 day, use strict <) so a row created at 14:00 UTC on
+    # 2026-05-15 is still in range when the filter is
+    # `date_to=2026-05-15`. Without this we'd silently exclude every
+    # row from "today" — the bug Nick caught on usage 2026-05-15.
+    from datetime import timedelta as _td
     df: _dt | None = None
     dt_: _dt | None = None
+    dt_is_date_only = False
     if date_from:
         try:
             df = _dt.fromisoformat(date_from)
@@ -364,6 +371,7 @@ async def get_usage(
     if date_to:
         try:
             dt_ = _dt.fromisoformat(date_to)
+            dt_is_date_only = len(date_to) == 10  # 'YYYY-MM-DD' is 10 chars
         except ValueError:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 detail=f"date_to must be ISO, got {date_to!r}")
@@ -372,7 +380,11 @@ async def get_usage(
     if df is not None:
         stmt = stmt.where(ModelRun.created_at >= df)
     if dt_ is not None:
-        stmt = stmt.where(ModelRun.created_at <= dt_)
+        if dt_is_date_only:
+            # End-of-day inclusive: < midnight of the following day.
+            stmt = stmt.where(ModelRun.created_at < dt_ + _td(days=1))
+        else:
+            stmt = stmt.where(ModelRun.created_at <= dt_)
     if provider:
         stmt = stmt.where(ModelRun.provider == provider)
     if model:

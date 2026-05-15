@@ -47,13 +47,6 @@ function Paragraph({ text }: { text: string }) {
   );
 }
 
-type RelatedConversation = {
-  id: string;
-  title: string;
-  kind: string;
-  last_message_at: string | null;
-};
-
 export function EpisodeClient({ episode }: { episode: EpisodeDetail }) {
   const [ep, setEp] = useState(episode);
   const [busy, setBusy] = useState(false);
@@ -63,36 +56,17 @@ export function EpisodeClient({ episode }: { episode: EpisodeDetail }) {
     ep.display_title || ep.title || "",
   );
   const [aliasInput, setAliasInput] = useState("");
-  const [related, setRelated] = useState<RelatedConversation[]>([]);
 
   const intelligence = (ep.payload?.intelligence ?? null) as
     | Record<string, unknown>
     | null;
   const followUps = (ep.payload?.follow_up_questions ?? []) as string[];
 
-  // Pull conversations whose scope's anchor_fact_id matches this Event's
-  // primary_fact_id — those are the threads the user has had ABOUT this
-  // Event. Powers the "Conversations" section in Nick's spec.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!ep.primary_fact_id) return;
-      try {
-        const r = await fetch(
-          `/api/conversations?anchor_fact_id=${encodeURIComponent(ep.primary_fact_id)}`,
-          { credentials: "include" },
-        );
-        if (!r.ok) return;
-        const list = (await r.json()) as RelatedConversation[];
-        if (!cancelled) setRelated(Array.isArray(list) ? list : []);
-      } catch {
-        /* non-fatal */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [ep.primary_fact_id]);
+  // Conversations come from the backend's `ep.related_conversations`
+  // which already merges (a) explicit episode_member rows and (b)
+  // anchor_fact_id matches with a `link_source` discriminator. No
+  // separate client-side fetch needed — and the prior duplicate
+  // section was visually confusing (Nick caught it 2026-05-15).
 
   const plannerAnchor = (
     (ep.payload?.planner as Record<string, unknown> | undefined)?.anchor ??
@@ -287,31 +261,59 @@ export function EpisodeClient({ episode }: { episode: EpisodeDetail }) {
 
       {/* 3b. RELATED CONVERSATIONS — chats explicitly attached via
           the chat Save menu (#89), plus legacy EI conversations
-          linked via scope.anchor_fact_id. Merged + deduped on the
-          backend; link_source indicates which path created the
-          association. */}
+          linked via scope.anchor_fact_id. The backend merges the
+          two paths and tags each with link_source; we render
+          explicit attaches FIRST and visually distinct so Nick's
+          "I just saved this here" mental model survives. P1-5
+          from 2026-05-15 PM read. */}
       {ep.related_conversations.length > 0 && (
         <Section title={`Conversations about this Event (${ep.related_conversations.length})`}>
           <ul className="space-y-2">
-            {ep.related_conversations.map((c) => (
-              <li key={c.id}>
-                <a
-                  href={`/chat/${c.id}`}
-                  className="block rounded-xl border border-muted/15 bg-surface p-3 hover:border-accent/40"
-                >
-                  <p className="font-medium">
-                    {c.title || "(untitled chat)"}
-                  </p>
-                  <p className="mt-1 text-xs text-muted">
-                    {c.kind.replace(/_/g, " ")}
-                    {c.last_message_at && (
-                      <>{" · "}{new Date(c.last_message_at).toLocaleString()}</>
-                    )}
-                    {c.link_source === "anchor_fact" && <> · linked via anchor</>}
-                  </p>
-                </a>
-              </li>
-            ))}
+            {[...ep.related_conversations]
+              .sort((a, b) => {
+                // Explicit attaches (member) above anchor_fact links.
+                if (a.link_source !== b.link_source) {
+                  return a.link_source === "member" ? -1 : 1;
+                }
+                // Within group, newest activity first.
+                const at = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+                const bt = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+                return bt - at;
+              })
+              .map((c) => {
+                const isAttached = c.link_source === "member";
+                return (
+                  <li key={c.id}>
+                    <a
+                      href={`/chat/${c.id}`}
+                      className={
+                        "block rounded-xl border p-4 hover:border-accent/60 " +
+                        (isAttached
+                          ? "border-accent/40 bg-accent/5"
+                          : "border-muted/15 bg-surface")
+                      }
+                    >
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        {isAttached && (
+                          <span className="rounded-md bg-accent/20 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-accent">
+                            Attached from chat
+                          </span>
+                        )}
+                        <span className="font-serif text-base text-ink">
+                          {c.title || "(untitled chat)"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted">
+                        {c.kind.replace(/_/g, " ")}
+                        {c.last_message_at && (
+                          <>{" · "}{new Date(c.last_message_at).toLocaleString()}</>
+                        )}
+                        {!isAttached && <> · linked via anchor</>}
+                      </p>
+                    </a>
+                  </li>
+                );
+              })}
           </ul>
         </Section>
       )}
@@ -367,30 +369,9 @@ export function EpisodeClient({ episode }: { episode: EpisodeDetail }) {
         </Section>
       )}
 
-      {/* 6. CONVERSATIONS — chat threads the user has had about this
-          Event. Powered by anchor_fact_id matching. */}
-      {related.length > 0 && (
-        <Section title={`Conversations about this Event (${related.length})`}>
-          <ul className="divide-y divide-muted/10 rounded-xl border border-muted/15 bg-surface">
-            {related.map((c) => (
-              <li key={c.id}>
-                <a
-                  href={`/chat/${c.id}`}
-                  className="block px-4 py-3 text-sm hover:bg-muted/5"
-                >
-                  <p className="font-medium text-ink">{c.title}</p>
-                  <p className="text-xs text-muted">
-                    {c.kind}
-                    {c.last_message_at && (
-                      <> · {new Date(c.last_message_at).toLocaleDateString()}</>
-                    )}
-                  </p>
-                </a>
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
+      {/* (Conversations now render in section 3b above using
+          ep.related_conversations from the backend — explicit
+          attaches first, anchor_fact_id matches below.) */}
 
       {/* 7. EVIDENCE — what the answer leans on. */}
       {evidence && (
@@ -417,20 +398,51 @@ function Section({
   );
 }
 
+// Patient-readable labels for the "What's connected" rows. The
+// backend stores enum values (member_type, role) that read like
+// database columns; the UI translates them so a normal user can
+// tell what each row is. Left bar color codes the row by type.
+const MEMBER_TYPE_LABEL: Record<string, string> = {
+  fact: "Fact",
+  source: "Source document",
+  conversation: "Conversation",
+  event: "Related event",
+  candidate: "Sensemaking candidate",
+};
+
+const MEMBER_ROLE_LABEL: Record<string, string> = {
+  primary: "Main event",
+  component: "Part of this event",
+  context: "Related context",
+  followup: "Follow-up",
+  recovery_metric: "Recovery signal",
+};
+
+const MEMBER_TYPE_BAR: Record<string, string> = {
+  fact: "bg-ink",
+  source: "bg-accent",
+  conversation: "bg-evidence",
+  event: "bg-muted",
+  candidate: "bg-caution",
+};
+
 function MemberRow({ m }: { m: EpisodeMember }) {
   let href: string | null = null;
   if (m.member_type === "fact") href = `?fact=${encodeURIComponent(m.subject_id)}`;
   else if (m.member_type === "source") href = `/sources/${m.subject_id}`;
   else if (m.member_type === "conversation") href = `/chat/${m.subject_id}`;
+  const typeLabel = MEMBER_TYPE_LABEL[m.member_type] ?? m.member_type;
+  const roleLabel = MEMBER_ROLE_LABEL[m.role] ?? m.role;
+  const barColor = MEMBER_TYPE_BAR[m.member_type] ?? "bg-muted";
   const body = (
-    <div className="flex flex-wrap items-baseline gap-2 px-4 py-3 text-sm">
-      <span className="text-[10px] uppercase tracking-widest text-muted">
-        {m.member_type}
-      </span>
-      <span className="font-medium">{m.role}</span>
-      <span className="ml-auto font-mono text-xs text-muted">
-        {m.subject_id.slice(0, 8)}…
-      </span>
+    <div className="flex items-stretch text-sm">
+      <span aria-hidden className={`w-1 shrink-0 rounded-l-md ${barColor}`} />
+      <div className="flex flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 px-4 py-3">
+        <span className="text-[10px] uppercase tracking-widest text-muted">
+          {typeLabel}
+        </span>
+        <span className="font-medium">{roleLabel}</span>
+      </div>
     </div>
   );
   return (

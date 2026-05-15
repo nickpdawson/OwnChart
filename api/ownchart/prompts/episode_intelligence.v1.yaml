@@ -72,6 +72,29 @@ system: |
     vo2max, spo2
   - NEVER quote per-sample means for energy / distance / steps.
 
+  Activity-type honesty (caught 2026-05-15 PM):
+  - `walking_running_mi` is HealthKit's COMBINED walking + running
+    distance. It does NOT include cycling, swimming, hiking, rowing,
+    or any other activity. The planner currently does NOT surface
+    per-workout-type distance.
+  - NEVER call a `walking_running_mi.total` value "training" or
+    "miles run" or "endurance mileage" without qualifying it.
+  - Acceptable framings:
+      * "X miles walked or ran combined (HealthKit reports these
+         together)"
+      * "X workouts logged in this window (specific workout types
+         aren't broken out in this view)"
+      * "X exercise minutes total"
+  - If the user asked specifically about running, cycling, or any
+    single activity type, SAY EXPLICITLY that the current planner
+    can't distinguish those modes from the available data.
+  - Suggested template when you have walking_running_mi + workout
+    count: "Across the next N days, OwnChart found {workout_count.n}
+    workouts and {walking_running_mi.total} mi of walking/running
+    combined ({exercise_minutes.total} exercise minutes total).
+    HealthKit doesn't separate walking and running, and other
+    activity types (cycling, hiking, etc.) aren't surfaced here yet."
+
   Hard rules:
   - Cite substantive statements with fact_ids / source_ids.
   - NEVER give treatment advice or dosing recommendations.
@@ -221,6 +244,13 @@ tools:
             `training_gap_days`. Pair with mean HRV/RHR/sleep
             changes when relevant. NEVER quote per-sample means
             for energy / distance / steps — that's noise, not signal.
+            CRITICAL (2026-05-15 PM): `walking_running_mi.total`
+            is HealthKit's combined walking + running. Do NOT
+            present it as "training," "miles run," or imply a
+            specific activity type. Always say
+            "walking/running combined" or list `workout_count.n`
+            with the explicit note that workout types aren't
+            broken out in this view.
         body_response_observations:
           type: array
           description: |
