@@ -87,7 +87,10 @@ async def attach_nearby_clinical_events(
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= window_start)
         .where(ExtractedFact.date_start <= window_end)
-        .where(ExtractedFact.review_state.in_(("confirmed", "corrected")))
+        # "Reviewed" = user has acknowledged this fact (confirmed it,
+        # corrected it, or accepted its containing pattern). All three
+        # count for grounding the extractor's view of the user's record.
+        .where(ExtractedFact.review_state.in_(("confirmed", "corrected", "pattern_managed")))
         .where(ExtractedFact.significance.in_(_MAJOR_SIGNIFICANCE))
         .order_by(ExtractedFact.date_start.asc())
         .limit(max_events * 3)  # over-fetch; we'll dedupe by equivalence_key

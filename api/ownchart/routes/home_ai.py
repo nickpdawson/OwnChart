@@ -423,7 +423,7 @@ async def _build_home_insight(
         select(ExtractedFact)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= cutoff_90)
-        .where(ExtractedFact.review_state.in_(("confirmed", "corrected")))
+        .where(ExtractedFact.review_state.in_(("confirmed", "corrected", "pattern_managed")))
         .where(ExtractedFact.significance.in_((
             "major_event", "major_procedure", "major_diagnosis", "major_medication",
         )))
@@ -435,7 +435,7 @@ async def _build_home_insight(
         select(ExtractedFact)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= cutoff_30)
-        .where(ExtractedFact.review_state.in_(("confirmed", "corrected")))
+        .where(ExtractedFact.review_state.in_(("confirmed", "corrected", "pattern_managed")))
         .order_by(ExtractedFact.date_start.desc())
         .limit(40)
     )).scalars().all())

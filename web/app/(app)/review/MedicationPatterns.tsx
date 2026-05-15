@@ -1,13 +1,57 @@
 "use client";
 
 // docs/08 Review Queue Triage — pattern-level medication AND
-// provider/contact candidates. Accepting a pattern flips its member
-// facts to review_state='deferred' and writes a
-// pattern_managed_suppression audit pointer back to the candidate.
-// Dismissing leaves the members in their current state.
+// provider/contact candidates.
+//
+// 2026-05-15 (Nick's correction): accepting a pattern flips member
+// facts to `pattern_managed`, NOT `deferred`. The facts remain
+// available to Ask / Event Intelligence / Timeline / Dossiers — they
+// just stop showing up in the Review Inbox as individual decisions.
+// "Accept" = "I've reviewed this pattern, treat it as known signal"
+// rather than "delete." Dismissing leaves members untouched.
 
 import { useEffect, useState } from "react";
 import type { SensemakingCandidate } from "@/lib/api";
+
+// Shape of the medication-pattern payload (built in
+// api/ownchart/llm/medication_triage.py). Provider patterns ship a
+// subset (no adherence / dose / cluster). All fields optional so
+// older candidates render gracefully.
+type MedPatternPayload = {
+  pattern_key?: string;
+  label_examples?: string[];
+  fact_type?: string;
+  total_entries?: number;
+  taken_count?: number;
+  skipped_count?: number;
+  unknown_count?: number;
+  needs_review_count?: number;
+  date_min?: string | null;
+  date_max?: string | null;
+  active_days?: number;
+  active_months?: number;
+  entries_per_active_month?: number | null;
+  dose_examples?: string[];
+  clustered_window?: {
+    start: string;
+    end: string;
+    days_in_window: number;
+    share_of_active_days: number;
+  } | null;
+};
+
+function fmtDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  try {
+    return new Date(iso).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
 
 type PatternCategory = "medication" | "provider";
 
@@ -166,46 +210,141 @@ function PatternSection({
         </button>
       </div>
       <p className="mt-1 max-w-2xl text-sm text-muted">
-        Accept a pattern to collapse N individual entries into one
-        decision. Members get marked <code>deferred</code> with an audit
-        pointer back to this pattern.
+        Accept a pattern to mark its log entries as reviewed. The
+        entries stay available for timelines, Ask, Event
+        Intelligence, and adherence analysis — they just stop
+        showing up as individual review-inbox decisions.
       </p>
       <ul className="mt-3 space-y-2">
         {patterns.map((p) => (
-          <li
+          <PatternCard
             key={p.id}
-            className="rounded-lg border border-muted/15 bg-surface p-3"
-          >
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <p className="font-medium">{p.title ?? "(untitled pattern)"}</p>
-              <p className="text-xs text-muted">
-                {p.fact_ids.length} member{p.fact_ids.length === 1 ? "" : "s"}
-              </p>
-            </div>
-            {p.summary_text && (
-              <p className="mt-1 text-sm text-muted">{p.summary_text}</p>
-            )}
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={acting === p.id}
-                onClick={() => onPatch(p.id, "accepted", category)}
-                className="rounded-md bg-accent px-3 py-1 text-xs text-surface hover:opacity-90 disabled:opacity-50"
-              >
-                {acting === p.id ? "…" : "Accept (suppress members)"}
-              </button>
-              <button
-                type="button"
-                disabled={acting === p.id}
-                onClick={() => onPatch(p.id, "dismissed", category)}
-                className="rounded-md border border-muted/30 px-3 py-1 text-xs hover:bg-muted/5 disabled:opacity-50"
-              >
-                Dismiss
-              </button>
-            </div>
-          </li>
+            pattern={p}
+            category={category}
+            acting={acting === p.id}
+            onPatch={onPatch}
+          />
         ))}
       </ul>
     </section>
+  );
+}
+
+function PatternCard({
+  pattern,
+  category,
+  acting,
+  onPatch,
+}: {
+  pattern: SensemakingCandidate;
+  category: PatternCategory;
+  acting: boolean;
+  onPatch: (
+    id: string,
+    disposition: "accepted" | "dismissed",
+    category: PatternCategory,
+  ) => Promise<void>;
+}) {
+  const payload = (pattern.payload || {}) as MedPatternPayload;
+  const isMedication = category === "medication";
+
+  const totalEntries = payload.total_entries ?? pattern.fact_ids.length;
+  const taken = payload.taken_count ?? 0;
+  const skipped = payload.skipped_count ?? 0;
+  const unknown = payload.unknown_count
+    ?? Math.max(0, totalEntries - taken - skipped);
+  const dateMinShort = payload.date_min
+    ? new Date(payload.date_min).toLocaleDateString(undefined, { month: "short", year: "numeric" })
+    : null;
+  const dateMaxShort = payload.date_max
+    ? new Date(payload.date_max).toLocaleDateString(undefined, { month: "short", year: "numeric" })
+    : null;
+  const mostRecent = fmtDate(payload.date_max);
+
+  return (
+    <li className="rounded-lg border border-muted/15 bg-surface p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="font-medium">{pattern.title ?? "(untitled pattern)"}</p>
+        <p className="text-xs text-muted">
+          {totalEntries} log entr{totalEntries === 1 ? "y" : "ies"}
+          {dateMinShort && dateMaxShort && (
+            <> from {dateMinShort} to {dateMaxShort}</>
+          )}
+        </p>
+      </div>
+
+      {isMedication && (taken > 0 || skipped > 0 || unknown > 0) && (
+        <p className="mt-1 text-sm">
+          {taken > 0 && <span><strong>{taken}</strong> taken</span>}
+          {taken > 0 && (skipped > 0 || unknown > 0) && ", "}
+          {skipped > 0 && <span><strong>{skipped}</strong> skipped</span>}
+          {skipped > 0 && unknown > 0 && ", "}
+          {unknown > 0 && (
+            <span>
+              <strong>{unknown}</strong> unknown
+              <span className="ml-1 text-xs text-muted">(no adherence tag)</span>
+            </span>
+          )}
+        </p>
+      )}
+
+      {isMedication && (
+        <p className="mt-1 text-xs text-muted">
+          {payload.active_days != null && (
+            <>used on <strong className="text-ink">{payload.active_days}</strong> active day{payload.active_days === 1 ? "" : "s"}</>
+          )}
+          {payload.active_days != null && payload.entries_per_active_month != null && " · "}
+          {payload.entries_per_active_month != null && (
+            <>~{payload.entries_per_active_month} entries / active month</>
+          )}
+          {mostRecent && (payload.active_days != null || payload.entries_per_active_month != null) && " · "}
+          {mostRecent && <>most recent {mostRecent}</>}
+        </p>
+      )}
+
+      {isMedication && payload.dose_examples && payload.dose_examples.length > 0 && (
+        <p className="mt-1 text-xs text-muted">
+          Doses logged: {payload.dose_examples.join(" · ")}
+        </p>
+      )}
+
+      {isMedication && payload.clustered_window && (
+        <p className="mt-2 rounded-md bg-caution/10 px-2 py-1 text-xs text-caution">
+          <strong>Clustered use:</strong>{" "}
+          {Math.round(payload.clustered_window.share_of_active_days * 100)}% of
+          active days fall between{" "}
+          {fmtDate(payload.clustered_window.start)} and{" "}
+          {fmtDate(payload.clustered_window.end)} — worth eyeballing before
+          marking reviewed.
+        </p>
+      )}
+
+      {!isMedication && pattern.summary_text && (
+        <p className="mt-1 text-sm text-muted">{pattern.summary_text}</p>
+      )}
+
+      <p className="mt-2 text-xs text-muted/80">
+        Accepting marks these entries as reviewed; they remain
+        available for timelines and analysis.
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={acting}
+          onClick={() => onPatch(pattern.id, "accepted", category)}
+          className="rounded-md bg-accent px-3 py-1 text-xs text-surface hover:opacity-90 disabled:opacity-50"
+        >
+          {acting ? "…" : "Mark reviewed"}
+        </button>
+        <button
+          type="button"
+          disabled={acting}
+          onClick={() => onPatch(pattern.id, "dismissed", category)}
+          className="rounded-md border border-muted/30 px-3 py-1 text-xs hover:bg-muted/5 disabled:opacity-50"
+        >
+          Dismiss (keep in review)
+        </button>
+      </div>
+    </li>
   );
 }

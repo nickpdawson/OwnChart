@@ -281,14 +281,28 @@ async def patch_candidate_disposition(
     if body.user_edit is not None:
         cand.user_edit = body.user_edit
 
-    # Q-E2 (2026-05-11 PM): accepting a medication_pattern candidate
-    # suppresses every member fact from the default Review Inbox by
-    # flipping its review_state to 'deferred' (the existing hidden
-    # state) and recording a pointer back to the pattern in the audit
-    # log. Reusing 'deferred' rather than introducing a new
-    # 'pattern_managed' value avoids a cascade through ~10 routes that
-    # filter on review_state.notin_(("deferred", "rejected",
-    # "source_only")); the audit pointer keeps the lineage explicit.
+    # 2026-05-15 (Nick's pattern-semantics correction): accepting a
+    # medication_pattern / provider_pattern now flips member facts to
+    # `pattern_managed`, NOT `deferred`. The two states differ:
+    #
+    #   - `deferred` = hidden everywhere downstream. Used for facts the
+    #     user actively wants out of sight (rejected duplicates,
+    #     scaffolding noise). Excluded from the global retrieval
+    #     `_HIDDEN_STATES` list, so Ask / EI / Timeline / Dossiers
+    #     can't see them.
+    #   - `pattern_managed` = "user already triaged this pattern."
+    #     OUT of the Review Inbox (Inbox queries `review_state =
+    #     'needs_review'` explicitly) but PRESENT in every retrieval
+    #     surface. Adherence analysis, before/after comparisons,
+    #     Event Intelligence, and timeline rendering all see them.
+    #
+    # The fix: pattern accept compresses the review-inbox decision
+    # without losing the underlying signal. A chronic Celebrex daily
+    # log is 46 review-inbox decisions worth compressing to one — but
+    # the 46 entries are still the adherence record we want to query.
+    #
+    # Audit lineage still recorded via `pattern_managed_suppression`
+    # AuditEvent (kept the event_type for backfill traceability).
     suppressed_count = 0
     _PATTERN_TYPES = ("medication_pattern", "provider_pattern")
     if (
@@ -304,7 +318,7 @@ async def patch_candidate_disposition(
         )).scalars().all())
         for m in members:
             if m.review_state in ("needs_review", "confirmed"):
-                m.review_state = "deferred"
+                m.review_state = "pattern_managed"
                 suppressed_count += 1
 
     db.add(AuditEvent(
