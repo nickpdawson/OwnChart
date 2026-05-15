@@ -22,10 +22,11 @@ the travel/HRV/anesthesia angles.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,6 +107,7 @@ _INSIGHT_CACHE: dict[tuple, HomeInsight | None] = {}
 
 @router.get("/ai-partner", response_model=HomeAiPartnerResponse)
 async def get_home_ai_partner(
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> HomeAiPartnerResponse:
@@ -337,18 +339,63 @@ async def get_home_ai_partner(
 
     # -----------------------------------------------------------------
     # Proactive insight (LLM-generated, cached per UTC day per user).
-    # Fails closed: any exception is logged and the response just
-    # omits the insight, never breaks the Home page.
+    #
+    # NEVER block the home response on the LLM call. The Anthropic
+    # call costs 30-60s and the in-process cache is wiped on every
+    # API restart (= every deploy), so on a cold cache the entire
+    # Home page used to wait for the model. Now:
+    #
+    #   - Cache hit (insight ready): return it inline. Hot path is
+    #     instant.
+    #   - Cache miss: schedule the build as a BackgroundTask and
+    #     return insight=null. The Home page renders without it;
+    #     the user can refresh later to pick it up.
+    #
+    # `insight=null` is already the documented client contract
+    # (HomeInsight | None) — the InsightCard component handles it.
     # -----------------------------------------------------------------
-    try:
-        out.insight = await _build_home_insight(db, user, now)
-    except Exception as e:  # noqa: BLE001
-        from ..core.logger import get_logger
-        get_logger("ownchart.routes.home_ai").warning(
-            "home_insight_failed", user_id=str(user.id), error=f"{type(e).__name__}: {e}",
+    key = (user.id, now.date().isoformat())
+    if key in _INSIGHT_CACHE:
+        out.insight = _INSIGHT_CACHE[key]
+    else:
+        background_tasks.add_task(
+            _background_build_home_insight,
+            user_id=user.id,
+            day_iso=now.date().isoformat(),
         )
 
     return out
+
+
+async def _background_build_home_insight(
+    *, user_id: uuid.UUID, day_iso: str,
+) -> None:
+    """Runs the home_insight prompt out-of-band so the home GET
+    returns immediately. Opens its own DB session because the
+    request session is closed by the time this fires.
+    """
+    from ..core.db import SessionLocal
+    from ..core.logger import get_logger
+    log = get_logger("ownchart.routes.home_ai")
+    try:
+        async with SessionLocal() as db:
+            user = await db.get(User, user_id)
+            if user is None:
+                return
+            # Use today's UTC date — not the request's `now`, since
+            # the request and the background fire are separated by
+            # at most a few ms but the request's `now` is in scope.
+            now = datetime.now(timezone.utc)
+            # If the request thought today was day_iso but the
+            # background ran past midnight UTC, we still build for
+            # today's date — the cache key uses `now.date()`.
+            del day_iso  # documentation; kept in signature for log lookup
+            await _build_home_insight(db, user, now)
+    except Exception as e:  # noqa: BLE001
+        log.warning(
+            "home_insight_bg_failed",
+            user_id=str(user_id), error=f"{type(e).__name__}: {e}",
+        )
 
 
 async def _build_home_insight(
