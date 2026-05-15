@@ -19,7 +19,7 @@ const SCOPE_LABEL: Record<string, string> = {
   period: "Time period",
   source: "One source",
   topic: "Dossier",
-  episode: "Episode",
+  episode: "Event",
   fact: "Single fact",
 };
 

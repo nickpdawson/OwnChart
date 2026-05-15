@@ -17,7 +17,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -108,6 +108,70 @@ def _slugify(name: str) -> str:
 
 def _client_id_env_for(ehr_vendor: str) -> str:
     return f"OWNCHART_{ehr_vendor.upper()}_CLIENT_ID"
+
+
+# Per-vendor SMART scope defaults. Epic accepts the wildcard
+# `patient/*.read` and grants all approved resource scopes; Athena's
+# R4 SMART V1 catalog is more restrictive — wildcard fails Okta
+# policy evaluation. Two specific Athena quirks shape the default:
+#
+# 1. V1 has no per-patient Medication SEARCH endpoint. The V1 scope
+#    `patient/Medication.read` covers Medication-by-id reads only;
+#    `GET /Medication?patient=...` returns 403. To actually pull
+#    a patient's medication list from Athena, we need V2-shaped
+#    scopes (`patient/MedicationRequest.rs`, MedicationStatement,
+#    MedicationDispense), which Athena's dev portal exposes
+#    separately. Including BOTH V1 and V2 med scopes is harmless
+#    when the V2 ones are approved on the app and gives the
+#    fetcher real data to pull.
+#
+# 2. offline_access is gated by a separate Okta authorization-
+#    server policy from FHIR scopes. Including it when the app
+#    doesn't have it pre-approved causes the whole request to
+#    fail access_denied. We omit it from the default; can be
+#    added per-connector via DB override once the operator gets
+#    Athena dev support to enable it.
+#
+# See memory/reference_athena_smart_quirks.md for the full catalog.
+_ATHENA_DEFAULT_SCOPES = (
+    "openid fhirUser launch/patient "
+    # V1 resource scopes
+    "patient/Patient.read patient/Observation.read patient/Condition.read "
+    "patient/Medication.read patient/AllergyIntolerance.read "
+    "patient/Procedure.read patient/Immunization.read "
+    "patient/DiagnosticReport.read patient/Encounter.read "
+    "patient/CarePlan.read patient/CareTeam.read patient/Goal.read "
+    "patient/DocumentReference.read "
+    # V2 medication scopes — required for patient-scoped med SEARCH
+    "patient/MedicationRequest.rs patient/MedicationStatement.rs "
+    "patient/MedicationDispense.rs"
+)
+_DEFAULT_SCOPES = "openid fhirUser launch/patient patient/*.read"
+
+# ModMed (Modernizing Medicine) — Drummond-certified FHIR R4 API,
+# per-practice fhir_base (NOT multi-tenant like Athena), specialty-
+# focused EHR (derm / ophth / ortho / GI / plastic / urology).
+# First-connect untested as of 2026-05-13 (Nick's app is "Pending for
+# Approval"). Start with the standard wildcard; if it fails at first
+# connect like Athena did, swap to an explicit per-resource list and
+# update memory/reference_modmed_smart_quirks.md.
+#
+# Drummond cert constrains them to USCDI shapes, so this scope set
+# should cover Patient, Condition, AllergyIntolerance, MedicationRequest,
+# Observation, Procedure, Immunization, DiagnosticReport, DocumentReference,
+# CarePlan, CareTeam, Goal, Encounter, Provenance.
+_MODMED_DEFAULT_SCOPES = (
+    "openid fhirUser launch/patient offline_access patient/*.read"
+)
+
+
+def _default_scopes_for(ehr_vendor: str | None) -> str:
+    v = (ehr_vendor or "").lower()
+    if v == "athena":
+        return _ATHENA_DEFAULT_SCOPES
+    if v == "modmed":
+        return _MODMED_DEFAULT_SCOPES
+    return _DEFAULT_SCOPES
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +282,7 @@ async def create_connector(
         )
 
     client_id = os.environ.get(_client_id_env_for(body.ehr_vendor))
-    scopes = body.scopes or "openid fhirUser launch/patient patient/*.read"
+    scopes = body.scopes or _default_scopes_for(body.ehr_vendor)
 
     c = ProviderConnector(
         slug=slug,
@@ -694,6 +758,7 @@ def _date_for_with_fallback(
 @router.post("/{conn_id}/sync")
 async def sync_connection(
     conn_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> SyncResponse:
@@ -745,6 +810,7 @@ async def sync_connection(
         fhir_base=connector.fhir_base,
         access_token=access_token,
         patient_fhir_id=conn.patient_fhir_id,
+        ehr_vendor=connector.ehr_vendor,
     )
 
     # Persist the raw bundle as one SourceDocument (source_type='fhir_bundle').
@@ -871,6 +937,20 @@ async def sync_connection(
                     source_id=str(att_src.id),
                     error=str(e),
                 )
+        # Clinical notes (RTF/HTML/text DocumentReferences) and ccda_xml
+        # encounter summaries: schedule the LLM extractor as a
+        # background task so the user gets a fast 201 on /sync and the
+        # facts land within ~30s. This is the auto-extraction hook
+        # Nick asked about 2026-05-14 — without it, only the manual
+        # backfill script populates facts, and new syncs leave content
+        # invisible to EI until someone reruns the script.
+        elif att_src.source_type in ("clinical_note", "ccda_xml"):
+            if (att.plaintext or "") and len(att.plaintext or "") >= 40:
+                background_tasks.add_task(
+                    _extract_clinical_note_in_background,
+                    source_id=att_src.id,
+                    user_id=user.id,
+                )
 
         # Anchor on the FHIR snapshot pointing back to the attachment SourceDocument.
         anchor = EvidenceAnchor(
@@ -925,3 +1005,65 @@ async def disconnect(
     conn.status = "revoked"
     await db.commit()
     log.info("connector_disconnected", connection_id=str(conn.id), user_id=str(user.id))
+
+
+# ---------------------------------------------------------------------------
+# Background extraction hooks — invoked from /sync after a clinical_note
+# or ccda_xml attachment lands. Opens a fresh SessionLocal because the
+# request's session closes when the response is sent.
+
+async def _extract_clinical_note_in_background(
+    *,
+    source_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> None:
+    """Background-task wrapper. Visible failures are required —
+    a silent log line is not enough — so this stamps
+    raw_metadata.extraction_status = 'failed' + extraction_error on
+    the SourceDocument when anything goes wrong, and the audit-event
+    feed records the failure for the inbox. The UI can then offer a
+    Retry button on the affected source.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    from ..core.db import SessionLocal
+    from ..extract.clinical_note import extract_clinical_note
+    from ..models.audit_event import AuditEvent
+    from ..models.source_document import SourceDocument as _Src
+    from ..models.user import User as _User
+
+    async with SessionLocal() as db:
+        src = await db.get(_Src, source_id)
+        usr = await db.get(_User, user_id)
+        if src is None or usr is None:
+            return
+        error_msg: str | None = None
+        try:
+            res = await extract_clinical_note(db, usr, src)
+            error_msg = res.error  # extractor's own non-exception errors
+        except Exception as e:  # noqa: BLE001
+            error_msg = f"{type(e).__name__}: {e}"
+            log.warning(
+                "clinical_note_extract_background_failed",
+                source_id=str(source_id),
+                error=error_msg,
+            )
+
+        if error_msg:
+            # Stamp the source so the UI / a future inbox surface can
+            # show "extraction failed — Retry" affordances. Refetch
+            # in case the failed extractor mutation didn't commit.
+            src2 = await db.get(_Src, source_id)
+            if src2 is not None:
+                rm = dict(src2.raw_metadata or {})
+                rm["extraction_status"] = "failed"
+                rm["extraction_error"] = error_msg[:1000]
+                rm["extraction_failed_at"] = _dt.now(_tz.utc).isoformat()
+                src2.raw_metadata = rm
+                db.add(AuditEvent(
+                    user_id=user_id,
+                    event_type="clinical_note_extract_failed",
+                    subject_type="source_document",
+                    subject_id=str(source_id),
+                    detail={"error": error_msg[:1000]},
+                ))
+                await db.commit()

@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getDossier } from "@/lib/api";
 import { ClusterList } from "./ClusterList";
+import { DossierConversations } from "./DossierConversations";
 import { ExecBriefPanel } from "./ExecBriefPanel";
 import { Timeline } from "./Timeline";
 
@@ -33,6 +34,8 @@ export default async function DossierPage({ params }: { params: Promise<Params> 
       </p>
 
       <Timeline facts={timeline_facts} />
+
+      <DossierConversations slug={t.slug} />
 
       <ExecBriefPanel slug={t.slug} />
 

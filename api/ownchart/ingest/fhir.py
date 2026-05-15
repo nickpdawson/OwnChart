@@ -282,7 +282,34 @@ async def _fetch_paginated(
     while url and pages < max_pages:
         r = await client.get(url, headers={"Accept": "application/fhir+json"})
         if not r.is_success:
-            log.warning("fhir_fetch_non2xx", url=url[:200], status=r.status_code)
+            # 403 on a known-by-the-vendor-not-supported endpoint is
+            # informational, not an error — don't flag it as a
+            # warning that suggests a bug. The fetcher is deliberately
+            # over-broad; some resources aren't granted on V1 tokens
+            # or aren't exposed by the vendor for patient-scoped
+            # search at all (e.g., Athena's /Medication, /ServiceRequest,
+            # /Coverage, /Device, /FamilyMemberHistory, /RelatedPerson,
+            # /QuestionnaireResponse on V1 scopes — Nick's seen all of
+            # these). Log at info level with an explanatory event name
+            # so the iOS dev / Nick can grep for them but the alert
+            # bar doesn't light up.
+            event = (
+                "fhir_resource_unauthorized"
+                if r.status_code == 403
+                else "fhir_fetch_non2xx"
+            )
+            level = "info" if r.status_code == 403 else "warning"
+            getattr(log, level)(
+                event,
+                url=url[:200],
+                status=r.status_code,
+                note=(
+                    "Endpoint not granted for this token or not "
+                    "supported by the vendor for patient-scoped search. "
+                    "Reconnect with broader scopes if data is expected."
+                    if r.status_code == 403 else None
+                ),
+            )
             break
         bundle = r.json()
         for entry in bundle.get("entry", []) or []:
@@ -299,19 +326,45 @@ async def _fetch_paginated(
     return out
 
 
+def _queries_for_vendor(ehr_vendor: str | None) -> list[dict[str, Any]]:
+    """Return the search-query manifest for a vendor.
+
+    Currently all vendors use the same manifest (PATIENT_SEARCH_QUERIES).
+    Earlier (2026-05-13 morning) we swapped /MedicationRequest +
+    /MedicationStatement + /MedicationDispense for a single
+    /Medication query on Athena, assuming Athena V1's
+    `patient/Medication.read` granted patient-scoped med search.
+    Turned out it doesn't — `GET /Medication?patient=...` returns
+    403 on Athena V1 too. Athena patient-scoped med data is
+    V2-only.
+    Current resolution: keep the three-subtype queries for everyone.
+    Athena connectors that have V2 med scopes granted
+    (patient/MedicationRequest.rs etc., now in the default scope
+    string for new Athena connectors) will get real med data via
+    the three subtype searches. Legacy V1-only Athena tokens will
+    keep getting 403s on these endpoints — which is informational,
+    not a failure, and logged that way.
+    """
+    return PATIENT_SEARCH_QUERIES
+
+
 async def fetch_patient_record(
     *,
     fhir_base: str,
     access_token: str,
     patient_fhir_id: str,
+    ehr_vendor: str | None = None,
 ) -> FhirSnapshot:
     """Run all patient-scoped queries + reference chasing.
 
     Attachment binary fetch (DocumentReference content) is intentionally
     deferred to the route layer where we control SourceDocument creation.
+
+    `ehr_vendor` tunes the query manifest — see _queries_for_vendor.
     """
     base = _strip_slash(fhir_base)
     snap = FhirSnapshot()
+    queries = _queries_for_vendor(ehr_vendor)
     sem = asyncio.Semaphore(MAX_CONCURRENT_FHIR_REQUESTS)
 
     async with httpx.AsyncClient(
@@ -347,7 +400,7 @@ async def fetch_patient_record(
                 except Exception as e:  # noqa: BLE001
                     log.warning("fhir_query_failed", resource=rt, label=q.get("label"), error=str(e))
 
-        await asyncio.gather(*[run_query(q) for q in PATIENT_SEARCH_QUERIES])
+        await asyncio.gather(*[run_query(q) for q in queries])
 
         # Reference chasing — collect referenced resource ids, fetch.
         wanted: dict[str, set[str]] = {rt: set() for rt in REFERENCE_RESOURCE_TYPES}

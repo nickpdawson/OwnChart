@@ -1,8 +1,11 @@
 import Link from "next/link";
+import { DemoTour } from "./DemoTour";
+import { InsightCard } from "./InsightCard";
 import {
   getDashboardStats,
   getDiscover,
   getHomeAiPartner,
+  getInstanceInfo,
   getMe,
   getNotableEvents,
   getTimeline,
@@ -37,18 +40,35 @@ const STRENGTH_LABEL: Record<SignalStrength, string> = {
   needs_review: "Review",
 };
 
+// Race-promise helper: rejects after `ms` so a slow upstream doesn't
+// block the entire dashboard SSR. The year-grain timeline aggregation
+// is the main offender — it can take 20s+ on a record with 200k+
+// HK observations. Nick's RC ask: dashboard < 2s server-side, so we
+// give the timeline call 2.5s before falling back to the
+// "Try the Timeline tab directly" message in LifeOverview.
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
+
 export default async function DashboardPage() {
   // Fetch home modules in parallel. A failure on any one shouldn't
   // blank the whole home — render what we can, surface the error
   // inline.
-  const [statsR, timelineR, discoverR, meR, notableR, partnerR] =
+  const [statsR, timelineR, discoverR, meR, notableR, partnerR, instanceR] =
     await Promise.allSettled([
       getDashboardStats(),
-      getTimeline({ grain: "year" }),
+      withTimeout(getTimeline({ grain: "year" }), 2500, "timeline"),
       getDiscover(3),
       getMe(),
       getNotableEvents(6),
       getHomeAiPartner(),
+      getInstanceInfo(),
     ]);
 
   const stats = statsR.status === "fulfilled" ? statsR.value : null;
@@ -59,6 +79,8 @@ export default async function DashboardPage() {
   const partner: HomeAiPartner | null =
     partnerR.status === "fulfilled" ? partnerR.value : null;
   const recentEpisodes = partner?.recent_episodes ?? [];
+  const isDemo =
+    instanceR.status === "fulfilled" && !!instanceR.value?.demo_mode;
 
   // Personalized greeting is intentionally simple — the prior
   // regex-based first-name guess produced bad output for emails
@@ -150,6 +172,10 @@ export default async function DashboardPage() {
           Once you ingest a source, your record will appear here.
         </p>
       )}
+
+      <DemoTour demoMode={isDemo} />
+
+      <InsightCard initial={partner?.insight ?? null} />
 
       {/* --- Continue exploring ----------------------------------------- */}
       {stats && stats.topics.length > 0 && (

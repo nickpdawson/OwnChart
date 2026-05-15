@@ -724,6 +724,55 @@ class TopicConversationOut(BaseModel):
     created: bool
 
 
+class DossierConversationOut(BaseModel):
+    id: str
+    title: str | None
+    kind: str
+    last_message_at: datetime | None
+    created_at: datetime
+    starred: bool
+    archived: bool
+
+
+@router.get("/{slug}/conversations", response_model=list[DossierConversationOut])
+async def list_topic_conversations(
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> list[DossierConversationOut]:
+    """List conversations that have been promoted into this dossier.
+
+    Includes conversations promoted via `POST /api/conversations/{id}/
+    save-as-topic` and any dossier_followup threads created via
+    `POST /api/topics/{slug}/conversation`. Newest-active first.
+    """
+    from sqlalchemy import text as _text
+    from ..models.conversation import Conversation
+    topic = await _resolve_topic_or_404(db, slug)
+    rows = (await db.execute(
+        select(Conversation)
+        .where(Conversation.user_id == user.id)
+        .where(Conversation.archived.is_(False))
+        .where(_text("scope->>'topic_slug' = :slug").bindparams(slug=topic.slug))
+        .order_by(
+            Conversation.last_message_at.desc().nullslast(),
+            Conversation.created_at.desc(),
+        )
+    )).scalars().all()
+    return [
+        DossierConversationOut(
+            id=str(r.id),
+            title=r.title,
+            kind=r.kind,
+            last_message_at=r.last_message_at,
+            created_at=r.created_at,
+            starred=r.starred,
+            archived=r.archived,
+        )
+        for r in rows
+    ]
+
+
 @router.post("/{slug}/conversation", response_model=TopicConversationOut,
              status_code=status.HTTP_201_CREATED)
 async def get_or_create_topic_conversation(
@@ -833,7 +882,7 @@ async def ask_followup(
     # match) with free-text retrieval against the new question. Dedupe
     # by id, cap at 60 to keep the prompt bounded.
     topic_facts = await facts_for_topic(db, topic, limit=200)
-    question_facts = await search_facts(db, body.question, limit=24)
+    question_facts = await search_facts(db, body.question, limit=24, user_id=user.id)
     seen: dict[uuid.UUID, ExtractedFact] = {}
     for f in topic_facts + question_facts:
         if f.id not in seen:

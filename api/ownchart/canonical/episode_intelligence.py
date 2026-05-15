@@ -44,7 +44,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.logger import get_logger
@@ -128,12 +128,46 @@ def _profile_for_kind(kind: str | None) -> tuple[tuple[str, int, int], ...]:
 # from ingest/auto_export.py + ingest/healthkit.py. We do simple
 # substring matches because labels carry units etc.
 _WEARABLE_METRICS = {
-    "rhr": ("resting heart rate", "rhr"),
-    "hrv": ("heart rate variability", "hrv"),
-    "sleep_duration": ("sleep", "time asleep", "sleep duration"),
-    "active_energy": ("active energy", "active calories"),
-    "steps": ("steps",),
+    # Each metric: natural-language needles + HK identifier substrings.
+    # HK ingest creates fact labels like
+    # `HKQuantityTypeIdentifierHeartRateVariabilitySDNN: 28.48 ms`
+    # (all-one-word), and Auto Export produces friendlier labels like
+    # `Heart rate variability: 38 ms`. Both shapes need to classify.
+    # Bug caught 2026-05-13 PM in golden-path walk: body_response
+    # section returned "no aggregated metrics" for every Episode
+    # Intelligence run because the classifier only matched
+    # natural-phrase shapes that don't exist in native HK labels.
+    "rhr": ("resting heart rate", "rhr", "restingheartrate"),
+    "hrv": ("heart rate variability", "hrv", "heartratevariability"),
+    "heart_rate": ("heart rate", "heartrate"),
+    "sleep_duration": (
+        "sleep", "time asleep", "sleep duration", "sleepanalysis",
+    ),
+    "vo2max": ("vo2max", "vo2 max"),
+    "spo2": ("oxygen saturation", "spo2", "oxygensaturation"),
 }
+
+# Cumulative endurance metrics — sum across the window AND roll up
+# to per-day totals + active-day counts. NEVER report these as a
+# per-sample mean: HK auto-export emits one fact per ~30s interval
+# and "active energy averaged 0.82 kcal/sample" is meaningless to
+# the user. Caught 2026-05-13 PM in Nick's endurance review.
+_CUMULATIVE_METRICS = {
+    "active_energy_kcal": (
+        "active energy", "active calories", "activeenergyburned",
+    ),
+    "exercise_minutes": (
+        "exercise time", "appleexercisetime", "apple exercise time",
+    ),
+    "walking_running_mi": (
+        "walking + running", "distancewalkingrunning",
+    ),
+    "steps_total": ("steps", "stepcount"),
+}
+
+# Workout sessions — counted, not summed/meaned. HK emits one fact
+# per workout with the label "HKWorkoutType: <duration_seconds>".
+_WORKOUT_LABEL_NEEDLES = ("hkworkouttype",)
 
 
 # Anesthesia proper — anesthetics, paralytics, local anesthetics.
@@ -180,10 +214,68 @@ _REL_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Explicit calendar-date patterns. Caught during golden-path walk
+# 2026-05-13 PM: Nick asked about "eye surgery on may 1 2026" and the
+# anchor resolver fell back to "most recent major procedure" (low
+# confidence) because the regex above only handled relative dates.
+# Three formats supported (case-insensitive on month names):
+#   "May 1 2026", "May 1, 2026"     → groups: month_name, day, year?
+#   "2026-05-01" (ISO)              → groups: year, month_num, day
+#   "5/1/2026", "5/1/26"            → groups: month_num, day, year_short_or_full
+_MONTH_NAMES = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7,
+    "july": 7, "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12,
+    "december": 12,
+}
+_ABS_DATE_RE = re.compile(
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)\s+(\d{1,2})(?:[,\s]+(\d{4}))?"
+    r"|\b(\d{4})-(\d{1,2})-(\d{1,2})\b"
+    r"|\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_absolute_date(natural_language: str, *, now: datetime) -> datetime | None:
+    """Match an explicit calendar date (May 1 2026 / 2026-05-01 / 5/1/2026)
+    and return it as UTC midnight. Returns None if none found. When the
+    year is omitted ("May 1"), defaults to the current year — caller can
+    still build a ±N-day window around it. When the year is 2-digit
+    ("5/1/26"), expands as 2000+yy."""
+    m = _ABS_DATE_RE.search(natural_language or "")
+    if not m:
+        return None
+    try:
+        if m.group(1):  # "May 1 [2026]"
+            month = _MONTH_NAMES[m.group(1).lower()]
+            day = int(m.group(2))
+            year = int(m.group(3)) if m.group(3) else now.year
+        elif m.group(4):  # "2026-05-01"
+            year = int(m.group(4))
+            month = int(m.group(5))
+            day = int(m.group(6))
+        else:  # "5/1/2026" or "5/1/26"
+            month = int(m.group(7))
+            day = int(m.group(8))
+            year = int(m.group(9))
+            if year < 100:
+                year += 2000
+        return datetime(year, month, day, tzinfo=timezone.utc)
+    except (ValueError, KeyError):
+        return None
+
 
 def _parse_relative_window(natural_language: str, *, now: datetime) -> tuple[datetime, datetime] | None:
-    """If the question contains a relative date reference, return a
-    (start, end) UTC window around the implied date. Otherwise None."""
+    """If the question contains a relative date reference OR an explicit
+    calendar date, return a (start, end) UTC window. Otherwise None."""
+    abs_date = _parse_absolute_date(natural_language, now=now)
+    if abs_date is not None:
+        # Tight ±3-day window — explicit dates are intent-confident, so
+        # we don't need to fish across weeks.
+        return (abs_date - timedelta(days=3), abs_date + timedelta(days=3))
     m = _REL_DATE_RE.search(natural_language or "")
     if not m:
         return None
@@ -197,9 +289,249 @@ def _parse_relative_window(natural_language: str, *, now: datetime) -> tuple[dat
         unit = m.group(4).lower()
         n = 1
     days = {"day": 1, "week": 7, "month": 30, "year": 365}.get(unit, 7) * n
-    target = now - timedelta(days=days)
-    half = max(2, days // 4)  # narrow window for "a few days ago", wider for "a year ago"
-    return target - timedelta(days=half), target + timedelta(days=half)
+    # Anchor on calendar midnight, not on `now.time()`. Original code
+    # used `now - timedelta(days=N)` directly, so "10 days ago" at
+    # 21:30 UTC produced a window starting 21:30 ten days prior —
+    # which missed any event at 09:00 / 13:00 on the target day.
+    # Caught 2026-05-13 PM: the May-1 13:25 surgery fell 8 hours
+    # outside the window for "about 10 days ago" asked at 21:38.
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    target = midnight - timedelta(days=days)
+    half = max(3, days // 4)  # at least ±3 days for short windows
+    half = min(half, 21)       # cap at ±3 weeks for "a year ago"
+    start = target - timedelta(days=half)
+    end = target + timedelta(days=half + 1) - timedelta(microseconds=1)
+    return start, end
+
+
+def _event_kind_phrase(rows: list[ExtractedFact]) -> str:
+    """Pick a human-readable phrase for a set of procedure rows that all
+    happened at the same timestamp. We look for an obvious anatomical
+    keyword in any of the labels and pluralize one degree gentler than
+    "STRABISMUS SCARRING EO MUSC/RSTCV MYOPATHY procedure."
+
+    For Nick's May 1 surgery the codes are STRABISMUS RECESSION/RESCJ,
+    PLMT ADJUSTABLE SUTR STRABISMUS, STRABISMUS SCARRING EO MUSC — so
+    "strabismus / eye surgery" is the right phrase. Falls through to
+    a generic "surgery" when nothing matches.
+    """
+    blob = " ".join((r.label or "").lower() for r in rows)
+    for needle, phrase in (
+        ("strabismus", "eye surgery"),
+        ("knee", "knee surgery"),
+        ("hip", "hip surgery"),
+        ("shoulder", "shoulder surgery"),
+        ("acl", "ACL surgery"),
+        ("rotator", "rotator cuff surgery"),
+        ("appendec", "appendectomy"),
+        ("cholecyst", "gallbladder surgery"),
+        ("hernia", "hernia repair"),
+        ("hysterec", "hysterectomy"),
+        ("cataract", "cataract surgery"),
+        ("colonosc", "colonoscopy"),
+        ("endosc", "endoscopy"),
+        ("cesarean", "cesarean delivery"),
+        ("c-sect", "cesarean delivery"),
+    ):
+        if needle in blob:
+            return phrase
+    return "surgery"
+
+
+async def _resolve_episode_alias(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    natural_language: str,
+) -> dict[str, Any] | None:
+    """Return an anchor dict if the user's question literally names
+    an existing Event (by display_title or any alias). None otherwise.
+
+    Match policy: case-insensitive substring match where the alias
+    or display_title appears as a whole-phrase in the question.
+    Longest match wins so "2026 left eye surgery" beats "left eye".
+    """
+    from ..models.episode import Episode
+
+    rows = list((await db.execute(
+        select(Episode)
+        .where(Episode.user_id == user_id)
+        .where(
+            (Episode.aliases != []) | (Episode.display_title.isnot(None))  # type: ignore[arg-type]
+        )
+    )).scalars().all())
+    if not rows:
+        return None
+
+    q = (natural_language or "").lower()
+    best: tuple[Episode, str] | None = None  # (episode, matched_phrase)
+    for ep in rows:
+        candidates: list[str] = []
+        if ep.display_title:
+            candidates.append(ep.display_title)
+        candidates.extend(ep.aliases or [])
+        for phrase in candidates:
+            p = (phrase or "").strip()
+            if not p or len(p) < 3:
+                continue
+            if p.lower() in q:
+                if best is None or len(p) > len(best[1]):
+                    best = (ep, p)
+    if best is None:
+        return None
+
+    ep, matched = best
+    if ep.primary_fact_id is None:
+        # Alias points to an Event with no anchor fact (rare —
+        # promotion-from-candidate sets primary_fact_id). Surface a
+        # minimal anchor using the Episode's own date_start.
+        return {
+            "fact_id": None,
+            "label": ep.display_title or ep.title,
+            "date_start": ep.date_start.isoformat() if ep.date_start else None,
+            "significance": "major_event",
+            "match_confidence": "high",
+            "match_explanation": (
+                f"Resolved alias '{matched}' to your saved Event "
+                f"'{ep.display_title or ep.title}'."
+            ),
+        }
+    f = await db.get(ExtractedFact, ep.primary_fact_id)
+    if f is None:
+        return None
+    return {
+        "fact_id": str(f.id),
+        "label": ep.display_title or ep.title,
+        "date_start": f.date_start.isoformat() if f.date_start else None,
+        "significance": f.significance,
+        "match_confidence": "high",
+        "match_explanation": (
+            f"Resolved alias '{matched}' to your saved Event "
+            f"'{ep.display_title or ep.title}'."
+        ),
+    }
+
+
+# Common English filler words to drop before substring-matching facts.
+# Anatomy / procedure keywords are what we want to land on.
+_KEYWORD_STOPWORDS: frozenset[str] = frozenset({
+    "a", "about", "after", "all", "an", "and", "any", "are", "as", "at",
+    "be", "before", "between", "but", "by", "can", "could", "did", "do",
+    "does", "during", "each", "for", "from", "had", "has", "have", "he",
+    "her", "him", "his", "how", "i", "if", "in", "into", "is", "it", "its",
+    "ive", "just", "me", "more", "most", "my", "no", "not", "now", "of",
+    "on", "or", "our", "out", "over", "regarding", "she", "so", "some",
+    "such", "tell", "than", "that", "the", "their", "them", "then",
+    "there", "these", "they", "this", "those", "to", "too", "under",
+    "up", "was", "we", "were", "what", "when", "where", "which", "while",
+    "who", "whom", "why", "will", "with", "would", "you", "your",
+    # phrasing-noise around clinical questions
+    "surgery", "surgical", "operation", "operative", "procedure",
+    "anything", "anywhere", "everything", "something", "much",
+    "currently", "right", "left",  # laterality leaks; the label has it
+    # Verbs / nouns that appear in question prose but NEVER in a
+    # procedure LABEL. These would otherwise leak into the keyword
+    # match. Caught 2026-05-14: "Give me 3 sentences on what they did
+    # including intraoperative meds. How did recovery affect endurance
+    # training?" matched a knee fact via "intraoperative" before the
+    # date-phrase resolver got its turn.
+    "intraoperative", "preoperative", "postoperative", "perioperative",
+    "preop", "postop", "intraop",
+    "recovery", "training", "endurance", "fitness", "performance",
+    "including", "sentences", "details", "meds", "medication",
+    "medications", "anesthesia", "anesthetic",
+    "yesterday", "today", "tomorrow", "tonight",
+})
+
+
+def _content_keywords(natural_language: str) -> list[str]:
+    """Return the meaningful content tokens of a user question that
+    are worth matching against fact labels. Drops filler + the literal
+    word 'surgery' (every label that names a surgery is more specific —
+    'ORIF', 'tympanoplasty', 'strabismus' — so matching on 'surgery'
+    poisons the precision).
+    """
+    raw = re.split(r"[^\w]+", (natural_language or "").lower())
+    out: list[str] = []
+    for t in raw:
+        if len(t) < 3 or t in _KEYWORD_STOPWORDS:
+            continue
+        out.append(t)
+    return out
+
+
+async def _resolve_keyword_anchor(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    natural_language: str,
+) -> dict[str, Any] | None:
+    """Anchor the question to a user's major-significance fact whose
+    label / description contains one of the question's content
+    keywords. Returns None when nothing strong matches.
+
+    Confidence is HIGH when exactly one major fact matches the
+    longest keyword; MEDIUM when multiple do (the most-significant
+    or most-dated wins). Resolves cases like:
+      "Tell me about my fibula surgery" → ORIF right fibula
+      "ear / hearing surgery" → Tympanoplasty
+      "knee surgery" → ACL reconstruction
+    even when those facts have NULL date_start.
+    """
+    keywords = _content_keywords(natural_language)
+    if not keywords:
+        return None
+    # Order by length DESC so 'tympanoplasty' beats 'ear'. Try each
+    # keyword from longest to shortest; first hit wins.
+    keywords = sorted(set(keywords), key=lambda k: -len(k))
+    for kw in keywords:
+        pat = f"%{kw}%"
+        # Note: this matches across all users' facts in the global
+        # table. search_facts() does the same; user-scoping in the
+        # facts table is via the anchor→source chain. For OwnChart's
+        # single-tenant deployment this is fine; multi-tenant will
+        # need an evidence_anchor_ids && (user's anchor ids) filter.
+        rows = list((await db.execute(
+            select(ExtractedFact)
+            .where(ExtractedFact.significance.in_(
+                ("major_event", "major_procedure", "major_diagnosis")
+            ))
+            .where(ExtractedFact.review_state.notin_(
+                ("deferred", "rejected", "source_only")
+            ))
+            # Label-only match. Description text contains phrasing
+            # like "intraoperative", "recovery", "training" that
+            # would otherwise hijack the anchor for conversational
+            # questions. Procedure labels are concrete anatomy /
+            # operation names; that's the signal we want.
+            .where(ExtractedFact.label.ilike(pat))
+            .order_by(
+                # Procedures first (anchor weight); then by date if any.
+                ExtractedFact.fact_type.desc(),
+                ExtractedFact.date_start.desc().nullslast(),
+            )
+            .limit(6)
+        )).scalars().all())
+        if not rows:
+            continue
+        # Prefer a procedure if one is present; else the first row.
+        procs = [r for r in rows if r.fact_type == "procedure"]
+        f = procs[0] if procs else rows[0]
+        confidence = "high" if len(rows) == 1 else "medium"
+        anchor_label = f.display_label or f.label or "(unlabeled)"
+        when = f"on {f.date_start.strftime('%B %-d, %Y')}" if f.date_start else "(date unknown)"
+        return {
+            "fact_id": str(f.id),
+            "label": anchor_label,
+            "date_start": f.date_start.isoformat() if f.date_start else None,
+            "significance": f.significance,
+            "match_confidence": confidence,
+            "match_explanation": (
+                f"Matched '{kw}' in your question to your "
+                f"{anchor_label.lower()} {when}."
+            ),
+        }
+    return None
 
 
 async def resolve_anchor(
@@ -208,6 +540,7 @@ async def resolve_anchor(
     fact_id: uuid.UUID | None = None,
     episode_id: uuid.UUID | None = None,
     natural_language: str | None = None,
+    user_id: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Find the best anchor fact for the request.
@@ -215,9 +548,11 @@ async def resolve_anchor(
     Resolution order:
       1. Explicit fact_id (always wins; confidence='high').
       2. Explicit episode_id → episode.primary_fact_id.
-      3. NL phrase like "about a week ago" → window-restricted search
+      3. NL phrase mentioning an existing Event's display_title or
+         alias (when user_id is supplied) → that Event, high confidence.
+      4. NL phrase like "about a week ago" → window-restricted search
          for the highest-significance procedure/event in that window.
-      4. NL phrase fallback → just the most recent major_procedure.
+      5. NL phrase fallback → just the most recent major_procedure.
     """
     now = now or datetime.now(timezone.utc)
 
@@ -239,7 +574,38 @@ async def resolve_anchor(
         ep = await db.get(Episode, episode_id)
         if ep is None or ep.primary_fact_id is None:
             return None
-        return await resolve_anchor(db, fact_id=ep.primary_fact_id, now=now)
+        return await resolve_anchor(
+            db, fact_id=ep.primary_fact_id, user_id=user_id, now=now,
+        )
+
+    if natural_language and user_id is not None:
+        alias_hit = await _resolve_episode_alias(
+            db, user_id=user_id, natural_language=natural_language,
+        )
+        if alias_hit is not None:
+            return alias_hit
+
+    # Keyword-anchor resolution: search the user's facts for a major
+    # event/procedure whose LABEL matches an anatomy/procedure word
+    # in the question. Closes the cases Nick caught 2026-05-14:
+    #   "Tell me about my fibula surgery" → ORIF facts have NULL
+    #     date_start so the date-window query missed them.
+    #   "ear / hearing surgery" → Tympanoplasty facts in the
+    #     Hopkins ccda_xml weren't reachable by date alone.
+    #
+    # Deferred when the question already contains a relative date
+    # phrase ("10 days ago", "May 1"), because the date is the
+    # stronger anchor — and a conversational phrasing word like
+    # "intraoperative" or "recovery" would otherwise outrank the
+    # date by accident.
+    if natural_language and user_id is not None:
+        has_date_phrase = _parse_relative_window(natural_language, now=now) is not None
+        if not has_date_phrase:
+            kw_hit = await _resolve_keyword_anchor(
+                db, user_id=user_id, natural_language=natural_language,
+            )
+            if kw_hit is not None:
+                return kw_hit
 
     if natural_language:
         window = _parse_relative_window(natural_language, now=now)
@@ -257,22 +623,58 @@ async def resolve_anchor(
                     ("deferred", "rejected", "source_only")
                 ))
                 .order_by(ExtractedFact.date_start.desc())
-                .limit(5)
+                .limit(8)
             )).scalars().all())
             if rows:
                 f = rows[0]
+                # Same-event collapse (Nick's P0-2, 2026-05-14):
+                # multiple procedure rows on the SAME calendar day
+                # are almost always the same surgical session — they
+                # come from FHIR Procedure CPT codes, operative-note
+                # extractions, H&P "planned procedure" entries, and
+                # post-op summaries, all describing one operation.
+                # Treat them as ONE event with HIGH confidence. The
+                # ±60s window we tried first missed clinical-note
+                # extracts whose date_start was set to the note's
+                # creation time (different from the FHIR-coded
+                # 13:25 timestamp).
+                anchor_dt = f.date_start
+                anchor_day = anchor_dt.date()
+                same_event_rows = [
+                    r for r in rows
+                    if r.date_start is not None and r.fact_type == "procedure"
+                    and r.date_start.date() == anchor_day
+                ]
+                if len(same_event_rows) >= 2:
+                    confidence = "high"
+                    explanation = (
+                        f"Matched your {anchor_dt.strftime('%B %-d, %Y')} "
+                        f"{_event_kind_phrase(same_event_rows)} — "
+                        f"{len(same_event_rows)} related procedure entries "
+                        f"on that day point at the same event."
+                    )
+                elif len(rows) == 1:
+                    confidence = "high"
+                    explanation = (
+                        f"Matched your {anchor_dt.strftime('%B %-d, %Y')} "
+                        f"{(f.display_label or f.label or 'event').lower()}."
+                    )
+                else:
+                    # Multiple distinct events in window — medium.
+                    confidence = "medium"
+                    explanation = (
+                        f"Found {len(rows)} major events between "
+                        f"{start.date().isoformat()} and "
+                        f"{end.date().isoformat()}. "
+                        f"Anchored on the most recent."
+                    )
                 return {
                     "fact_id": str(f.id),
                     "label": f.display_label or f.label,
                     "date_start": f.date_start.isoformat(),
                     "significance": f.significance,
-                    "match_confidence": "high" if len(rows) == 1 else "medium",
-                    "match_explanation": (
-                        f"Found {len(rows)} major event(s) between "
-                        f"{start.date().isoformat()} and "
-                        f"{end.date().isoformat()}. "
-                        f"Choosing the most recent."
-                    ),
+                    "match_confidence": confidence,
+                    "match_explanation": explanation,
                 }
         # Pure fallback: most recent major procedure.
         f = (await db.execute(
@@ -330,14 +732,28 @@ def _classify_wearable(label: str) -> str | None:
     return None
 
 
+_WEARABLE_METHODS = ("health_auto_export", "native_healthkit")
+
+
 async def _facts_in_window(
     db: AsyncSession,
     start: datetime,
     end: datetime,
     *,
     wearable_only: bool = False,
+    clinical_only: bool = False,
     limit: int = 2000,
 ) -> list[ExtractedFact]:
+    """Pull facts in [start, end].
+
+    `wearable_only` filters to HK / auto-export observations only.
+    `clinical_only` excludes HK / auto-export facts so the same-day
+    clinical pull (procedure/encounter/condition/medication) doesn't
+    get drowned out by tens of thousands of wearable observations
+    that sort earlier by `date_start.asc()` and starve the limit.
+    Caught 2026-05-13 PM — limit=200 on a wearable-heavy day clipped
+    procedures off entirely.
+    """
     stmt = (
         select(ExtractedFact)
         .where(ExtractedFact.date_start.isnot(None))
@@ -347,53 +763,189 @@ async def _facts_in_window(
         .limit(limit)
     )
     if wearable_only:
-        stmt = stmt.where(ExtractedFact.extraction_method.in_(
-            ("health_auto_export", "native_healthkit")
-        ))
+        stmt = stmt.where(ExtractedFact.extraction_method.in_(_WEARABLE_METHODS))
+    elif clinical_only:
+        stmt = stmt.where(
+            ExtractedFact.extraction_method.notin_(_WEARABLE_METHODS)
+        )
     return list((await db.execute(stmt)).scalars().all())
 
 
-def _aggregate_metrics(facts: list[ExtractedFact]) -> dict[str, dict[str, Any]]:
-    """Group wearable facts by metric and compute simple stats.
+def _classify_cumulative(label: str) -> str | None:
+    s = (label or "").lower()
+    for key, needles in _CUMULATIVE_METRICS.items():
+        for n in needles:
+            if n in s:
+                return key
+    return None
 
-    Returns: { metric_key: { n, mean, min, max, unit } }.
-    Values come from `coded_concepts.value` when present; otherwise we
-    try to parse a leading number from the description.
+
+def _is_workout_session(label: str) -> bool:
+    s = (label or "").lower()
+    return any(n in s for n in _WORKOUT_LABEL_NEEDLES)
+
+
+def _extract_value(f: ExtractedFact) -> tuple[float | None, str | None]:
+    """Pull a numeric value (and optional unit) out of a wearable fact.
+
+    Three sources, in order:
+      1. coded_concepts.value / .unit
+      2. leading number in description
+      3. label tail after a colon ("...HeartRateVariabilitySDNN: 28.48 ms")
     """
-    bucket: dict[str, list[float]] = {}
-    units: dict[str, str] = {}
-    for f in facts:
-        metric = _classify_wearable(f.label)
-        if not metric:
-            continue
-        value = None
-        if isinstance(f.coded_concepts, dict):
-            v = f.coded_concepts.get("value")
-            if isinstance(v, (int, float)):
-                value = float(v)
-            u = f.coded_concepts.get("unit")
-            if isinstance(u, str):
-                units.setdefault(metric, u)
-        if value is None and f.description:
-            m = re.search(r"-?\d+(?:\.\d+)?", f.description or "")
-            if m:
-                try:
-                    value = float(m.group(0))
-                except ValueError:
-                    pass
-        if value is None:
-            continue
-        bucket.setdefault(metric, []).append(value)
+    value: float | None = None
+    unit: str | None = None
+    if isinstance(f.coded_concepts, dict):
+        v = f.coded_concepts.get("value")
+        if isinstance(v, (int, float)):
+            value = float(v)
+        u = f.coded_concepts.get("unit")
+        if isinstance(u, str):
+            unit = u
+    if value is None and f.description:
+        m = re.search(r"-?\d+(?:\.\d+)?", f.description or "")
+        if m:
+            try:
+                value = float(m.group(0))
+            except ValueError:
+                pass
+    if value is None and f.label:
+        m = re.search(r":\s*(-?\d+(?:\.\d+)?)", f.label)
+        if m:
+            try:
+                value = float(m.group(1))
+            except ValueError:
+                pass
+    if unit is None and f.label:
+        um = re.search(
+            r":\s*-?\d+(?:\.\d+)?\s+([A-Za-z/%][A-Za-z/%0-9]*)",
+            f.label,
+        )
+        if um:
+            unit = um.group(1)
+    return value, unit
 
-    out: dict[str, dict[str, Any]] = {}
-    for metric, values in bucket.items():
+
+def _aggregate_metrics(facts: list[ExtractedFact]) -> dict[str, Any]:
+    """Aggregate wearable facts across a recovery window.
+
+    Output shape:
+      {
+        # physiological — averaged across samples
+        "rhr": {n, mean, min, max, unit},
+        "hrv": {...},
+        "sleep_duration": {...},
+        "vo2max": {...},
+        "spo2": {...},
+
+        # endurance — summed across the window AND rolled per day
+        "active_energy_kcal": {total, daily_mean, daily_max, active_days, days, unit},
+        "exercise_minutes":   {total, daily_mean, daily_max, active_days, days, unit},
+        "walking_running_mi": {total, daily_mean, daily_max, active_days, days, unit},
+        "steps_total":        {total, daily_mean, daily_max, active_days, days, unit},
+
+        # training context
+        "workout_count": {n, durations_sec, days_with_workout},
+        "training_gap_days": int,  # longest consecutive zero-activity stretch
+      }
+    Caught 2026-05-13 PM: previous version reported per-sample MEAN
+    for every metric, which made "active energy averaged 0.82 kcal/sample"
+    sound like a real fitness signal. Sums and per-day rollups for
+    endurance metrics; means stay for HR/HRV/sleep/VO2max/SpO2.
+    """
+    mean_buckets: dict[str, list[float]] = {}
+    mean_units: dict[str, str] = {}
+    # day_buckets[metric][date_iso] = sum-of-values-on-that-day
+    day_buckets: dict[str, dict[str, float]] = {}
+    cum_units: dict[str, str] = {}
+    all_active_days: set[str] = set()  # any cumulative metric > 0
+    workout_durations: list[float] = []
+    workout_days: set[str] = set()
+
+    for f in facts:
+        value, unit = _extract_value(f)
+        day = f.date_start.date().isoformat() if f.date_start else None
+
+        # Workout sessions
+        if _is_workout_session(f.label):
+            if value is not None:
+                workout_durations.append(value)
+            if day:
+                workout_days.add(day)
+            continue
+
+        # Mean-aggregated physiological metrics
+        metric = _classify_wearable(f.label)
+        if metric is not None and value is not None:
+            mean_buckets.setdefault(metric, []).append(value)
+            if unit and metric not in mean_units:
+                mean_units[metric] = unit
+            continue
+
+        # Cumulative endurance metrics — sum per day
+        cum = _classify_cumulative(f.label)
+        if cum is not None and value is not None and day is not None:
+            day_buckets.setdefault(cum, {}).setdefault(day, 0.0)
+            day_buckets[cum][day] += value
+            if unit and cum not in cum_units:
+                cum_units[cum] = unit
+            if value > 0:
+                all_active_days.add(day)
+
+    out: dict[str, Any] = {}
+
+    for metric, values in mean_buckets.items():
         out[metric] = {
             "n": len(values),
             "mean": round(sum(values) / len(values), 2),
             "min": round(min(values), 2),
             "max": round(max(values), 2),
-            "unit": units.get(metric),
+            "unit": mean_units.get(metric),
         }
+
+    for metric, daily in day_buckets.items():
+        days_with_data = len(daily)
+        totals = list(daily.values())
+        if not totals:
+            continue
+        active_count = sum(1 for v in totals if v > 0)
+        out[metric] = {
+            "total": round(sum(totals), 2),
+            "daily_mean": round(sum(totals) / days_with_data, 2) if days_with_data else 0,
+            "daily_max": round(max(totals), 2),
+            "active_days": active_count,
+            "days": days_with_data,
+            "unit": cum_units.get(metric),
+        }
+
+    if workout_durations or workout_days:
+        out["workout_count"] = {
+            "n": len(workout_durations),
+            "durations_sec": [round(d, 1) for d in workout_durations],
+            "days_with_workout": sorted(workout_days),
+        }
+
+    # Training gap: longest consecutive-day run with no active-energy
+    # day in the all_active_days set. Requires the window to know
+    # which days are in scope — caller passes by computing the day
+    # set from day_buckets. Simpler version: count zero-active days
+    # among the days the window actually has data for.
+    all_days_seen: set[str] = set()
+    for daily in day_buckets.values():
+        all_days_seen.update(daily.keys())
+    if all_days_seen:
+        sorted_days = sorted(all_days_seen)
+        max_gap = 0
+        cur_gap = 0
+        for d in sorted_days:
+            if d in all_active_days:
+                cur_gap = 0
+            else:
+                cur_gap += 1
+                if cur_gap > max_gap:
+                    max_gap = cur_gap
+        out["training_gap_days"] = max_gap
+
     return out
 
 
@@ -451,6 +1003,83 @@ def _fact_dict(f: ExtractedFact, source: SourceDocument | None) -> dict[str, Any
     }
 
 
+async def _unparsed_clinical_notes(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    start: datetime,
+    end: datetime,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    """Find clinical_note source_documents in [start, end] whose
+    plaintext was fetched but never turned into ExtractedFact rows.
+
+    Caught 2026-05-13 PM: every clinical_note across 6 health systems
+    (Bozeman, Hopkins, Stanford, Bridger Ortho, OrthoVirginia, UVA)
+    has has_plaintext=true and zero extracted facts. EI used to say
+    "no anesthesia record" when in fact the Anesthesia Procedure
+    Notes RTF is sitting on disk with the anesthesiologist's name
+    in the first 200 chars. This helper surfaces those notes with
+    their plaintext_excerpt so the LLM can quote real content
+    instead of claiming the record is missing.
+
+    Date filter is done in SQL on the COALESCE of
+    `raw_metadata->>'creation'` (the note's content date — what the
+    user means by "the May 1 anesthesia note") and `acquired_at`
+    (when OwnChart fetched it). Doing the filter Python-side after
+    an over-pull starved Stanford on users with many ortho notes
+    acquired the same day; SQL-side filter is exact.
+    """
+    from sqlalchemy import text as sql_text
+
+    rows = list((await db.execute(
+        sql_text(
+            """
+            SELECT id, source_label, source_system, original_filename,
+                   acquired_at, raw_metadata
+            FROM source_documents
+            WHERE owner_user_id = :uid
+              AND source_type = 'clinical_note'
+              AND COALESCE(
+                    NULLIF(raw_metadata->>'creation', '')::timestamptz,
+                    acquired_at
+                  ) BETWEEN :start AND :end
+            ORDER BY COALESCE(
+                NULLIF(raw_metadata->>'creation', '')::timestamptz,
+                acquired_at
+            ) ASC
+            LIMIT :lim
+            """
+        ).bindparams(uid=user_id, start=start, end=end, lim=limit)
+    )).mappings().all())
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        rm = r["raw_metadata"] if isinstance(r["raw_metadata"], dict) else {}
+        creation = rm.get("creation") if isinstance(rm, dict) else None
+        content_dt: datetime | None = None
+        if isinstance(creation, str):
+            try:
+                content_dt = datetime.fromisoformat(creation.replace("Z", "+00:00"))
+            except ValueError:
+                content_dt = None
+        if content_dt is None:
+            content_dt = r["acquired_at"]
+
+        excerpt = (rm.get("plaintext_excerpt") or "")[:800] if isinstance(rm, dict) else ""
+        kind = (rm.get("title") if isinstance(rm, dict) else None) or r["original_filename"]
+
+        out.append({
+            "source_id": str(r["id"]),
+            "source_label": r["source_label"],
+            "source_system": r["source_system"],
+            "note_kind": kind,
+            "content_date": content_dt.isoformat() if content_dt else None,
+            "excerpt": excerpt,
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 
@@ -461,14 +1090,19 @@ async def plan_episode_intelligence(
     fact_id: uuid.UUID | None = None,
     episode_id: uuid.UUID | None = None,
     natural_language: str | None = None,
+    user_id: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Build the structured payload for one episode (or None if no
-    anchor could be resolved). Pure read; no writes."""
+    anchor could be resolved). Pure read; no writes.
+
+    `user_id` is required for alias-based Event resolution — without it
+    the resolver falls back to relative-date / most-recent matching.
+    """
     now = now or datetime.now(timezone.utc)
     anchor = await resolve_anchor(
         db, fact_id=fact_id, episode_id=episode_id,
-        natural_language=natural_language, now=now,
+        natural_language=natural_language, user_id=user_id, now=now,
     )
     if anchor is None:
         return None
@@ -478,29 +1112,45 @@ async def plan_episode_intelligence(
     # --- Same-day clinical scope (the surgery + its components) ----
     day_start = anchor_date.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = anchor_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-    day_facts = await _facts_in_window(db, day_start, day_end, limit=200)
+    day_facts = await _facts_in_window(
+        db, day_start, day_end, clinical_only=True, limit=200,
+    )
     day_sources = await _resolve_sources(db, day_facts)
 
     procedure_facts = [f for f in day_facts if f.fact_type == "procedure"]
     condition_facts = [f for f in day_facts if f.fact_type == "condition"]
     encounter_facts = [f for f in day_facts if f.fact_type == "encounter"]
-    anesthesia_facts = [
-        f for f in day_facts
-        if f.fact_type == "medication" and _is_anesthesia(f)
-    ]
+
+    # A "named" medication has a label other than a bare FHIR reference
+    # ("MedicationRequest e0nrm..." with an opaque ID). Those rows are
+    # MedicationRequest resources whose medicationReference wasn't
+    # resolved during ingest — the Medication.code.text or display name
+    # never made it into the fact. Treat unresolved ones as a separate
+    # bucket so the LLM can honestly say "N MedicationRequest entries
+    # exist but I can't name them" instead of either claiming 24
+    # anesthesia agents or pretending the records don't exist.
+    def _is_named_med(f: ExtractedFact) -> bool:
+        label = (f.label or "").strip()
+        return not (
+            label.startswith("MedicationRequest ")
+            or label.startswith("MedicationStatement ")
+            or label.startswith("Medication ") and len(label.split()) <= 2
+        )
+
+    all_meds = [f for f in day_facts if f.fact_type == "medication"]
+    unresolved_med_refs = [f for f in all_meds if not _is_named_med(f)]
+    named_meds = [f for f in all_meds if _is_named_med(f)]
+    anesthesia_facts = [f for f in named_meds if _is_anesthesia(f)]
     perioperative_support_facts = [
-        f for f in day_facts
-        if f.fact_type == "medication" and not _is_anesthesia(f)
-        and _is_perioperative_support(f)
+        f for f in named_meds
+        if not _is_anesthesia(f) and _is_perioperative_support(f)
     ]
     # "Other meds same day" excludes anesthesia AND perioperative
-    # support to avoid double-listing — the narrative cites each
-    # bucket separately.
+    # support AND unresolved references to avoid double-listing —
+    # the narrative cites each bucket separately.
     other_meds = [
-        f for f in day_facts
-        if f.fact_type == "medication"
-        and not _is_anesthesia(f)
-        and not _is_perioperative_support(f)
+        f for f in named_meds
+        if not _is_anesthesia(f) and not _is_perioperative_support(f)
     ]
 
     # Episode kind hint — used to pick the recovery profile.
@@ -515,13 +1165,30 @@ async def plan_episode_intelligence(
         episode_kind_hint = "default"
 
     # --- ±21 day surrounding window: travel, life context, calendar
+    # Exclude wearable observations for the same reason as the
+    # same-day query — six weeks of HK data easily blows past any
+    # limit and starves out the travel / life-event facts.
     surround_start = anchor_date - timedelta(days=21)
     surround_end = anchor_date + timedelta(days=21)
     surround_facts = await _facts_in_window(
-        db, surround_start, surround_end, limit=500,
+        db, surround_start, surround_end, clinical_only=True, limit=500,
     )
     travel_life_facts = [f for f in surround_facts if _is_travel_or_life(f)]
     travel_sources = await _resolve_sources(db, travel_life_facts)
+
+    # Unparsed clinical notes (operative reports, anesthesia notes,
+    # discharge instructions) — fetched from EHR connectors but the
+    # extractor never ran on them, so they have plaintext but no
+    # ExtractedFact rows. We pass the excerpts directly to the LLM
+    # so it can quote real content instead of claiming the records
+    # are missing. Same ±21d window. Requires user_id; falls back
+    # to empty when the caller doesn't pass one.
+    unparsed_notes: list[dict[str, Any]] = []
+    if user_id is not None:
+        unparsed_notes = await _unparsed_clinical_notes(
+            db, user_id=user_id,
+            start=surround_start, end=surround_end,
+        )
 
     # --- Recovery windows from the episode-kind profile ---------------
     window_data: list[dict[str, Any]] = []
@@ -565,6 +1232,18 @@ async def plan_episode_intelligence(
             "other_meds_same_day": [
                 _fact_dict(f, day_sources.get(f.id)) for f in other_meds[:25]
             ],
+            # Same-day MedicationRequest facts that reference a
+            # Medication resource we never resolved during ingest.
+            # They EXIST but we can't name them. The LLM should
+            # state this fact, not claim the meds aren't recorded
+            # at all and not invent agent names.
+            "unresolved_medication_references": {
+                "count": len(unresolved_med_refs),
+                "samples": [
+                    _fact_dict(f, day_sources.get(f.id))
+                    for f in unresolved_med_refs[:5]
+                ],
+            },
         },
         "perioperative_support_meds": {
             "facts": [
@@ -586,6 +1265,12 @@ async def plan_episode_intelligence(
         "body_response": {
             "windows": window_data,
         },
+        # Clinical notes that exist as source documents in the window
+        # but whose plaintext was never parsed into ExtractedFacts.
+        # These often contain the answer to "what anesthetic did I get"
+        # / "who was the surgeon" / "what did the discharge instructions
+        # say" — quote the excerpts when relevant.
+        "unparsed_clinical_notes": unparsed_notes,
         "follow_up_questions": _seed_follow_ups(anchor, anesthesia_facts),
     }
 

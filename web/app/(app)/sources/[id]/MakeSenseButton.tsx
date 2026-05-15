@@ -195,7 +195,7 @@ export function MakeSenseButton({ sourceId, initialCandidates = [] }: Props) {
       {episodes.length > 0 && (
         <div className="mt-4">
           <p className="text-xs uppercase tracking-widest text-muted">
-            Episode candidates
+            Event candidates
           </p>
           <ul className="mt-2 space-y-2">
             {episodes.map((e) => (
@@ -218,7 +218,7 @@ export function MakeSenseButton({ sourceId, initialCandidates = [] }: Props) {
                       onClick={() => patchDisposition(e.id, "accepted")}
                       className="rounded-md border border-accent/40 px-2.5 py-1 text-xs text-accent hover:bg-accent/10"
                     >
-                      Accept episode
+                      Save as Event
                     </button>
                     <button
                       type="button"

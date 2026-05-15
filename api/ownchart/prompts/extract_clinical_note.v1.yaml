@@ -1,0 +1,239 @@
+id: extract_clinical_note
+version: 1
+# Haiku 4.5 (was Opus 4.7) — extraction is a structured-output
+# mapping task with a tight schema. Haiku is ~15× cheaper input and
+# ~19× cheaper output for the same quality on this task shape. The
+# 246-note backfill on Opus 4.7 cost ~$15; the same workload on
+# Haiku is ~$1. Switched 2026-05-14 PM after a 48h cost audit.
+# Opus stays on Episode Intelligence + Ask (the synthesis steps),
+# where the model's reasoning is the actual product.
+model: claude-haiku-4-5-20251001
+purpose: extract_clinical_note
+
+# Built 2026-05-14 to close the 184-clinical-notes-with-zero-facts gap
+# Nick caught the night before. The FHIR connector fetches operative
+# notes, anesthesia notes, discharge instructions, H&Ps, etc. as
+# RTF/HTML/plaintext source documents, but the extractor that turns
+# them into structured ExtractedFact rows never ran. EI was therefore
+# saying "no anesthesia record" when the note was sitting on disk
+# naming the anesthesiologist.
+#
+# Companion to extract_fax_vision.v1.yaml — same fact shape, no image
+# input. Quote source text in every text_excerpt so the user can
+# trust each fact against the note it came from.
+
+system: |
+  You are an evidence extractor for a patient's longitudinal medical
+  record. You are reading the plaintext of one clinical note (operative
+  report, anesthesia note, H&P, discharge instructions, progress note,
+  patient instructions, etc.).
+
+  Your job: emit structured facts about what is explicitly stated in
+  the note. You will be wrong sometimes. Mark uncertainty honestly.
+  Quote source text.
+
+  Hard rules:
+  - Never infer a diagnosis the note does not state.
+  - Never give treatment instructions or recommend medication changes —
+    if the note says "take ibuprofen 600mg q6h prn pain," you record
+    THAT as an instruction the clinician wrote; you do not endorse it.
+  - If the note contains no clinically meaningful content (e.g.
+    cover letter, formatting artifacts only), return empty arrays.
+  - For dates: prefer ISO 8601. When the note states a date relative
+    to the note's own creation ("POD 1" / "yesterday"), record it as
+    relative in the text_excerpt and leave the date field blank.
+  - Quote the EXACT source phrase in text_excerpt for every fact.
+    Truncate to 400 chars if longer; the user should be able to
+    Cmd-F that excerpt in the original note.
+  - Anesthesia and discharge instructions get their own buckets so
+    Episode Intelligence can surface them distinctly from regular
+    medication/instruction facts.
+
+user_template: |
+  Note title: {note_title}
+  Source label: {source_label}
+  Source system: {source_system}
+  Note content date: {content_date}
+
+  Note plaintext (RTF/HTML control codes already stripped, so what you
+  see is what the clinician wrote):
+
+  ---
+  {plaintext}
+  ---
+
+  Extract every structured fact stated in the note. Use the
+  emit_clinical_note_extraction tool below.
+
+tools:
+  - name: emit_clinical_note_extraction
+    description: |
+      Emit structured facts pulled from a single clinical note. Every
+      array may be empty when nothing of that type appears in the note.
+    input_schema:
+      type: object
+      required: [conditions, procedures, medications, providers, instructions, findings, anesthesia, discharge, notes_to_reviewer]
+      properties:
+        conditions:
+          type: array
+          items:
+            type: object
+            required: [label, confidence, text_excerpt]
+            properties:
+              label: {type: string}
+              body_site: {type: string}
+              laterality: {type: string, enum: [left, right, bilateral, unknown]}
+              date_observed: {type: string}
+              date_precision: {type: string, enum: [day, month, year, decade, unknown]}
+              status: {type: string, enum: [active, resolved, history_of, suspected, ruled_out, unknown]}
+              confidence: {type: string, enum: [high, medium, low, possible]}
+              text_excerpt: {type: string}
+        procedures:
+          type: array
+          items:
+            type: object
+            required: [label, confidence, text_excerpt]
+            properties:
+              label: {type: string}
+              body_site: {type: string}
+              laterality: {type: string, enum: [left, right, bilateral, unknown]}
+              date: {type: string}
+              date_precision: {type: string, enum: [day, month, year, decade, unknown]}
+              provider: {type: string}
+              confidence: {type: string, enum: [high, medium, low, possible]}
+              text_excerpt: {type: string}
+        medications:
+          type: array
+          description: |
+            Any drug, supplement, or biologic mentioned by name. Use
+            `intent` to distinguish what kind of mention this is.
+          items:
+            type: object
+            required: [label, intent, confidence, text_excerpt]
+            properties:
+              label: {type: string}
+              dose: {type: string}
+              route: {type: string}
+              frequency: {type: string}
+              intent:
+                type: string
+                enum: [
+                  given_intraop,           # administered during the procedure
+                  given_periop,            # pre/post-op support
+                  prescribed,              # discharge / take-home order
+                  home_continued,          # patient's existing med, continued
+                  home_held,               # patient's home med, held for surgery
+                  reviewed_not_taken,      # mentioned but not given
+                  unknown
+                ]
+              date_started: {type: string}
+              date_stopped: {type: string}
+              confidence: {type: string, enum: [high, medium, low, possible]}
+              text_excerpt: {type: string}
+        providers:
+          type: array
+          description: |
+            Clinicians named in the note — surgeon, anesthesiologist,
+            CRNA, primary care, consulting, etc.
+          items:
+            type: object
+            required: [name, text_excerpt]
+            properties:
+              name: {type: string}
+              role: {type: string}
+              specialty: {type: string}
+              organization: {type: string}
+              text_excerpt: {type: string}
+        instructions:
+          type: array
+          description: |
+            Care directives written by the clinician for the patient.
+            Activity restrictions, wound care, follow-up scheduling,
+            warning signs, dietary changes.
+          items:
+            type: object
+            required: [label, applies_to, text_excerpt]
+            properties:
+              label:
+                type: string
+                description: One-sentence summary of the instruction.
+              applies_to:
+                type: string
+                enum: [
+                  activity, restriction, wound_care, diet, follow_up,
+                  red_flag, monitoring, return_to_work, other
+                ]
+              date_through: {type: string}
+              text_excerpt: {type: string}
+        findings:
+          type: array
+          description: |
+            Objective measurements / observations quoted in the note —
+            vitals, lab values, exam findings ("VA 20/30 OD", "BP
+            128/72 on arrival"). NOT free-text impressions.
+          items:
+            type: object
+            required: [label, text_excerpt]
+            properties:
+              label: {type: string}
+              value: {type: string}
+              unit: {type: string}
+              date: {type: string}
+              text_excerpt: {type: string}
+        anesthesia:
+          type: object
+          description: |
+            Anesthesia-specific structured detail. Populate only when
+            the note is an anesthesia note or contains explicit
+            anesthesia content. Empty/null fields are fine.
+          properties:
+            technique:
+              type: string
+              description: e.g. "general endotracheal", "MAC", "local with sedation".
+            airway:
+              type: string
+              description: e.g. "ETT", "LMA", "natural / no airway".
+            primary_anesthetic:
+              type: string
+              description: Free-text — e.g. "sevoflurane maintenance".
+            agents:
+              type: array
+              description: |
+                Specific drug names called out as intraoperative
+                anesthetic agents. Goes in addition to medications[]
+                so EI can render the anesthesia list cleanly.
+              items: {type: string}
+            anesthesiologist: {type: string}
+            crna: {type: string}
+            text_excerpt: {type: string}
+        discharge:
+          type: object
+          description: |
+            Discharge-specific structured detail. Populate only when
+            the note is a discharge instruction or contains explicit
+            discharge content.
+          properties:
+            disposition: {type: string}
+            activity_restrictions: {type: string}
+            wound_care: {type: string}
+            diet: {type: string}
+            follow_up_appointments:
+              type: array
+              items:
+                type: object
+                properties:
+                  with: {type: string}
+                  when: {type: string}
+                  reason: {type: string}
+            red_flags:
+              type: array
+              description: Symptoms the patient should call about.
+              items: {type: string}
+            text_excerpt: {type: string}
+        notes_to_reviewer:
+          type: string
+          description: |
+            Anything illegible, ambiguous, or worth a human eye. Use
+            this for "the note appears truncated mid-sentence" or
+            "the anesthesia agent list is generic — 'standard
+            cocktail' — and not specifically named."

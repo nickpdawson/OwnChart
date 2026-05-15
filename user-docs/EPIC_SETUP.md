@@ -4,6 +4,8 @@
 
 > **Read [CONNECTORS.md](./CONNECTORS.md) first** if you haven't — it explains the universal pattern. Epic is the easiest of the major vendors thanks to USCDI v3 auto-download.
 
+> **Read [CONNECTORS.md](./CONNECTORS.md) first** if you haven't — it explains the universal pattern. Epic is the easiest of the major vendors thanks to USCDI v3 auto-download.
+
 Expected time: ~30 minutes. One-time setup per OwnChart deployment.
 
 ## Prerequisites

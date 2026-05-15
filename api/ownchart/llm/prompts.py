@@ -70,6 +70,12 @@ class PromptRegistry:
         if not self.prompts_dir.exists():
             return
         for path in sorted(self.prompts_dir.glob("*.yaml")):
+            # Skip macOS AppleDouble sidecars (`._foo.yaml`) and any dotfile
+            # that sneaks in via tar from a macOS dev machine — they're not
+            # YAML, they're binary resource forks. Also skip Drive-sync
+            # conflict siblings like `foo 2.yaml`.
+            if path.name.startswith(".") or path.name.startswith("._"):
+                continue
             with path.open("r", encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             # Skip non-chat-prompt YAMLs that live in the same dir

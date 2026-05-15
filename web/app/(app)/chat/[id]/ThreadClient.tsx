@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import type {
   CandidateRef,
   ConvCitation,
@@ -23,6 +23,130 @@ function fmtTime(iso: string): string {
   }
 }
 
+// Minimal safe markdown renderer for assistant messages.
+//
+// The LLM (Episode Intelligence in particular) emits markdown with
+// `**Section headers**`, occasional `_italic_`, and `\n\n` paragraph
+// breaks. Previously we rendered `msg.content` inside a single <p>
+// with `whitespace-pre-wrap`, so asterisks showed up as literal
+// characters — Nick called this out 2026-05-13 PM as "still
+// unformatted MD." Pulling in react-markdown would require a deps
+// install and rebuild risk; this inline renderer handles the
+// patterns the LLM actually produces with zero new dependencies.
+//
+// What it does:
+//   - splits on blank lines into paragraphs
+//   - within each paragraph, wraps `**bold**` in <strong>, `_italic_`
+//     in <em>, and `` `code` `` in <code>
+//   - preserves single newlines inside a paragraph as <br/>
+//   - any literal `**`/`_` the user typed still renders the same
+//     because the regex requires a closing pair
+//
+// What it deliberately doesn't do:
+//   - links, lists, headings via `#`, tables — none of these appear
+//     in current EI/Ask output. Add when the LLM starts producing
+//     them. Until then YAGNI.
+//
+// Safety: all input is converted via React text nodes (never
+// dangerouslySetInnerHTML), so untrusted content can't inject HTML.
+// Citation-chip helper. The EI LLM emits citations inline as
+// `[fact:UUID]`, `[source:UUID]`, `[fact:UUID — Note Kind]`, and
+// sometimes shorthand `[fact:b928e750]` with a UUID prefix. Nick
+// flagged 2026-05-14 PM that these were rendering as raw text —
+// the user couldn't open them. This regex catches all three
+// shapes; the chip's href routes to a fact-context sheet or
+// source-detail page. UUID-prefix shorthand opens the same sheet
+// because the existing sidesheet accepts partial prefixes.
+const CITATION_PATTERN =
+  /\[(fact|source):([0-9a-fA-F]{6,36})(?:\s*[—-]\s*([^\]]+))?\]/g;
+
+function renderInline(text: string, keyBase: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  // First split on citation chips, then run the markdown pattern
+  // on each non-chip segment. Two-pass keeps regex simple.
+  let lastIdx = 0;
+  let citationIdx = 0;
+  for (const m of text.matchAll(CITATION_PATTERN)) {
+    const mi = m.index ?? 0;
+    if (mi > lastIdx) {
+      out.push(
+        ...renderMarkdownSegment(text.slice(lastIdx, mi), `${keyBase}-md${citationIdx}`),
+      );
+    }
+    const kind = m[1];
+    const id = m[2];
+    const label = m[3]?.trim();
+    const href = kind === "source"
+      ? `/sources/${id}`
+      : `/discover?fact=${encodeURIComponent(id)}`;
+    out.push(
+      <a
+        key={`${keyBase}-cite${citationIdx}`}
+        href={href}
+        className="mx-0.5 inline-flex items-center rounded-md border border-accent/30 bg-accent/5 px-1.5 py-0.5 text-[0.85em] font-mono text-accent hover:bg-accent/10"
+        title={`${kind}: ${id}${label ? ` — ${label}` : ""}`}
+      >
+        {label || `${kind} ${id.slice(0, 8)}`}
+      </a>,
+    );
+    citationIdx += 1;
+    lastIdx = mi + m[0].length;
+  }
+  if (lastIdx < text.length) {
+    out.push(
+      ...renderMarkdownSegment(text.slice(lastIdx), `${keyBase}-md${citationIdx}`),
+    );
+  }
+  return out;
+}
+
+function renderMarkdownSegment(text: string, keyBase: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  // Token order matters: **bold** before *italic* so the inner
+  // match doesn't eat the bold markers.
+  const pattern = /(\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|`[^`\n]+`)/g;
+  const parts = text.split(pattern);
+  parts.forEach((p, i) => {
+    if (!p) return;
+    const key = `${keyBase}-${i}`;
+    if ((p.startsWith("**") && p.endsWith("**")) || (p.startsWith("__") && p.endsWith("__"))) {
+      out.push(<strong key={key}>{p.slice(2, -2)}</strong>);
+    } else if ((p.startsWith("*") && p.endsWith("*") && p.length > 2)
+              || (p.startsWith("_") && p.endsWith("_") && p.length > 2)) {
+      out.push(<em key={key}>{p.slice(1, -1)}</em>);
+    } else if (p.startsWith("`") && p.endsWith("`") && p.length > 2) {
+      out.push(
+        <code key={key} className="rounded bg-muted/10 px-1 py-0.5 text-[0.92em]">
+          {p.slice(1, -1)}
+        </code>,
+      );
+    } else {
+      // Preserve single newlines within a paragraph as <br/>.
+      const lines = p.split("\n");
+      lines.forEach((line, li) => {
+        if (li > 0) out.push(<br key={`${key}-br-${li}`} />);
+        if (line) out.push(line);
+      });
+    }
+  });
+  return out;
+}
+
+function MessageBody({ content }: { content: string }) {
+  const trimmed = (content || "").trim();
+  if (!trimmed) return null;
+  // Split on blank lines (paragraph boundaries). The LLM emits
+  // `\n\n` between sections; this also tolerates `\n  \n` etc.
+  const paragraphs = trimmed.split(/\n\s*\n/);
+  return (
+    <div className="mt-2 space-y-3 font-serif text-base leading-relaxed text-ink">
+      {paragraphs.map((para, i) => (
+        <p key={`p-${i}`}>{renderInline(para, `p${i}`)}</p>
+      ))}
+    </div>
+  );
+}
+
 export function ThreadClient({
   thread,
   providers,
@@ -39,6 +163,74 @@ export function ThreadClient({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [promoting, setPromoting] = useState(false);
+
+  // Save-as-Dossier modal state
+  type Suggestion = {
+    refuse: boolean;
+    refuse_reason: string | null;
+    name: string | null;
+    aliases: string[];
+    description: string | null;
+  };
+  const [dossierOpen, setDossierOpen] = useState(false);
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  const [suggLoading, setSuggLoading] = useState(false);
+  const [savingDossier, setSavingDossier] = useState(false);
+  const [dossierName, setDossierName] = useState("");
+  const [dossierAliases, setDossierAliases] = useState("");
+  const [dossierDescription, setDossierDescription] = useState("");
+  const [conflictTopic, setConflictTopic] = useState<{slug: string} | null>(null);
+
+  const hasAssistantReply = messages.some((m) => m.role === "assistant" && m.content);
+
+  // EI conversations are created with kind=episode_intelligence and
+  // scope.status='running' while the background planner+LLM run. The
+  // assistant message lands ~60s later. Frontend polls until it does
+  // OR until scope.status flips to 'failed' (background hit an error
+  // and surfaced a fallback assistant message).
+  const isPendingEi =
+    thread.kind === "episode_intelligence" &&
+    !hasAssistantReply &&
+    (thread.scope?.status === "running" || !thread.scope?.status);
+  useEffect(() => {
+    if (!isPendingEi) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await fetch(
+          `/api/conversations/${encodeURIComponent(thread.id)}`,
+          { credentials: "include" },
+        );
+        if (!r.ok) return;
+        const fresh = (await r.json()) as ConvDetail;
+        if (cancelled) return;
+        setMessages(fresh.messages);
+        const done = fresh.messages.some((m) => m.role === "assistant" && m.content);
+        const failed = fresh.scope?.status === "failed";
+        if (done || failed) return; // stop the loop
+        setTimeout(tick, 2500);
+      } catch {
+        if (!cancelled) setTimeout(tick, 5000);
+      }
+    };
+    const t = setTimeout(tick, 2000);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPendingEi, thread.id]);
+
+  // Deep-link from /ask: ?save=dossier auto-opens the modal so the
+  // "Save as Dossier" button on the Ask answer panel lands here ready
+  // to act. Only fires once on mount; user can close + reopen normally.
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    if (searchParams?.get("save") === "dossier" && hasAssistantReply) {
+      openSaveAsDossier();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const promotableEpisode = candidates.find(
     (c) => c.candidate_type === "episode" && c.disposition === "pending",
@@ -67,6 +259,74 @@ export function ThreadClient({
       setError((e as Error).message);
     } finally {
       setPromoting(false);
+    }
+  }
+
+  async function openSaveAsDossier() {
+    setDossierOpen(true);
+    setError(null);
+    setConflictTopic(null);
+    if (suggestion) return; // already loaded
+    setSuggLoading(true);
+    try {
+      const r = await fetch(
+        `/api/conversations/${encodeURIComponent(thread.id)}/suggest-topic`,
+        { method: "POST", credentials: "include" },
+      );
+      if (!r.ok) throw new Error(await r.text());
+      const s = (await r.json()) as Suggestion;
+      setSuggestion(s);
+      if (!s.refuse) {
+        setDossierName(s.name ?? "");
+        setDossierAliases((s.aliases ?? []).join(", "));
+        setDossierDescription(s.description ?? "");
+      }
+    } catch (e) {
+      setError(`Suggest failed: ${(e as Error).message}`);
+    } finally {
+      setSuggLoading(false);
+    }
+  }
+
+  async function saveAsDossier() {
+    if (!dossierName.trim()) {
+      setError("Topic name is required.");
+      return;
+    }
+    setSavingDossier(true);
+    setError(null);
+    setConflictTopic(null);
+    try {
+      const aliases = dossierAliases
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const r = await fetch(
+        `/api/conversations/${encodeURIComponent(thread.id)}/save-as-topic`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            name: dossierName.trim(),
+            aliases,
+            description: dossierDescription.trim() || null,
+          }),
+        },
+      );
+      if (!r.ok) throw new Error(await r.text());
+      const out = (await r.json()) as { topic_id: string; slug: string; conflict: boolean };
+      if (out.conflict) {
+        setConflictTopic({ slug: out.slug });
+        // Don't redirect automatically — let the user confirm they want
+        // to attach this chat to the pre-existing dossier.
+        return;
+      }
+      router.push(`/dossier/${out.slug}` as never);
+    } catch (e) {
+      setError(`Save failed: ${(e as Error).message}`);
+    } finally {
+      setSavingDossier(false);
     }
   }
 
@@ -115,15 +375,16 @@ export function ThreadClient({
       {promotableEpisode && (
         <section className="rounded-xl border border-accent/30 bg-accent/5 p-4">
           <p className="text-xs uppercase tracking-widest text-accent">
-            Episode candidate
+            Event candidate
           </p>
           <p className="mt-1 font-serif text-base text-ink">
-            {promotableEpisode.title ?? "Save this as an episode"}
+            {promotableEpisode.title ?? "Save this as an Event"}
           </p>
           <p className="mt-1 text-sm text-muted">
-            Promoting saves a canonical episode with members,
-            cross-links it to this conversation, and surfaces it on
-            Home and Timeline.
+            Saving keeps this Event in your timeline with all the
+            evidence it pulled in — and you can rename it (e.g.
+            &ldquo;2026 left eye&rdquo;) and refer to it by that
+            name in chat from now on.
           </p>
           <button
             type="button"
@@ -131,8 +392,113 @@ export function ThreadClient({
             disabled={promoting}
             className="mt-3 rounded-md bg-accent px-3 py-1.5 text-sm text-surface hover:opacity-90 disabled:opacity-50"
           >
-            {promoting ? "Saving…" : "Save as Episode"}
+            {promoting ? "Saving…" : "Save as Event"}
           </button>
+        </section>
+      )}
+
+      {hasAssistantReply && !dossierOpen && (
+        <section className="rounded-xl border border-muted/15 bg-surface p-4">
+          <p className="text-xs uppercase tracking-widest text-muted">
+            Long-running concern?
+          </p>
+          <p className="mt-1 text-sm">
+            Save this conversation as a Dossier — a topic that
+            accumulates related facts over time. You can keep chatting
+            inside the dossier and any new ingestion that matches the
+            topic will land there automatically.
+          </p>
+          <button
+            type="button"
+            onClick={openSaveAsDossier}
+            className="mt-3 rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/5"
+          >
+            Save as Dossier
+          </button>
+        </section>
+      )}
+
+      {dossierOpen && (
+        <section className="rounded-xl border border-accent/30 bg-accent/5 p-4">
+          <div className="flex items-baseline justify-between">
+            <p className="text-xs uppercase tracking-widest text-accent">
+              Save as Dossier
+            </p>
+            <button
+              type="button"
+              onClick={() => setDossierOpen(false)}
+              className="text-xs text-muted underline-offset-4 hover:underline"
+            >
+              Cancel
+            </button>
+          </div>
+          {suggLoading && (
+            <p className="mt-2 text-sm text-muted">Asking the model for a topic suggestion…</p>
+          )}
+          {suggestion?.refuse && (
+            <p className="mt-2 text-sm text-caution">
+              The model didn&apos;t think this chat warrants a new dossier:
+              <em className="ml-1">{suggestion.refuse_reason}</em>. You can still
+              save it manually below.
+            </p>
+          )}
+          {!suggLoading && (
+            <div className="mt-3 grid gap-3">
+              <label className="text-sm">
+                Name
+                <input
+                  type="text"
+                  value={dossierName}
+                  onChange={(e) => setDossierName(e.target.value)}
+                  placeholder="e.g. Right ankle fracture"
+                  className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+                />
+              </label>
+              <label className="text-sm">
+                Aliases <span className="text-xs text-muted">(comma-separated; substrings that match related facts)</span>
+                <input
+                  type="text"
+                  value={dossierAliases}
+                  onChange={(e) => setDossierAliases(e.target.value)}
+                  placeholder="ankle, fibula, malleolus, fracture"
+                  className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+                />
+              </label>
+              <label className="text-sm">
+                Description <span className="text-xs text-muted">(optional, &lt; 280 chars)</span>
+                <textarea
+                  value={dossierDescription}
+                  onChange={(e) => setDossierDescription(e.target.value)}
+                  rows={2}
+                  className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+                />
+              </label>
+              {conflictTopic && (
+                <p className="text-sm text-caution">
+                  A dossier with that name already exists. The conversation has
+                  been attached to it —{" "}
+                  <a
+                    href={`/dossier/${conflictTopic.slug}`}
+                    className="underline-offset-4 hover:underline"
+                  >
+                    open {conflictTopic.slug}
+                  </a>
+                  . Rename above and save again to create a separate dossier
+                  instead.
+                </p>
+              )}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={saveAsDossier}
+                  disabled={savingDossier || !dossierName.trim()}
+                  className="rounded-md bg-accent px-3 py-1.5 text-sm text-surface disabled:opacity-50"
+                >
+                  {savingDossier ? "Saving…" : "Create dossier"}
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       )}
 
@@ -140,6 +506,21 @@ export function ThreadClient({
         {messages.map((m) => (
           <Bubble key={m.id} msg={m} />
         ))}
+        {isPendingEi && (
+          <li className="rounded-xl border border-muted/15 bg-surface p-4">
+            <p className="text-[10px] uppercase tracking-widest text-muted">
+              assistant · reading your record
+            </p>
+            <p className="mt-2 font-serif text-base leading-relaxed text-ink">
+              OwnChart is reading the record
+              <span className="inline-block ml-1 animate-pulse">…</span>
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              Pulling the procedure, anesthesia notes, discharge instructions,
+              and the wearable windows around the date. Usually 30–60 seconds.
+            </p>
+          </li>
+        )}
       </ol>
 
       <section className="rounded-xl border border-muted/15 bg-surface p-4">
@@ -203,9 +584,7 @@ function Bubble({ msg }: { msg: ConvMessage }) {
         {" · "}
         {fmtTime(msg.created_at)}
       </p>
-      <p className="mt-2 whitespace-pre-wrap font-serif text-base leading-relaxed text-ink">
-        {msg.content}
-      </p>
+      <MessageBody content={msg.content} />
       {msg.citations.length > 0 && (
         <div className="mt-3">
           <p className="text-xs uppercase tracking-widest text-muted">

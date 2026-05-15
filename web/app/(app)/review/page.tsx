@@ -1,5 +1,6 @@
 import { listFactsByState } from "@/lib/api";
 import { MedicationPatterns } from "./MedicationPatterns";
+import { PatternStatusLine } from "./PatternStatusLine";
 import { ReviewClient } from "./ReviewClient";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,7 @@ export default async function ReviewPage() {
         system surfaces uncertainty.
       </p>
       <p className="mt-2 text-xs text-muted">{facts.length} pending</p>
+      <PatternStatusLine />
 
       {/* Pattern-level decisions land first (docs/08 Review Queue Triage).
           Accepting a medication pattern suppresses its member rows from

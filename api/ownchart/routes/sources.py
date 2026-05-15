@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -25,11 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
 from ..core.logger import get_logger
+from ..core.upload_context import attach_nearby_clinical_events
 from ..ingest import auto_export as auto_export_ingest
 from ..ingest import ccda as ccda_ingest
 from ..ingest import images, pdf, storage
 from ..ingest.fact_classifier import review_state_for_fhir
-from ..core.arq_pool import enqueue_extraction_job
+from ..core.arq_pool import enqueue_extraction_job, enqueue_personal_photo_vision
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.extraction_job import ExtractionJob
@@ -59,6 +61,15 @@ class SourceDetail(SourceSummary):
     raw_metadata: dict | None
     exif_metadata: dict | None
     has_gps: bool
+    # Surface the background-extraction state at the top level so the
+    # UI doesn't have to dig into raw_metadata. Nick RC review 2026-05-14:
+    # "the user/admin must be able to see when sync succeeds but
+    # extraction fails 30 seconds later."
+    extraction_status: str | None = None      # "completed" | "failed" | "skipped" | "pending" | None
+    extraction_fact_count: int | None = None
+    extraction_error: str | None = None
+    extraction_run_at: datetime | None = None
+    extraction_failed_at: datetime | None = None
 
 
 def _to_summary(s: SourceDocument) -> SourceSummary:
@@ -92,6 +103,16 @@ async def get_source(
     if src is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     has_gps = bool((src.exif_metadata or {}).get("GPSInfo"))
+    rm = src.raw_metadata or {}
+
+    def _parse_dt(v: Any) -> datetime | None:
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return None
+
     return SourceDetail(
         **_to_summary(src).model_dump(),
         storage_uri=src.storage_uri,
@@ -101,7 +122,25 @@ async def get_source(
         raw_metadata=src.raw_metadata,
         exif_metadata=src.exif_metadata,
         has_gps=has_gps,
+        extraction_status=rm.get("extraction_status"),
+        extraction_fact_count=rm.get("extraction_fact_count"),
+        extraction_error=rm.get("extraction_error"),
+        extraction_run_at=_parse_dt(rm.get("extraction_run_at")),
+        extraction_failed_at=_parse_dt(rm.get("extraction_failed_at")),
     )
+
+
+# Photo upload safeguards (2026-05-13 PM):
+# - Files smaller than this are almost always thumbnails, icons, or
+#   accidental empty captures. Reject with a clear 415 rather than
+#   spending vision tokens on them.
+_PHOTO_MIN_BYTES = 8 * 1024  # 8 KB
+# - Bulk camera-roll imports should NOT auto-trigger Claude vision
+#   per photo. Vision spend on 200 vacation photos is wasted; user
+#   wants to opt in via an explicit "Analyze these" action. iOS sends
+#   batch_import=true when the photo came from a multi-pick gesture.
+# - Intentional single-photo uploads (camera button, "add a photo of
+#   …") keep auto-vision on the V1 path.
 
 
 @router.post("/photo", status_code=status.HTTP_201_CREATED)
@@ -110,6 +149,7 @@ async def upload_photo(
     caption: str | None = Form(default=None),
     event_date: datetime | None = Form(default=None),
     source_label: str | None = Form(default=None),
+    batch_import: bool = Form(default=False),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
@@ -127,6 +167,15 @@ async def upload_photo(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Empty file",
+        )
+    if len(raw) < _PHOTO_MIN_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                f"Image is {len(raw)} bytes — too small to be a useful "
+                "health photo (likely a thumbnail or icon). Send the "
+                "full-resolution image, or upload as a note instead."
+            ),
         )
 
     # Persist raw bytes content-addressed.
@@ -166,6 +215,13 @@ async def upload_photo(
             "thumbnails": meta.thumbnails,
             "deduplicated": blob.already_existed,
             "size_bytes": blob.size_bytes,
+            # batch_import=true means iOS imported this from a multi-
+            # pick camera-roll gesture; defer auto-vision to an
+            # explicit "Analyze these" action via POST /sources/{id}/analyze.
+            # batch_import=false (default) keeps the intentional single-
+            # upload path on auto-vision.
+            "batch_import": batch_import,
+            "vision_pending": batch_import,  # true if vision is deferred
         },
         captured_at=meta.captured_at,
         exif_metadata=meta.exif or None,
@@ -203,8 +259,28 @@ async def upload_photo(
         )
         db.add(fact)
 
+    # Auto-association: pin nearby major clinical events onto the
+    # source so the source detail page can show "this photo is on the
+    # same day as your appendectomy / fibula fracture" without the
+    # user manually associating it. Runs synchronously — it's one DB
+    # query against confirmed facts in a ±7 day window.
+    nearby = await attach_nearby_clinical_events(db, user, src)
+
     await db.commit()
     await db.refresh(src)
+
+    # Fire-and-forget Claude vision over the photo — unless this is a
+    # bulk camera-roll import (batch_import=true). For batched imports
+    # the photo lands in the vault but vision is deferred until the
+    # user explicitly triggers it via POST /sources/{id}/analyze.
+    # raw_metadata.vision_pending=true is the UI's signal that the
+    # photo is awaiting analysis.
+    if not batch_import:
+        try:
+            await enqueue_personal_photo_vision(str(src.id))
+        except Exception as e:  # noqa: BLE001
+            log.warning("photo_vision_enqueue_failed",
+                        source_id=str(src.id), error=str(e))
 
     log.info(
         "photo_uploaded",
@@ -216,6 +292,7 @@ async def upload_photo(
         deduplicated=blob.already_existed,
         captioned=bool(caption),
         dated=bool(photo_date),
+        nearby_clinical_events=len(nearby),
     )
 
     return SourceDetail(
@@ -227,6 +304,264 @@ async def upload_photo(
         raw_metadata=src.raw_metadata,
         exif_metadata=src.exif_metadata,
         has_gps=meta.has_gps,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Personal-lane uploads — note + voice memo (Upload tab on iOS)
+# ---------------------------------------------------------------------------
+#
+# These mirror the /photo endpoint's contract: store the raw artifact +
+# generate a confirmed life_context_event fact at the supplied event_date so
+# it lands on the timeline / dossier surfaces via the same retrieval path as
+# captioned photos. The artifact stays the canonical evidence; the fact is
+# just the index entry so date-proximity clustering works ("photo of the day
+# I broke my ankle" sits next to the 2023-07-15 fracture facts).
+#
+# STT model: iOS sends the audio file PLUS an on-device transcript
+# (Speech framework) when permission is granted. The transcript becomes the
+# fact's description and participates in search_facts retrieval. The raw
+# audio is stored unmodified so a future server-side Whisper pass can
+# re-transcribe if needed. If iOS posts audio without a transcript, the
+# source is stored but no fact is created — V1.1 will add a transcription
+# worker that fills in retroactively.
+
+
+class NoteCreate(BaseModel):
+    body: str
+    title: str | None = None
+    event_date: datetime | None = None
+    source_label: str | None = None
+
+
+@router.post("/note", status_code=status.HTTP_201_CREATED)
+async def upload_note(
+    payload: NoteCreate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> SourceDetail:
+    """Typed note from the iOS Upload tab.
+
+    Creates a SourceDocument(source_type='note') + a confirmed
+    life_context_event fact at `event_date` (defaults to now) so the note
+    participates in timeline and dossier retrieval the moment it lands.
+    """
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty note body",
+        )
+    if len(body) > 50_000:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Note body exceeds 50KB; split into multiple notes",
+        )
+
+    raw_bytes = body.encode("utf-8")
+
+    async def _stream():
+        yield raw_bytes
+
+    blob = await storage.write_blob(_stream(), suffix=".txt")
+    src_id = uuid.uuid4()
+    event_at = payload.event_date or datetime.now(timezone.utc)
+
+    src = SourceDocument(
+        id=src_id,
+        owner_user_id=user.id,
+        source_type="note",
+        original_filename=(payload.title or "note") + ".txt",
+        storage_uri=blob.storage_uri,
+        hash=f"sha256:{blob.sha256}",
+        mime_type="text/plain",
+        acquired_at=datetime.now(timezone.utc),
+        source_system="patient_upload",
+        source_label=payload.source_label or payload.title,
+        raw_metadata={
+            "title": payload.title,
+            "char_count": len(body),
+            "byte_count": len(raw_bytes),
+            "deduplicated": blob.already_existed,
+        },
+        captured_at=payload.event_date,
+        user_supplied_event_date=payload.event_date,
+    )
+    db.add(src)
+    await db.flush()
+
+    anchor = EvidenceAnchor(
+        source_document_id=src.id,
+        anchor_type="note_full",
+        text_excerpt=body[:2000],
+    )
+    db.add(anchor)
+    await db.flush()
+
+    label = (payload.title or body.split("\n", 1)[0])[:512]
+    fact = ExtractedFact(
+        fact_type="life_context_event",
+        label=label,
+        description=body[:4000],
+        date_start=event_at,
+        date_end=None,
+        date_precision="day",
+        confidence=100,
+        review_state="confirmed",
+        evidence_anchor_ids=[anchor.id],
+        extraction_method="patient_self_report",
+    )
+    db.add(fact)
+    # Auto-association — same pattern as photo upload.
+    nearby = await attach_nearby_clinical_events(db, user, src)
+    await db.commit()
+    await db.refresh(src)
+
+    log.info(
+        "note_uploaded",
+        source_id=str(src.id),
+        char_count=len(body),
+        dated=bool(payload.event_date),
+        titled=bool(payload.title),
+        nearby_clinical_events=len(nearby),
+    )
+
+    return SourceDetail(
+        **_to_summary(src).model_dump(),
+        storage_uri=src.storage_uri,
+        hash=src.hash,
+        mime_type=src.mime_type,
+        acquired_at=src.acquired_at,
+        raw_metadata=src.raw_metadata,
+        exif_metadata=None,
+        has_gps=False,
+    )
+
+
+_AUDIO_MIME_PREFIXES = ("audio/",)
+_VOICE_MAX_BYTES = 50 * 1024 * 1024  # 50MB; ~80 min of m4a
+
+
+@router.post("/voice", status_code=status.HTTP_201_CREATED)
+async def upload_voice(
+    file: UploadFile = File(...),
+    transcript: str | None = Form(default=None),
+    title: str | None = Form(default=None),
+    event_date: datetime | None = Form(default=None),
+    source_label: str | None = Form(default=None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> SourceDetail:
+    """Voice memo from the iOS Upload tab.
+
+    iOS does on-device transcription via Apple's Speech framework when
+    permission is granted and sends the resulting text as `transcript`.
+    The audio file is the canonical evidence; the transcript is the
+    indexable form. If `transcript` is omitted, the audio is stored but
+    no fact is generated — a future V1.1 worker will run server-side
+    Whisper on un-transcribed voice sources and backfill.
+    """
+    if not file.content_type or not file.content_type.startswith(_AUDIO_MIME_PREFIXES):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f"Unsupported content-type: {file.content_type}; expected audio/*",
+        )
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Empty audio file",
+        )
+    if len(raw) > _VOICE_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Audio exceeds {_VOICE_MAX_BYTES // (1024 * 1024)}MB",
+        )
+
+    suffix = Path(file.filename or "").suffix.lower() or ".m4a"
+
+    async def _stream():
+        yield raw
+
+    blob = await storage.write_blob(_stream(), suffix=suffix)
+    src_id = uuid.uuid4()
+    event_at = event_date or datetime.now(timezone.utc)
+    transcript_text = (transcript or "").strip()
+
+    src = SourceDocument(
+        id=src_id,
+        owner_user_id=user.id,
+        source_type="voice_memo",
+        original_filename=file.filename,
+        storage_uri=blob.storage_uri,
+        hash=f"sha256:{blob.sha256}",
+        mime_type=file.content_type,
+        acquired_at=datetime.now(timezone.utc),
+        source_system="patient_upload",
+        source_label=source_label or title,
+        raw_metadata={
+            "title": title,
+            "transcript": transcript_text or None,
+            "has_transcript": bool(transcript_text),
+            "size_bytes": blob.size_bytes,
+            "deduplicated": blob.already_existed,
+        },
+        captured_at=event_date,
+        user_supplied_event_date=event_date,
+    )
+    db.add(src)
+    await db.flush()
+
+    # Only create a fact if we have content to index. Bare audio without a
+    # transcript stays in the vault until server-side STT runs (V1.1).
+    if transcript_text:
+        anchor = EvidenceAnchor(
+            source_document_id=src.id,
+            anchor_type="voice_transcript",
+            text_excerpt=transcript_text[:2000],
+        )
+        db.add(anchor)
+        await db.flush()
+
+        label = (title or transcript_text.split("\n", 1)[0])[:512]
+        fact = ExtractedFact(
+            fact_type="life_context_event",
+            label=label,
+            description=transcript_text[:4000],
+            date_start=event_at,
+            date_end=None,
+            date_precision="day",
+            confidence=95,
+            review_state="confirmed",
+            evidence_anchor_ids=[anchor.id],
+            extraction_method="patient_self_report",
+        )
+        db.add(fact)
+
+    # Auto-association — same pattern as photo / note upload.
+    nearby = await attach_nearby_clinical_events(db, user, src)
+
+    await db.commit()
+    await db.refresh(src)
+
+    log.info(
+        "voice_uploaded",
+        source_id=str(src.id),
+        size_bytes=blob.size_bytes,
+        has_transcript=bool(transcript_text),
+        transcript_chars=len(transcript_text),
+        dated=bool(event_date),
+        nearby_clinical_events=len(nearby),
+    )
+
+    return SourceDetail(
+        **_to_summary(src).model_dump(),
+        storage_uri=src.storage_uri,
+        hash=src.hash,
+        mime_type=src.mime_type,
+        acquired_at=src.acquired_at,
+        raw_metadata=src.raw_metadata,
+        exif_metadata=None,
+        has_gps=False,
     )
 
 
@@ -725,6 +1060,97 @@ def _job_readout(j: ExtractionJob) -> ExtractionJobReadout:
         started_at=j.started_at,
         completed_at=j.completed_at,
     )
+
+
+class PatchSourceBody(BaseModel):
+    event_date: datetime | None = None
+    caption: str | None = None
+    source_label: str | None = None
+
+
+@router.patch("/{source_id}", response_model=SourceDetail)
+async def patch_source(
+    source_id: uuid.UUID,
+    body: PatchSourceBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> SourceDetail:
+    """Mutate user-supplied fields on a SourceDocument.
+
+    Currently scoped to event_date / caption / source_label. The
+    primary use case is the "No date on this upload" hint on the
+    source detail page — user sets an event date after the fact so
+    the upload can participate in timeline / dossier retrieval.
+
+    Setting event_date also re-runs attach_nearby_clinical_events so
+    the "Same window in your record" panel populates with whatever
+    major facts lived in the now-known window.
+    """
+    src = await db.get(SourceDocument, source_id)
+    if src is None or src.owner_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    touched = False
+    if body.event_date is not None:
+        src.user_supplied_event_date = body.event_date
+        # captured_at is for EXIF-derived dates; user-supplied dates
+        # live in user_supplied_event_date. Both feed the upload
+        # context anchor.
+        touched = True
+    if body.caption is not None:
+        src.user_supplied_caption = body.caption.strip() or None
+        touched = True
+    if body.source_label is not None:
+        src.source_label = body.source_label.strip() or None
+        touched = True
+    if touched and src.source_type in {"photo", "note", "voice_memo"}:
+        await attach_nearby_clinical_events(db, user, src)
+    await db.commit()
+    await db.refresh(src)
+    return SourceDetail(
+        **_to_summary(src).model_dump(),
+        storage_uri=src.storage_uri,
+        hash=src.hash,
+        mime_type=src.mime_type,
+        acquired_at=src.acquired_at,
+        raw_metadata=src.raw_metadata,
+        exif_metadata=src.exif_metadata,
+        has_gps=bool(src.exif_metadata and src.exif_metadata.get("gps")),
+    )
+
+
+@router.post("/{source_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_photo_analyze(
+    source_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Explicit "Analyze these" trigger for a personal photo upload.
+
+    Companion to the batch_import=true upload mode: bulk camera-roll
+    imports land without auto-vision; this endpoint lets the user
+    cherry-pick which ones to actually analyze. Idempotent — if
+    raw_metadata.vision is already populated, returns the existing
+    job result without re-running. (Re-running would double-charge
+    for content that hasn't changed.)
+    """
+    src = await db.get(SourceDocument, source_id)
+    if src is None or src.owner_user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    if src.source_type != "photo":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"/analyze only supports photo sources, got {src.source_type}",
+        )
+    if (src.raw_metadata or {}).get("vision") is not None:
+        return {"status": "already_analyzed"}
+
+    job_id = await enqueue_personal_photo_vision(str(src.id))
+    # Mark pending so the UI can spin until the worker completes.
+    raw = dict(src.raw_metadata or {})
+    raw["vision_pending"] = True
+    src.raw_metadata = raw
+    await db.commit()
+    return {"status": "enqueued", "job_id": job_id}
 
 
 @router.post("/{source_id}/extract-facts", status_code=status.HTTP_202_ACCEPTED)

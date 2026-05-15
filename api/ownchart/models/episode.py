@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, SmallInteger, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import DateTime, ForeignKey, SmallInteger, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TimestampMixin, new_uuid
@@ -28,6 +28,17 @@ class Episode(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     title: Mapped[str] = mapped_column(String(512), nullable=False)
+    # User-renameable display title. UI shows display_title if set,
+    # else falls back to title (the planner-derived label, often an
+    # uppercase CPT description like "STRABISMUS SCARRING EO MUSC/RSTCV
+    # MYOPATHY" that's accurate but unreadable).
+    display_title: Mapped[str | None] = mapped_column(Text)
+    # Case-insensitive nicknames the user can reference this Event by
+    # in chat. Resolved by the natural-language anchor matcher before
+    # falling back to generic retrieval. Stored as a Postgres TEXT[].
+    aliases: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default="{}",
+    )
     summary: Mapped[str | None] = mapped_column(String)
     # Episode kinds (Q-F3, 2026-05-11 PM):
     #   surgery, injury, illness, pregnancy, hospital_stay, workup,
@@ -46,6 +57,18 @@ class Episode(Base, TimestampMixin):
     )
     promoted_from_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sensemaking_candidates.id", ondelete="SET NULL")
+    )
+    # When set, this Event is a soft-deleted duplicate pointing at
+    # the canonical Event. Members were copied to canonical at merge
+    # time. Home / list / search filter merged-into-not-null out.
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("episodes.id", ondelete="SET NULL"),
+    )
+    # When a fact lands in the Event's date window AFTER the saved
+    # intelligence payload was generated, this is set to that fact's
+    # created_at. UI shows "refresh" affordance.
+    intelligence_stale_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
     )
     # heuristic | llm | user | imported
     created_by: Mapped[str] = mapped_column(String(16), nullable=False, default="user")

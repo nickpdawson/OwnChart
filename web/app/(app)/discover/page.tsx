@@ -93,7 +93,7 @@ const TYPE_BORDER: Record<string, string> = {
 };
 
 const TYPE_EYEBROW: Record<string, string> = {
-  connected_episode: "Episode",
+  connected_episode: "Event",
   dense_period: "Dense period",
   long_gap: "Gap",
   unreviewed_high_count: "Review",

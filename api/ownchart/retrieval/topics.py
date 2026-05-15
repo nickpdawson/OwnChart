@@ -13,12 +13,49 @@ escape hatch for users who want to see everything.
 from __future__ import annotations
 
 import re
+import uuid
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.extracted_fact import ExtractedFact
 from ..models.topic import Topic
+
+
+# Significance rank for ORDER BY — lower number = higher priority.
+# Matches the canonical taxonomy in canonical/significance.py. Used by
+# search_facts to surface major events ahead of background HK chatter
+# when the query's tokens match across thousands of rows.
+_SIGNIFICANCE_RANK = case(
+    (ExtractedFact.significance == "major_event", 1),
+    (ExtractedFact.significance == "major_procedure", 2),
+    (ExtractedFact.significance == "major_diagnosis", 3),
+    (ExtractedFact.significance == "major_medication", 4),
+    (ExtractedFact.significance == "major_activity_lifestyle", 5),
+    (ExtractedFact.significance == "background", 6),
+    else_=7,
+)
+
+
+def _pattern_managed_fact_ids_subq(user_id: uuid.UUID):
+    """Subquery returning IDs of facts that were suppressed via
+    accepted pattern compression. Used to LIFT the deferred-state
+    filter for those facts: the user accepted the pattern as a
+    review-burden reduction, not as "pretend this medication doesn't
+    exist", so retrieval should still find them when chat asks.
+
+    Returns a subquery suitable for ANY(...) / IN comparisons.
+    """
+    from ..models.sensemaking_candidate import SensemakingCandidate
+    return (
+        select(func.unnest(SensemakingCandidate.fact_ids))
+        .where(SensemakingCandidate.user_id == user_id)
+        .where(SensemakingCandidate.disposition == "accepted")
+        .where(SensemakingCandidate.candidate_type.in_(
+            ("medication_pattern", "provider_pattern"),
+        ))
+        .scalar_subquery()
+    )
 
 # Review states that disappear from default dossier + retrieval views.
 # `source_only` (docs/07 §644-649) means the fact is preserved as
@@ -47,6 +84,17 @@ _STOPWORDS: frozenset[str] = frozenset(
         "you", "your", "yours", "yourself", "yourselves",
         # Question-shaped fillers
         "tell", "show", "explain", "story", "summary", "summarize",
+        # Common verbs that leak into description ILIKE matches and pull
+        # high-significance unrelated facts to the top. "Do I take
+        # creatine?" was matching every Omeprazole/Celebrex/Finasteride
+        # description containing "Take 1 tablet by mouth..." — and the
+        # significance-rank ORDER BY pushed major_medication ahead of
+        # the background-significance creatine. Caught 2026-05-13 PM.
+        "take", "takes", "taking", "took",
+        "use", "uses", "using", "used",
+        "get", "gets", "getting", "got", "gotten",
+        "make", "makes", "making", "made",
+        "currently", "ever", "lately", "recently", "still",
     }
 )
 
@@ -198,6 +246,7 @@ async def search_facts(
     query: str,
     limit: int = 40,
     include_archived: bool = False,
+    user_id: uuid.UUID | None = None,
 ) -> list[ExtractedFact]:
     """Free-text retrieval across fact labels + descriptions.
 
@@ -209,18 +258,29 @@ async def search_facts(
        PostgreSQL ``DISTINCT ON``. This is what makes "what medications
        do I take" work — the question contains zero specific drug
        names, so substring match alone misses every medication fact.
-    2. **Substring match.** The original behavior. Per-token ILIKE
-       across label + description, plus a phrase-match for the full
-       raw query so exact medical strings ("optic atrophy") still
-       hit as a unit.
+    2. **Substring match.** Per-token ILIKE across label + description,
+       plus a phrase-match for the full raw query so exact medical
+       strings ("optic atrophy") still hit as a unit.
 
-    Order: category representatives first (so the prompt context
-    leads with category breadth when relevant), then substring hits.
-    Capped at ``limit`` total after de-dup by fact id.
+    Order (2026-05-13 PM): both passes now sort by **significance rank
+    first, date DESC second**. Caught during golden-path walk:
+    "Tell me the story of my May 1 strabismus surgery" was returning
+    1979 conditions because tokens like "story" / "surgery" matched
+    thousands of background HK observations and the date-only
+    ordering left the actual major_procedure facts past the 40-row
+    cap. Significance-rank ordering surfaces the May 1 procedures
+    first regardless of how dense the recent background chatter is.
+
+    Pattern-managed visibility (2026-05-13 PM): when ``user_id`` is
+    supplied, facts whose review_state='deferred' BECAUSE OF accepted
+    pattern compression (medication_pattern / provider_pattern) are
+    re-included in retrieval. The user accepted the pattern to reduce
+    the inbox burden — not to make their medications invisible. The
+    home insight referenced a recent Celebrex prescription and the
+    follow-up chat couldn't find it; this lifts that gap.
 
     Over-retrieval is fine — the LLM caller filters facts further by
-    relevance to the actual question; under-retrieval (the previous
-    literal-substring-only behavior) is fatal because no fact's label
+    relevance; under-retrieval is fatal because no fact's label
     matches a full natural-language question.
     """
     if not query.strip():
@@ -228,31 +288,41 @@ async def search_facts(
     tokens = _tokenize_query(query)
     raw = query.strip()
 
+    # State-filter helper — `deferred` is normally hidden, but for
+    # callers that pass user_id we ALSO re-include facts that were
+    # deferred via accepted pattern compression.
+    def _state_filter():
+        if include_archived:
+            return None
+        base = ExtractedFact.review_state.notin_(_HIDDEN_STATES)
+        if user_id is None:
+            return base
+        return or_(base, ExtractedFact.id.in_(_pattern_managed_fact_ids_subq(user_id)))
+
     # --- Category representatives -----------------------------------------
     matched_types = _detect_category_fact_types(tokens, query)
     cat_facts: list[ExtractedFact] = []
     if matched_types:
         # DISTINCT ON (fact_type, lower(label)) gives one row per
-        # unique label. The label-prefix normalization the dossier
-        # cluster route uses isn't needed here — medications already
-        # share displayText across administrations, so lower(label) is
-        # already the right grouping key. ORDER BY date_start DESC
-        # picks the most recent administration as the representative.
+        # unique label. ORDER BY significance rank + date DESC picks
+        # the most clinically-significant administration as the
+        # representative (a major_medication beats a background daily
+        # vitamin log).
         cat_stmt = (
             select(ExtractedFact)
             .where(ExtractedFact.fact_type.in_(matched_types))
             .order_by(
                 ExtractedFact.fact_type,
                 func.lower(ExtractedFact.label),
+                _SIGNIFICANCE_RANK,
                 ExtractedFact.date_start.desc().nullslast(),
             )
             .distinct(ExtractedFact.fact_type, func.lower(ExtractedFact.label))
             .limit(limit)
         )
-        if not include_archived:
-            cat_stmt = cat_stmt.where(
-                ExtractedFact.review_state.notin_(_HIDDEN_STATES)
-            )
+        sf = _state_filter()
+        if sf is not None:
+            cat_stmt = cat_stmt.where(sf)
         cat_facts = list((await db.execute(cat_stmt)).scalars().all())
 
     # --- Substring match --------------------------------------------------
@@ -272,22 +342,37 @@ async def search_facts(
             select(ExtractedFact)
             .where(or_(*filters))
             .order_by(
-                ExtractedFact.date_start.asc().nullslast(),
+                _SIGNIFICANCE_RANK,
+                ExtractedFact.date_start.desc().nullslast(),
                 ExtractedFact.created_at.desc(),
             )
             .limit(limit)
         )
-        if not include_archived:
-            sub_stmt = sub_stmt.where(
-                ExtractedFact.review_state.notin_(_HIDDEN_STATES)
-            )
+        sf = _state_filter()
+        if sf is not None:
+            sub_stmt = sub_stmt.where(sf)
         substr_facts = list((await db.execute(sub_stmt)).scalars().all())
 
-    # Category first — when "medications" is in the query, the LLM
-    # should see the categorical breadth before substring hits like a
-    # "Medications:" section header from an unrelated note.
+    # Merge order:
+    #   - When substring returns hits, those WIN. The user asked about
+    #     a specific thing (strabismus, fibula, Celebrex) — the
+    #     substring-matched + significance-sorted facts are what they
+    #     mean. Category breadth comes after as filler.
+    #   - When substring is empty (genuinely unspecific query like
+    #     "what medications am I on?"), fall back to category-rep
+    #     facts as the primary signal.
+    #
+    # Earlier ordering put category first unconditionally. That caused
+    # "Tell me about my May 1 strabismus surgery" to return 40 ACL
+    # reconstruction facts (alphabetically-early matches of the
+    # token "procedure") and zero May-1-strabismus facts (which were
+    # ready in substring but got crowded out before the merge could
+    # reach them). Caught during golden-path walk 2026-05-13.
+    merge_order = (
+        substr_facts + cat_facts if substr_facts else cat_facts + substr_facts
+    )
     seen: dict = {}
-    for f in cat_facts + substr_facts:
+    for f in merge_order:
         if f.id not in seen:
             seen[f.id] = f
         if len(seen) >= limit:

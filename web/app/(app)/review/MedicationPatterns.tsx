@@ -34,11 +34,11 @@ export function MedicationPatterns() {
       // on every page render is safe and cheap.
       const [medR, provR] = await Promise.all([
         fetch(
-          `/api/sensemaking/review/medication-patterns?min_group_size=5`,
+          `/api/review/medication-patterns?min_group_size=5`,
           { method: "POST", credentials: "include" },
         ),
         fetch(
-          `/api/sensemaking/review/provider-patterns?min_group_size=3`,
+          `/api/review/provider-patterns?min_group_size=3`,
           { method: "POST", credentials: "include" },
         ),
       ]);

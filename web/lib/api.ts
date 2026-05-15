@@ -890,6 +890,12 @@ export type HomeAiPartner = {
     detail: string | null;
   }>;
   providers: ProviderShape[];
+  insight?: {
+    body: string;
+    question: string | null;
+    related_fact_ids: string[];
+    generated_at: string;
+  } | null;
 };
 
 export async function getHomeAiPartner(): Promise<HomeAiPartner> {
@@ -916,6 +922,8 @@ export type EpisodeMember = {
 export type EpisodeDetail = {
   id: string;
   title: string;
+  display_title: string | null;
+  aliases: string[];
   summary: string | null;
   kind: string;
   date_start: string | null;

@@ -347,3 +347,84 @@ async def extract_source_pages(
             res = VisionPageResult(page_number=page_n, model_run_id=None, error=str(e), fact_count=0)
         out.append(res)
     return VisionExtractionSummary(source_id=source.id, pages=out)
+
+
+# ---------------------------------------------------------------------------
+# Personal photo vision — a single one-shot call over a camera-roll photo,
+# distinct from the clinical-PDF multi-page extract_page above. The output
+# updates the existing life_context_event fact's description and seeds
+# aliases for retrieval (body_parts_visible become substring matches when
+# the user later asks "tell me about my right ankle").
+# ---------------------------------------------------------------------------
+
+
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass
+class PersonalPhotoResult:
+    model_run_id: uuid.UUID | None
+    description: str | None
+    body_parts_visible: list[str]
+    medical_devices: list[str]
+    setting: str | None
+    recovery_signals: list[str]
+    relevance_score: int
+    safety_response: str | None
+    error: str | None
+
+
+async def extract_personal_photo(
+    db: AsyncSession,
+    user: User,
+    source: SourceDocument,
+    image_path: Path,
+) -> PersonalPhotoResult:
+    if not image_path.exists():
+        return PersonalPhotoResult(
+            model_run_id=None, description=None, body_parts_visible=[],
+            medical_devices=[], setting=None, recovery_signals=[],
+            relevance_score=0, safety_response=None,
+            error=f"image missing: {image_path}",
+        )
+
+    image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    media_type = _media_type_from_path(image_path)
+    captured = source.captured_at or source.user_supplied_event_date
+    captured_str = captured.isoformat() if captured else "unknown"
+
+    prompt = get_registry().get("personal_photo_vision")
+    result = await call_with_tool(
+        db, user, prompt,
+        user_vars={
+            "captured_at": captured_str,
+            "caption": source.user_supplied_caption or "(none)",
+            "filename": source.original_filename or "(unnamed)",
+        },
+        purpose="personal_photo_vision",
+        input_source_ids=[source.id],
+        tool_name="emit_photo_description",
+        image_b64=image_b64,
+        image_media_type=media_type,
+    )
+
+    if result.error and not result.tool_input:
+        return PersonalPhotoResult(
+            model_run_id=result.model_run_id,
+            description=None, body_parts_visible=[], medical_devices=[],
+            setting=None, recovery_signals=[], relevance_score=0,
+            safety_response=None, error=result.error,
+        )
+
+    out = result.tool_input or {}
+    return PersonalPhotoResult(
+        model_run_id=result.model_run_id,
+        description=out.get("description"),
+        body_parts_visible=[s for s in (out.get("body_parts_visible") or []) if isinstance(s, str)],
+        medical_devices=[s for s in (out.get("medical_devices") or []) if isinstance(s, str)],
+        setting=out.get("setting"),
+        recovery_signals=[s for s in (out.get("recovery_signals") or []) if isinstance(s, str)],
+        relevance_score=int(out.get("relevance_score") or 0),
+        safety_response=out.get("safety_response"),
+        error=None,
+    )

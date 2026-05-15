@@ -86,6 +86,7 @@ async def _gather_evidence(
     scope: dict[str, Any],
     question: str,
     limit: int = 25,
+    user_id: uuid.UUID | None = None,
 ) -> tuple[list[ExtractedFact], list[SourceDocument]]:
     """Pull facts + sources relevant to the conversation's scope + the
     user's latest question.
@@ -104,7 +105,7 @@ async def _gather_evidence(
     sources: list[SourceDocument] = []
 
     if kind == "whole_record":
-        facts = await search_facts(db, question, limit=limit)
+        facts = await search_facts(db, question, limit=limit, user_id=user_id)
 
     elif kind == "period":
         from datetime import datetime as _dt
@@ -126,7 +127,7 @@ async def _gather_evidence(
             stmt = stmt.where(ExtractedFact.date_start <= end_dt)
         rows = list((await db.execute(stmt)).scalars().all())
         # Intersect with question-search to keep relevance.
-        searched = await search_facts(db, question, limit=limit)
+        searched = await search_facts(db, question, limit=limit, user_id=user_id)
         searched_ids = {s.id for s in searched}
         facts = [r for r in rows if r.id in searched_ids] or rows[:limit]
 
@@ -380,6 +381,7 @@ async def add_user_message_and_reply(
 
     facts, sources = await _gather_evidence(
         db, scope=conv.scope or {"type": "whole_record"}, question=content,
+        user_id=user.id,
     )
 
     # Load recent history (this conversation only) for prompt context.

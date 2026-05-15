@@ -34,6 +34,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..canonical.equivalence import daily_metric_key
+from ..core.config import get_settings
 from ..core.db import get_session
 from ..core.device_auth import get_user_from_device_token_or_session
 from ..core.logger import get_logger
@@ -108,7 +109,10 @@ class SyncRequest(BaseModel):
     identifier: str
     strategy: Literal["daily_aggregate", "raw"]
     unit: str | None = None
-    mode: Literal["demo", "full"] = "demo"
+    # Advisory only. Server overrides this from settings.demo_mode at
+    # request time — clients no longer need to mirror an instance flag.
+    # Left in the schema so old iOS builds don't 422 on an unknown field.
+    mode: Literal["demo", "full"] = "full"
     samples: list[SyncSample]
     anchor_blob: str | None = None  # base64-encoded HKQueryAnchor.archivedData
 
@@ -147,39 +151,67 @@ async def _upsert_source_for_day(
     mode: str,
 ) -> SourceDocument:
     """One SourceDocument per (user, device_token, day) — facts hang off
-    it via evidence anchors. Matches the auto_export pattern."""
+    it via evidence anchors. Matches the auto_export pattern.
+
+    Race-safe: iOS uploads multiple identifiers in parallel via URLSession
+    with no client-side serialization, so two pages may both see "no row"
+    and both try to insert. We try-insert-then-select-fallback: if our
+    insert fails because another concurrent batch already created the
+    same day-source, swallow the IntegrityError and re-select.
+    """
     day_start = day.astimezone(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     label = f"native-healthkit-{day_start.date().isoformat()}"
-    existing = (await db.execute(
-        select(SourceDocument)
-        .where(SourceDocument.owner_user_id == user.id)
-        .where(SourceDocument.source_type == "native_healthkit")
-        .where(SourceDocument.source_label == label)
-    )).scalar_one_or_none()
+
+    def _select_existing():
+        # ORDER BY id keeps the choice deterministic across calls so any
+        # downstream caches that key on source_document_id stay stable.
+        # .scalars().first() — not scalar_one_or_none — because pre-fix
+        # parallel uploads created duplicate rows (no unique constraint
+        # on source_documents); a 0024 migration dedupes them, but we
+        # stay tolerant in case a backfill ever re-introduces them.
+        return (
+            select(SourceDocument)
+            .where(SourceDocument.owner_user_id == user.id)
+            .where(SourceDocument.source_type == "native_healthkit")
+            .where(SourceDocument.source_label == label)
+            .order_by(SourceDocument.id.asc())
+        )
+
+    existing = (await db.execute(_select_existing())).scalars().first()
     if existing is not None:
         return existing
-    src = SourceDocument(
-        id=uuid.uuid4(),
-        owner_user_id=user.id,
-        source_type="native_healthkit",
-        original_filename=f"{label}.batch",
-        storage_uri="memory://native-healthkit",
-        hash=f"native-healthkit-{day_start.isoformat()}",
-        mime_type="application/json",
-        acquired_at=datetime.now(timezone.utc),
-        source_system="HealthKit",
-        source_label=label,
-        raw_metadata={
-            "device_token_id": str(device_token_id) if device_token_id else None,
-            "day": day_start.date().isoformat(),
-            "demo": mode == "demo",
-        },
-    )
-    db.add(src)
-    await db.flush()
-    return src
+    # Try-insert inside a savepoint so an IntegrityError from a concurrent
+    # winner doesn't poison the outer transaction. If insertion fails, the
+    # savepoint rolls back to just before db.add(), and we re-select.
+    try:
+        async with db.begin_nested():
+            src = SourceDocument(
+                id=uuid.uuid4(),
+                owner_user_id=user.id,
+                source_type="native_healthkit",
+                original_filename=f"{label}.batch",
+                storage_uri="memory://native-healthkit",
+                hash=f"native-healthkit-{day_start.isoformat()}",
+                mime_type="application/json",
+                acquired_at=datetime.now(timezone.utc),
+                source_system="HealthKit",
+                source_label=label,
+                raw_metadata={
+                    "device_token_id": str(device_token_id) if device_token_id else None,
+                    "day": day_start.date().isoformat(),
+                    "demo": mode == "demo",
+                },
+            )
+            db.add(src)
+            await db.flush()
+        return src
+    except Exception:
+        existing = (await db.execute(_select_existing())).scalars().first()
+        if existing is None:
+            raise  # not a race, surface the real failure
+        return existing
 
 
 @router.post("/sync")
@@ -190,13 +222,57 @@ async def sync_healthkit(
     db: AsyncSession = Depends(get_session),
 ) -> SyncResponse:
     """Ingest one HK-identifier batch."""
+    try:
+        return await _sync_healthkit_inner(body, request, user, db)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Match the commit 13df6d8 pattern: log full traceback at warn so
+        # iOS dev can tail logs and triage; surface exception type+message
+        # in the 500 detail only when env=dev or debug_payloads, never on
+        # prod (could leak PHI substrings).
+        log.warning(
+            "healthkit_sync_failed",
+            user_id=str(user.id),
+            identifier=body.identifier,
+            strategy=body.strategy,
+            sample_count=len(body.samples),
+            exc_type=type(exc).__name__,
+            exc=str(exc),
+            exc_info=True,
+        )
+        s = get_settings()
+        if s.env == "dev" or s.debug_payloads:
+            detail = f"{type(exc).__name__}: {exc}"
+        else:
+            detail = "healthkit sync failed; see server logs"
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=detail,
+        )
 
+
+async def _sync_healthkit_inner(
+    body: SyncRequest,
+    request: Request,
+    user: User,
+    db: AsyncSession,
+) -> SyncResponse:
     if body.identifier not in HK_REGISTRY:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown identifier {body.identifier}",
         )
-    cap = DEMO_BATCH_CAP if body.mode == "demo" else BATCH_CAP
+
+    # Single source of truth for demo gating: the instance's
+    # settings.demo_mode flag. body.mode used to be the lever, but iOS
+    # clients had no reason to know about an instance setting and the
+    # field defaulted to "demo" — which silently 422'd every raw post on
+    # real-instance deployments. Server now overrides body.mode entirely.
+    s = get_settings()
+    effective_mode: Literal["demo", "full"] = "demo" if s.demo_mode else "full"
+
+    cap = DEMO_BATCH_CAP if effective_mode == "demo" else BATCH_CAP
     if len(body.samples) > cap:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -204,7 +280,7 @@ async def sync_healthkit(
         )
 
     try:
-        spec = enforce_strategy(body.identifier, body.strategy, body.mode)
+        spec = enforce_strategy(body.identifier, body.strategy, effective_mode)
     except StrategyRejected as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -215,15 +291,16 @@ async def sync_healthkit(
         request.state, "device_token_id", None
     )
     if device_token_id is None:
-        # /sync may only be called with a bearer token — cookie users
-        # have no device identity to scope cursors against.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="/sync requires a device bearer token, not a session cookie",
         )
 
-    # Upsert the per-device cursor for this identifier. We only need
-    # one row per (user, device_token, identifier).
+    # Upsert the per-device cursor for this identifier. iOS may parallel-
+    # POST multiple pages of the same identifier; the
+    # uq_hkcursor_user_dev_id unique constraint would IntegrityError on the
+    # losing page if we did a check-then-insert. Use ON CONFLICT DO NOTHING
+    # + re-select to be race-safe.
     cursor = (await db.execute(
         select(HealthKitCursor).where(
             HealthKitCursor.user_id == user.id,
@@ -232,18 +309,30 @@ async def sync_healthkit(
         )
     )).scalar_one_or_none()
     if cursor is None:
-        cursor = HealthKitCursor(
-            id=uuid.uuid4(),
-            user_id=user.id,
-            device_token_id=device_token_id,
-            identifier=body.identifier,
-            anchor_blob=_decode_anchor(body.anchor_blob),
-            last_sample_end_at=None,
-            last_strategy=body.strategy,
-            sample_count=0,
+        await db.execute(
+            pg_insert(HealthKitCursor.__table__).values(
+                id=uuid.uuid4(),
+                user_id=user.id,
+                device_token_id=device_token_id,
+                identifier=body.identifier,
+                anchor_blob=_decode_anchor(body.anchor_blob),
+                last_sample_end_at=None,
+                last_strategy=body.strategy,
+                sample_count=0,
+            ).on_conflict_do_nothing(
+                constraint="uq_hkcursor_user_dev_id",
+            )
         )
-        db.add(cursor)
-        await db.flush()
+        # Re-select — whether we won or lost the race, the row exists now.
+        cursor = (await db.execute(
+            select(HealthKitCursor).where(
+                HealthKitCursor.user_id == user.id,
+                HealthKitCursor.device_token_id == device_token_id,
+                HealthKitCursor.identifier == body.identifier,
+            )
+        )).scalar_one()
+        cursor.anchor_blob = _decode_anchor(body.anchor_blob)
+        cursor.last_strategy = body.strategy
     else:
         cursor.anchor_blob = _decode_anchor(body.anchor_blob)
         cursor.last_strategy = body.strategy
@@ -263,7 +352,7 @@ async def sync_healthkit(
         # All samples in this day share one SourceDocument.
         first = day_samples[0]
         src = await _upsert_source_for_day(
-            db, user, device_token_id, first.start_at, body.mode
+            db, user, device_token_id, first.start_at, effective_mode
         )
         source_doc_by_day[day_key] = src
 
@@ -364,7 +453,7 @@ async def sync_healthkit(
         device_token_id=str(device_token_id),
         identifier=body.identifier,
         strategy=body.strategy,
-        mode=body.mode,
+        mode=effective_mode,
         accepted=accepted,
         deduped=deduped,
     )
@@ -373,7 +462,7 @@ async def sync_healthkit(
         deduplicated=deduped,
         cursor_id=str(cursor.id),
         anchor_blob=_encode_anchor(cursor.anchor_blob),
-        mode=body.mode,
+        mode=effective_mode,
     )
 
 

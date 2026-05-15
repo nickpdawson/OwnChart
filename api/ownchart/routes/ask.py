@@ -18,9 +18,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime, timezone
+
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
 from ..llm import call_with_tool, get_registry
+from ..models.conversation import Conversation, ConversationMessage
 from ..models.extracted_fact import ExtractedFact
 from ..models.user import User
 from ..retrieval.topics import search_facts
@@ -68,6 +71,10 @@ class AskResponse(BaseModel):
     model_run_id: str | None
     safety_response: str | None
     error: str | None
+    # Persisted Conversation so the user can "Save as Dossier" /
+    # "Continue in chat" from the Ask page. None when the answer was
+    # blocked (e.g., self-harm guard).
+    conversation_id: str | None = None
 
 
 def _format_context(facts: list[ExtractedFact]) -> str:
@@ -107,7 +114,14 @@ async def ask(
 
     require_phi_consent(user)
 
-    facts = await search_facts(db, body.question, limit=24)
+    # 40 was the original search_facts default; ask.py used to override
+    # to 24 for prompt-context economy. After the 2026-05-13 ordering fix
+    # the cap rarely truncates anything load-bearing, but giving the LLM
+    # a bit more headroom on "tell me the story of X" queries is cheap
+    # and reduces "I don't see X in your record" misses where X is real.
+    # user_id makes search_facts pattern-aware (re-include facts
+    # suppressed via accepted medication/provider pattern compression).
+    facts = await search_facts(db, body.question, limit=40, user_id=user.id)
     prompt = get_registry().get("ask_query")
     result = await call_with_tool(
         db, user, prompt,
@@ -126,9 +140,45 @@ async def ask(
         )
 
     out = result.tool_input or {}
+    answer_text = out.get("answer")
+
+    # Persist the Q+A as a Conversation so the user can Save-as-Dossier
+    # or continue the thread in /chat. Skipped when the model refused
+    # or gave us nothing to save. Kind='ask' is the existing default —
+    # the conversation list page distinguishes /ask-originated threads
+    # from chat-originated ones via this field.
+    conv_id_out: str | None = None
+    if answer_text:
+        now = datetime.now(timezone.utc)
+        title = (body.question.strip().splitlines()[0] or "Ask")[:200]
+        conv = Conversation(
+            user_id=user.id,
+            title=title,
+            kind="ask",
+            scope={"type": "whole_record"},
+            last_message_at=now,
+        )
+        db.add(conv)
+        await db.flush()
+        db.add(ConversationMessage(
+            conversation_id=conv.id,
+            user_id=user.id,
+            role="user",
+            content=body.question,
+        ))
+        db.add(ConversationMessage(
+            conversation_id=conv.id,
+            user_id=user.id,
+            role="assistant",
+            content=answer_text,
+            model_run_id=result.model_run_id,
+        ))
+        await db.commit()
+        conv_id_out = str(conv.id)
+
     return AskResponse(
         question=body.question,
-        answer=out.get("answer"),
+        answer=answer_text,
         well_supported=out.get("well_supported", []),
         uncertain=out.get("uncertain", []),
         suggested_next_steps=out.get("suggested_next_steps", []),
@@ -137,4 +187,5 @@ async def ask(
         model_run_id=str(result.model_run_id),
         safety_response=out.get("safety_response"),
         error=result.error,
+        conversation_id=conv_id_out,
     )
