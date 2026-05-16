@@ -363,6 +363,66 @@ async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[st
                 fact.significance_source = "personal_photo_vision"
                 fact.significance_set_at = datetime.now(timezone.utc)
 
+        # Structured-screenshot facts (P0-3, 2026-05-16). When the
+        # photo is a screenshot of a vaccine card / lab result /
+        # prescription / etc., the prompt fills `structured_facts`
+        # with one entry per labeled field. Persist each as an
+        # ExtractedFact with its own EvidenceAnchor so the
+        # source-detail page can show the OCR'd row alongside the
+        # original image, AND so the fact lands on the right dossier
+        # (a vaccination shows up under vaccines, a med shows up on
+        # the medication dossier, etc.).
+        structured_facts_persisted = 0
+        structured = getattr(result, "structured_facts", None) or []
+        for sf in structured:
+            ft = (sf.get("fact_type") or "").strip()
+            label = (sf.get("label") or "").strip()
+            if not ft or not label:
+                continue
+            confidence_word = (sf.get("confidence") or "medium").lower()
+            conf_int = {"high": 90, "medium": 65, "low": 35}.get(confidence_word, 65)
+            # Mirror clinical-note review-state convention: low or
+            # medium confidence → needs_review; high → confirmed.
+            review_state = "needs_review" if conf_int < 80 else "confirmed"
+            # Date: only persist when the LLM gave us one. NEVER
+            # default to the photo capture date — that's a different
+            # event (the moment of upload, not the moment of
+            # vaccination). Same RC#3 doctrine.
+            date_iso = sf.get("date_start")
+            date_start = None
+            if isinstance(date_iso, str) and date_iso.strip():
+                try:
+                    s = date_iso.strip()
+                    if len(s) == 10:
+                        date_start = datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+                    else:
+                        date_start = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                except ValueError:
+                    date_start = None
+            coded = sf.get("coded_concepts") if isinstance(sf.get("coded_concepts"), dict) else None
+            sf_anchor = EvidenceAnchor(
+                source_document_id=source.id,
+                anchor_type="image_structured_field",
+                text_excerpt=(sf.get("description") or label)[:2000],
+            )
+            db.add(sf_anchor)
+            await db.flush()
+            sf_fact = ExtractedFact(
+                fact_type=ft,
+                label=label[:512],
+                description=(sf.get("description") or None),
+                date_start=date_start,
+                date_end=date_start,
+                date_precision="day" if date_start else None,
+                coded_concepts=coded,
+                confidence=conf_int,
+                review_state=review_state,
+                evidence_anchor_ids=[sf_anchor.id],
+                extraction_method="claude_vision_v1",
+            )
+            db.add(sf_fact)
+            structured_facts_persisted += 1
+
         # Persist the full structured output for the source detail page
         # and for future debugging. Clear vision_pending so the UI can
         # stop spinning on bulk-import photos that were just analyzed
@@ -375,6 +435,7 @@ async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[st
             "setting": result.setting,
             "recovery_signals": result.recovery_signals,
             "relevance_score": result.relevance_score,
+            "structured_fact_count": structured_facts_persisted,
             "model_run_id": str(result.model_run_id) if result.model_run_id else None,
             "safety_response": result.safety_response,
         }
@@ -387,8 +448,13 @@ async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[st
              source_id=source_id,
              relevance=result.relevance_score,
              body_parts=len(result.body_parts_visible),
-             devices=len(result.medical_devices))
-    return {"status": "completed", "relevance_score": result.relevance_score}
+             devices=len(result.medical_devices),
+             structured_facts=structured_facts_persisted)
+    return {
+        "status": "completed",
+        "relevance_score": result.relevance_score,
+        "structured_facts": structured_facts_persisted,
+    }
 
 
 class WorkerSettings:

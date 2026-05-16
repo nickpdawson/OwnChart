@@ -24,7 +24,21 @@ system: |
   food, etc.), say so honestly and emit a low relevance_score — do
   NOT invent clinical content.
 
-  Things to capture when present:
+  There are TWO common shapes of "clinically-relevant" photos. Handle
+  both. (1) A camera-roll photo of a body, device, or setting — that
+  goes into body_parts_visible / medical_devices / recovery_signals
+  / setting / description. (2) A screenshot of structured health
+  data — vaccine details, lab results, prescription label,
+  medication list, appointment card, hospital wristband, after-visit
+  summary, an Apple Health record card, a patient-portal detail
+  page. **This is the bigger trust gap**: when the patient hands you
+  a screenshot that literally says "Received on: Sep 22, 2025 ·
+  COMIRNATY · CVS Pharmacy · PFIZER · Lot NA0589 · Left arm,"
+  extract every field as a structured fact. Caught 2026-05-16:
+  vision returned relevance=70 with zero structured_facts on a
+  Comirnaty vaccine screenshot — that's a data-loss bug.
+
+  Camera-roll-photo signals (when present):
 
   - **Body parts visible** — anatomical regions you can see clearly
     (ankle, knee, shoulder, face, hand, etc.). Don't list every
@@ -40,9 +54,38 @@ system: |
     unknown.
   - **Recovery / acute signals** — visible swelling, bruising,
     bandaging, post-op markings, redness/inflammation, immobilization.
-  - **Time-of-day context** if discernible (bright sunlight,
-    nighttime hospital lighting, etc.) — only when it adds clinical
-    context, not for casual photos.
+
+  Structured-screenshot extraction:
+
+  When the photo is a screenshot or close-up of a structured health
+  record (vaccine card, lab result, prescription, med list,
+  appointment, after-visit summary, hospital wristband, allergy
+  list, pharmacy receipt with drug+date), populate `structured_facts`
+  with one entry per labeled field. Use the labels actually visible.
+  Pull the **event date** from the screen when it's there (e.g.
+  "Received on: Sep 22, 2025" → date_start: "2025-09-22"). Pull the
+  proper noun details verbatim (drug name, lot number, manufacturer,
+  pharmacy, route, site, dose). Do not invent values for fields the
+  screenshot does not show. Set confidence:
+
+  - **high** for fields where the value is clearly printed and
+    unambiguous (drug name, date, lot number)
+  - **medium** when the value is visible but partially occluded or
+    needs minor interpretation (handwriting, OCR-borderline)
+  - **low** when you're guessing from context (e.g. inferring a
+    diagnosis from a prescription you can't fully read)
+
+  fact_type taxonomy for structured_facts:
+  - `medication`         — prescription label, med list row, pill
+                            bottle, pharmacy receipt
+  - `vaccination`        — vaccine card / details screen
+  - `condition`          — diagnosis on a problem list / chart
+  - `procedure`          — procedure listed on a record
+  - `observation`        — lab result, vital sign reading
+  - `allergy`            — allergy list entry
+  - `appointment`        — scheduled visit on an appointment card
+  - `provider_relationship` — clinician name + practice on a card
+  - `instruction`        — discharge / take-home instruction text
 
   Things to NOT do:
 
@@ -53,6 +96,9 @@ system: |
     discoloration consistent with bruising").
   - Do NOT comment on body composition unless it's directly clinically
     relevant (e.g., obvious wasting in a limb post-immobilization).
+  - Do NOT invent structured_facts. If the screenshot is ambiguous,
+    emit fewer facts at higher confidence rather than more at low
+    confidence.
   - If the photo content is genuinely casual / non-clinical, set
     `relevance_score` low (<30) and a short `description` that says
     so. That hides the photo from clinical retrieval without
@@ -118,6 +164,73 @@ tools:
             photo of an injury / recovery / clinical setting.
             Photos under 30 are hidden from clinical retrieval by
             default.
+        structured_facts:
+          type: array
+          description: |
+            Structured fields extracted from a screenshot or
+            close-up of a structured health record (vaccine details,
+            lab result, prescription, med list, appointment card,
+            hospital wristband, allergy list, etc.). Empty array
+            when the photo is a body / device / setting shot with
+            no structured record visible. One entry per labeled
+            field — drug name, dose, date, lot number, etc. The
+            worker persists each entry as an ExtractedFact row so
+            it shows up on the timeline and dossiers.
+          items:
+            type: object
+            required: [fact_type, label, confidence]
+            properties:
+              fact_type:
+                type: string
+                enum:
+                  - medication
+                  - vaccination
+                  - condition
+                  - procedure
+                  - observation
+                  - allergy
+                  - appointment
+                  - provider_relationship
+                  - instruction
+              label:
+                type: string
+                description: |
+                  Short patient-readable label for the fact, taken
+                  verbatim from the screenshot where possible
+                  ("COMIRNATY 2025-2026 PFIZER 0.3ml IM, Left arm,
+                  CVS Pharmacy"). Keep under 200 chars.
+              description:
+                type: string
+                description: |
+                  Optional longer-form context — additional fields
+                  from the same record card (lot, dose, route, site,
+                  pharmacy, prescriber, indication). Each on its
+                  own line is fine. Empty when the label is
+                  self-contained.
+              date_start:
+                type: string
+                description: |
+                  ISO date when shown on the screen ("Received on:
+                  Sep 22, 2025" → "2025-09-22"). Omit entirely if
+                  the screenshot does not show a date — do NOT
+                  invent or infer one from filename / capture date.
+              coded_concepts:
+                type: object
+                description: |
+                  Coded terminology when explicitly shown on the
+                  screenshot (RxNorm, CVX, NDC, ICD-10, SNOMED,
+                  LOINC). Shape: {"rxnorm": ["..."], "cvx": ["..."]}.
+                  Empty/omitted when no codes visible.
+              confidence:
+                type: string
+                enum: [high, medium, low]
+                description: |
+                  high: value clearly printed and unambiguous
+                  (drug name, dose, date, lot number).
+                  medium: visible but partially occluded or needs
+                  minor interpretation (handwriting, OCR-borderline).
+                  low: guessing from context — these get reviewed
+                  before becoming canonical.
         safety_response:
           type: string
           description: |

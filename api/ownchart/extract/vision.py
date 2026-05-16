@@ -372,6 +372,14 @@ class PersonalPhotoResult:
     relevance_score: int
     safety_response: str | None
     error: str | None
+    # Structured facts extracted from screenshots of structured
+    # health data (vaccine cards, lab results, prescription labels,
+    # appointment cards). One entry per labeled field. Worker
+    # persists each as an ExtractedFact row. Caught 2026-05-16:
+    # Comirnaty screenshot uploaded with date/lot/drug all visible,
+    # vision returned relevance=70 with zero structured_facts —
+    # data-loss bug.
+    structured_facts: list[dict[str, Any]] = None  # type: ignore[assignment]
 
 
 async def extract_personal_photo(
@@ -386,6 +394,7 @@ async def extract_personal_photo(
             medical_devices=[], setting=None, recovery_signals=[],
             relevance_score=0, safety_response=None,
             error=f"image missing: {image_path}",
+            structured_facts=[],
         )
 
     image_b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
@@ -414,9 +423,23 @@ async def extract_personal_photo(
             description=None, body_parts_visible=[], medical_devices=[],
             setting=None, recovery_signals=[], relevance_score=0,
             safety_response=None, error=result.error,
+            structured_facts=[],
         )
 
     out = result.tool_input or {}
+    # Validate structured_facts before passing through — accept only
+    # well-formed dicts so a bad LLM response can't crash the worker.
+    raw_sf = out.get("structured_facts") or []
+    structured_facts: list[dict[str, Any]] = []
+    if isinstance(raw_sf, list):
+        for sf in raw_sf:
+            if not isinstance(sf, dict):
+                continue
+            ft = sf.get("fact_type")
+            label = sf.get("label")
+            if not isinstance(ft, str) or not isinstance(label, str) or not label.strip():
+                continue
+            structured_facts.append(sf)
     return PersonalPhotoResult(
         model_run_id=result.model_run_id,
         description=out.get("description"),
@@ -427,4 +450,5 @@ async def extract_personal_photo(
         relevance_score=int(out.get("relevance_score") or 0),
         safety_response=out.get("safety_response"),
         error=None,
+        structured_facts=structured_facts,
     )
