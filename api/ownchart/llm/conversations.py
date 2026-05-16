@@ -334,74 +334,136 @@ def _scope_description(scope: dict[str, Any]) -> str:
     return kind
 
 
-# Source-quality heuristic (2026-05-15 PM, Nick's ACL retrieval read).
+# Source Authority Doctrine classifier (2026-05-15 PM, Nick).
 #
-# The Ask LLM was citing a Stanford pre-op anesthesia note's "Right
-# ACL surgery x3" — patient self-reported surgical history — instead
-# of the OrthoVirginia operative/specialty record. The LLM literally
-# couldn't see the source-quality difference because the evidence
-# block surfaced fact label + significance only, not provenance.
+# Six-tier authority hierarchy — see user-docs/SOURCE_AUTHORITY_DOCTRINE.md
+# for the full doctrine. The classifier maps `original_filename`,
+# `source_type`, and `source_label` to a tier label that downstream
+# code uses for retrieval diversity + prompt ranking + evidence
+# display.
 #
-# This classifier inspects the source document's `original_filename`
-# and `source_label` and assigns a coarse quality tier. The Ask
-# prompt instructs the LLM to prefer higher-tier evidence and to
-# flag explicitly when only lower-tier evidence is available.
+# Tiers, highest first (must match user-docs/SOURCE_AUTHORITY_DOCTRINE.md):
+#   1 primary_event           — op note, pathology, imaging, lab, device
+#   2 specialist_proximate    — specialty notes about the event topic
+#   3 contemporaneous_support — PT, discharge, prescriptions, visit summaries
+#   4 ehr_summary             — patient summaries, problem lists, CCD
+#   5 self_reported_history   — pre-op H&P / surgical history copy-forward
+#   6 model_inference         — LLM-derived (only stamped at fact level)
 #
-# Tiers (highest first):
-#   "operative_report"     — actual op note from the performing site
-#   "specialty_primary"    — specialist encounter / progress note
-#   "primary_care"         — PCP encounter / progress note
-#   "imaging_pathology"    — radiology, pathology, lab
-#   "self_reported_history"— pre-op H&P, surgical history list
-#   "summary_overview"     — patient summary / continuity-of-care doc
-#   "unknown"
-_FILENAME_TIER_RULES: tuple[tuple[str, str], ...] = (
-    ("operative_report", "operative"),
-    ("operative_report", "op note"),
-    ("operative_report", "surgical report"),
-    ("self_reported_history", "anesthesia preprocedure"),
-    ("self_reported_history", "preprocedure evaluation"),
-    ("self_reported_history", "pre-op"),
-    ("self_reported_history", "preop"),
-    ("self_reported_history", "surgical history"),
-    ("self_reported_history", "past surgical"),
-    ("imaging_pathology", "radiology"),
-    ("imaging_pathology", "imaging"),
-    ("imaging_pathology", "pathology"),
-    ("imaging_pathology", "lab"),
-    ("summary_overview", "patient summary"),
-    ("summary_overview", "continuity of care"),
-    ("summary_overview", "ccd "),
-    ("summary_overview", "ccda"),
-    ("specialty_primary", "encounter summary"),
-    ("specialty_primary", "progress notes"),
-    ("specialty_primary", "consult"),
-    ("specialty_primary", "office visit"),
+# `unknown` is the catch-all when no rule fires. The Ask prompt
+# treats `unknown` as tier 4 for ranking purposes.
+
+# Filename keywords that map to primary_event records.
+_PRIMARY_EVENT_KEYWORDS: tuple[str, ...] = (
+    "operative report", "operative note", "op note", "surgical report",
+    "pathology", "histopathology", "imaging study", "imaging",
+    "radiology", "lab report", "laboratory", "ekg report", "ecg report",
 )
 
-_SPECIALTY_LABEL_HINTS = (
+# Filename keywords that map to self-reported history (lowest non-inference).
+# These are pre-op H&Ps and surgical history copy-forwards — patient
+# said it during intake, not the record of the event itself.
+_SELF_REPORTED_KEYWORDS: tuple[str, ...] = (
+    "anesthesia preprocedure", "preprocedure evaluation",
+    "pre-op evaluation", "pre op evaluation", "preop evaluation",
+    "surgical history", "past surgical history", "psh", "intake",
+)
+
+# Filename keywords that map to contemporaneous support.
+_CONTEMPORANEOUS_KEYWORDS: tuple[str, ...] = (
+    "discharge instructions", "discharge summary",
+    "physical therapy", "pt evaluation", "pt note",
+    "prescription", "medication list",
+    "visit summary", "encounter summary", "office visit",
+    "consult", "progress note",
+)
+
+# Filename keywords that map to ehr_summary.
+_EHR_SUMMARY_KEYWORDS: tuple[str, ...] = (
+    "patient summary", "continuity of care", "ccda", "ccd ",
+    "problem list", "health summary",
+)
+
+# Specialty practice hints that promote a contemporaneous-support
+# encounter to `specialist_proximate` when the source_label names a
+# specialty practice (orthopedics for knees, ophthalmology for eyes,
+# etc.). Per the doctrine, copied clinical history from a non-specialty
+# encounter must NOT outrank records from the specialty/source closest
+# to the event.
+_SPECIALTY_LABEL_HINTS: tuple[str, ...] = (
     "orthovirginia", "ortho", "stanford orthopedics", "kaiser ortho",
     "bridger ortho", "cardiology", "dermatology", "endocrinology",
     "gastroenterology", "neurology", "ophthalmology", "ent",
     "pulmonology", "rheumatology", "urology", "nephrology",
+    "audiology", "hearing center", "audiometric",
 )
 
+# Source-type bucket → default tier. Used when filename keywords don't
+# fire (e.g. a healthkit_sync source has no filename), or as a floor.
+_SOURCE_TYPE_FLOORS: dict[str, str] = {
+    "health_auto_export": "primary_event",   # device-recorded data
+    "native_healthkit":   "primary_event",   # device-recorded data
+    "fhir_bundle":        "ehr_summary",     # bundle-level default
+    "ccda_xml":           "ehr_summary",     # CCDA is a summary unless filename narrows it
+    "clinical_note":      "specialist_proximate",  # default; refined below
+}
 
-def _source_quality_tier(source_label: str | None, filename: str | None) -> str:
+
+def _source_quality_tier(
+    source_label: str | None,
+    filename: str | None,
+    source_type: str | None = None,
+) -> str:
+    """Return the authority tier for a source document.
+
+    Doctrine-aligned, deterministic. Order of checks:
+      1. Filename keyword scan against each tier's vocabulary (most
+         diagnostic — "Anesthesia Preprocedure Evaluation" is always
+         self_reported regardless of which practice emitted it).
+      2. Source-type floor (HealthKit / Auto Export → primary_event).
+      3. Specialty-label promotion for tier-3 records that came from a
+         specialty practice (e.g. an OrthoVirginia visit summary
+         doesn't sit in `contemporaneous_support`; it's
+         `specialist_proximate` for any knee/ortho question).
+    """
     s = (source_label or "").lower()
     f = (filename or "").lower()
-    # File-name heuristics first — they're the most diagnostic.
-    for tier, needle in _FILENAME_TIER_RULES:
-        if needle in f:
-            # Bump specialty-primary to specialty if the source_label
-            # itself names a specialty practice.
-            if tier == "specialty_primary" and any(h in s for h in _SPECIALTY_LABEL_HINTS):
-                return "specialty_primary"
-            return tier
-    # No filename hit — fall back to source_label inspection.
-    if any(h in s for h in _SPECIALTY_LABEL_HINTS):
-        return "specialty_primary"
+    t = (source_type or "").lower()
+
+    # 1. Filename keyword scan — strongest signal.
+    if any(k in f for k in _PRIMARY_EVENT_KEYWORDS):
+        return "primary_event"
+    if any(k in f for k in _SELF_REPORTED_KEYWORDS):
+        return "self_reported_history"
+    has_specialty = any(h in s for h in _SPECIALTY_LABEL_HINTS)
+    if any(k in f for k in _CONTEMPORANEOUS_KEYWORDS):
+        return "specialist_proximate" if has_specialty else "contemporaneous_support"
+    if any(k in f for k in _EHR_SUMMARY_KEYWORDS):
+        return "specialist_proximate" if has_specialty else "ehr_summary"
+
+    # 2. Source-type floor (device-emitted data is always primary).
+    if t in _SOURCE_TYPE_FLOORS:
+        floor = _SOURCE_TYPE_FLOORS[t]
+        if floor == "specialist_proximate" and not has_specialty:
+            return "contemporaneous_support"
+        return floor
+
+    # 3. Specialty-label-only promotion as the last resort.
+    if has_specialty:
+        return "specialist_proximate"
     return "unknown"
+
+
+# Ranking key for retrieval ordering. Lower = higher authority.
+_TIER_RANK: dict[str, int] = {
+    "primary_event":           1,
+    "specialist_proximate":    2,
+    "contemporaneous_support": 3,
+    "ehr_summary":             4,
+    "self_reported_history":   5,
+    "model_inference":         6,
+    "unknown":                 4,  # treat unknown as ehr_summary for ranking
+}
 
 
 def _evidence_block(
@@ -564,12 +626,22 @@ async def add_user_message_and_reply(
                 src = source_by_id.get(sid) if sid else None
                 if src is None:
                     continue
+                # Prefer the persisted tier from ingest-time stamping
+                # if present; fall back to classifying on demand for
+                # legacy source rows that haven't been backfilled.
+                tier = None
+                if isinstance(src.raw_metadata, dict):
+                    tier = src.raw_metadata.get("authority_tier")
+                if not tier:
+                    tier = _source_quality_tier(
+                        src.source_label, src.original_filename, src.source_type,
+                    )
                 fact_source_meta[fid] = {
                     "source_label": src.source_label,
                     "original_filename": src.original_filename,
-                    "source_quality": _source_quality_tier(
-                        src.source_label, src.original_filename
-                    ),
+                    "source_quality": tier,
+                    "authority_tier": tier,  # explicit doctrine name
+                    "tier_rank": _TIER_RANK.get(tier, 4),
                 }
     prompt = get_registry().get("general_ask")
     result = await call_with_tool(

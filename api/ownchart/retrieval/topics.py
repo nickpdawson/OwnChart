@@ -459,6 +459,21 @@ async def search_facts(
         merge_order = substr_facts + cat_facts
     else:
         merge_order = cat_facts + substr_facts
+
+    # Source Authority Doctrine diversity guarantee (docs/SOURCE_
+    # AUTHORITY_DOCTRINE.md): when a question pulls a broad result
+    # set, reserve top-K slots so each authority tier present in the
+    # match gets representation. Without this, date-DESC + significance
+    # tiebreaks can completely crowd out an older specialty record by
+    # newer copy-forward pre-op history. Caught 2026-05-15 PM:
+    # "When was my last ACL surgery" returned 40 facts with 0 from
+    # OrthoVirginia even though OV has the imaging + dx.
+    if len(merge_order) > limit:
+        merge_order = _ensure_tier_diversity(
+            await _annotate_with_tiers(db, merge_order),
+            limit=limit,
+        )
+
     seen: dict = {}
     for f in merge_order:
         if f.id not in seen:
@@ -466,3 +481,107 @@ async def search_facts(
         if len(seen) >= limit:
             break
     return list(seen.values())[:limit]
+
+
+# Authority-tier ranking (mirrors llm/conversations.py::_TIER_RANK).
+# Duplicated here to avoid a circular import; both modules update
+# together — covered by the doctrine doc.
+_AUTHORITY_RANK: dict[str, int] = {
+    "primary_event":           1,
+    "specialist_proximate":    2,
+    "contemporaneous_support": 3,
+    "ehr_summary":             4,
+    "self_reported_history":   5,
+    "model_inference":         6,
+    "unknown":                 4,
+}
+
+
+async def _annotate_with_tiers(
+    db: AsyncSession,
+    facts: list[ExtractedFact],
+) -> list[tuple[ExtractedFact, str]]:
+    """Pair each fact with the authority tier of its primary anchor's
+    source_document. Reads the persisted `authority_tier` from
+    `raw_metadata` (stamped at ingest by `scripts/backfill_authority_
+    tier.py` + the extractor). Missing tier → 'unknown'.
+    """
+    from ..models.evidence_anchor import EvidenceAnchor
+    from ..models.source_document import SourceDocument
+    anchor_ids: list[uuid.UUID] = []
+    fact_anchor: dict[uuid.UUID, uuid.UUID] = {}
+    for f in facts:
+        if f.evidence_anchor_ids:
+            aid = f.evidence_anchor_ids[0]
+            anchor_ids.append(aid)
+            fact_anchor[f.id] = aid
+    if not anchor_ids:
+        return [(f, "unknown") for f in facts]
+    anchor_to_source = {
+        aid: sid for (aid, sid) in (await db.execute(
+            select(EvidenceAnchor.id, EvidenceAnchor.source_document_id)
+            .where(EvidenceAnchor.id.in_(anchor_ids))
+        )).all() if sid is not None
+    }
+    source_ids = list(set(anchor_to_source.values()))
+    tier_by_source: dict[uuid.UUID, str] = {}
+    if source_ids:
+        rows = list((await db.execute(
+            select(SourceDocument.id, SourceDocument.raw_metadata)
+            .where(SourceDocument.id.in_(source_ids))
+        )).all())
+        for sid, rm in rows:
+            tier = "unknown"
+            if isinstance(rm, dict):
+                t = rm.get("authority_tier")
+                if isinstance(t, str):
+                    tier = t
+            tier_by_source[sid] = tier
+
+    out: list[tuple[ExtractedFact, str]] = []
+    for f in facts:
+        aid = fact_anchor.get(f.id)
+        sid = anchor_to_source.get(aid) if aid else None
+        tier = tier_by_source.get(sid, "unknown") if sid else "unknown"
+        out.append((f, tier))
+    return out
+
+
+def _ensure_tier_diversity(
+    annotated: list[tuple[ExtractedFact, str]],
+    *,
+    limit: int,
+) -> list[ExtractedFact]:
+    """Round-robin pull by authority tier so every tier present in
+    the result set gets representation in the top-K.
+
+    Within a tier, preserve the original ordering (which is already
+    significance + date + source-name-match weighted). Higher-authority
+    tiers go FIRST in each round so the head of the list reads
+    primary_event → specialist_proximate → ... rather than tier-mixed.
+    """
+    by_tier: dict[str, list[ExtractedFact]] = {}
+    for f, tier in annotated:
+        by_tier.setdefault(tier, []).append(f)
+    # Sort tiers by authority rank (lower = higher authority).
+    tiers_present = sorted(
+        by_tier.keys(), key=lambda t: _AUTHORITY_RANK.get(t, 4),
+    )
+    out: list[ExtractedFact] = []
+    # Pass 1: one fact per tier, highest-authority first, in rounds
+    # until we hit limit or run out of facts.
+    idx_per_tier: dict[str, int] = {t: 0 for t in tiers_present}
+    while len(out) < limit:
+        progressed = False
+        for tier in tiers_present:
+            if len(out) >= limit:
+                break
+            i = idx_per_tier[tier]
+            bucket = by_tier[tier]
+            if i < len(bucket):
+                out.append(bucket[i])
+                idx_per_tier[tier] = i + 1
+                progressed = True
+        if not progressed:
+            break
+    return out

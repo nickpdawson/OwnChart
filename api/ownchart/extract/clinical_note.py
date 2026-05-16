@@ -529,6 +529,15 @@ async def extract_clinical_note(
     rm["extraction_method"] = "claude_clinical_note_v1"
     if emitted.get("notes_to_reviewer"):
         rm["extraction_notes_to_reviewer"] = emitted["notes_to_reviewer"]
+    # Source Authority Doctrine (user-docs/SOURCE_AUTHORITY_DOCTRINE.md):
+    # classify the source into one of 6 authority tiers at ingest time
+    # so retrieval + prompts read a stable value rather than
+    # reclassifying on every read.
+    if not rm.get("authority_tier"):
+        from ..llm.conversations import _source_quality_tier
+        rm["authority_tier"] = _source_quality_tier(
+            source.source_label, source.original_filename, source.source_type,
+        )
     source.raw_metadata = rm
 
     await db.commit()
