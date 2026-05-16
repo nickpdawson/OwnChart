@@ -34,6 +34,35 @@ Every error response from app code has shape:
 ```
 with `Content-Type: application/json`. No plain-text `"Internal Server Error"`. A catch-all handler in `api/ownchart/main.py` guarantees this even for unexpected exceptions.
 
+When the request carried upload-audit headers, the error body is augmented:
+```json
+{
+  "detail": "Couldn't decode this image. ...",
+  "upload_audit": {
+    "client_batch_id": "<echoed from X-Client-Batch-Id>",
+    "client_item_id":  "<echoed from X-Client-Item-Id>"
+  }
+}
+```
+so iOS can map a 4xx/5xx back to the specific local file in its batch. The echo fires for both `HTTPException` and unhandled exceptions.
+
+## Upload-audit headers (iOS batch correlation)
+
+Every upload request MAY carry:
+
+| Header | Purpose |
+|---|---|
+| `X-Client-Batch-Id` | Opaque UUID iOS generates per upload session (multi-pick, HK backfill chunk, etc.). |
+| `X-Client-Item-Id` | Opaque per-file ID inside the batch. UUID conventional, not enforced. |
+
+Server behavior:
+
+- Both headers are stored on `SourceDocument.raw_metadata.upload_audit` on success (forensic queries: `raw_metadata->'upload_audit'->>'client_batch_id'`).
+- Both echoed in JSON error bodies on failure (catch-all + HTTPException).
+- Both logged on every relevant structured log line, so a single `grep client_batch_id=<X>` in container logs surfaces the full batch trace.
+- Values are truncated to 128 chars server-side; longer values are silently capped.
+- Neither header is required. Existing iOS builds that don't send them keep working unchanged.
+
 ### HTTP status mapping for `/api/sources/photo`
 
 | Status | `detail` shape | Cause | iOS behavior |

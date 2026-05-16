@@ -4,11 +4,13 @@ from collections.abc import AsyncIterator
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .core.config import get_settings
 from .core.db import SessionLocal
 from .core.logger import configure_logging, get_logger
 from .core.seed import seed_provider_connectors
+from .core.upload_audit import upload_audit_from_request
 from .core.demo_data_seed import seed_demo_data_if_needed
 from .core.demo_seed import seed_demo_user_if_needed
 from .routes import (
@@ -146,23 +148,53 @@ app.middleware("http")(_demo_readonly_middleware)
 # exception with traceback. Triggered for the alpha by photo-upload
 # 500s on 2026-05-15 — Nick reported repeated upload failures with no
 # server-side context anywhere because nothing was logging.
+#
+# Upload-audit echo: when the request carries X-Client-Batch-Id /
+# X-Client-Item-Id, mirror them into the response body so iOS can
+# correlate a 500 back to the specific file in its local batch map.
+# Without the echo, the user sees an opaque server error and the
+# client has no way to know which of N parallel uploads it belongs to.
 @app.exception_handler(Exception)
 async def _structured_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    audit = upload_audit_from_request(request)
     log.exception(
         "unhandled_exception",
         method=request.method,
         path=request.url.path,
         exc_type=exc.__class__.__name__,
+        client_batch_id=(audit or {}).get("client_batch_id"),
+        client_item_id=(audit or {}).get("client_item_id"),
     )
+    body: dict[str, object] = {
+        "detail": (
+            f"Server error: {exc.__class__.__name__}. "
+            "The exception is logged server-side; share the timestamp "
+            "with your administrator."
+        ),
+    }
+    if audit:
+        body["upload_audit"] = audit
+    return JSONResponse(status_code=500, content=body)
+
+
+# Same correlation for FastAPI's HTTPException path — without this,
+# the 4xx responses iOS gets back (415/400/507/etc) carry only
+# `{"detail": "..."}` and the client can't link them to its local
+# batch state. iOS needs the echo on errors regardless of whether
+# the error originated from our raise HTTPException(...) calls or
+# from an unhandled exception.
+@app.exception_handler(StarletteHTTPException)
+async def _http_exception_handler(
+    request: Request, exc: StarletteHTTPException,
+) -> JSONResponse:
+    audit = upload_audit_from_request(request)
+    body: dict[str, object] = {"detail": exc.detail}
+    if audit:
+        body["upload_audit"] = audit
     return JSONResponse(
-        status_code=500,
-        content={
-            "detail": (
-                f"Server error: {exc.__class__.__name__}. "
-                "The exception is logged server-side; share the timestamp "
-                "with your administrator."
-            ),
-        },
+        status_code=exc.status_code,
+        content=body,
+        headers=getattr(exc, "headers", None) or {},
     )
 
 app.include_router(health.router)

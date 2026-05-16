@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
 from ..core.logger import get_logger
+from ..core.upload_audit import stamp_raw_metadata, upload_audit_dep
 from ..core.upload_context import attach_nearby_clinical_events
 from ..ingest import auto_export as auto_export_ingest
 from ..ingest import ccda as ccda_ingest
@@ -224,6 +225,7 @@ async def upload_photo(
     batch_import: bool = Form(default=False),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
+    upload_audit: dict[str, str] | None = Depends(upload_audit_dep),
 ) -> SourceDetail:
     # Reliability doctrine (alpha P0, 2026-05-15): every error path must
     # return structured JSON with a user-safe `detail` and log the real
@@ -330,7 +332,7 @@ async def upload_photo(
         acquired_at=datetime.now(timezone.utc),
         source_system="patient_upload",
         source_label=source_label,
-        raw_metadata={
+        raw_metadata=stamp_raw_metadata({
             "format": meta.pil_format,
             "width": meta.width,
             "height": meta.height,
@@ -344,7 +346,7 @@ async def upload_photo(
             # upload path on auto-vision.
             "batch_import": batch_import,
             "vision_pending": batch_import,  # true if vision is deferred
-        },
+        }, upload_audit),
         captured_at=meta.captured_at,
         exif_metadata=meta.exif or None,
         user_supplied_event_date=event_date,
@@ -440,6 +442,8 @@ async def upload_photo(
         captioned=bool(caption),
         dated=bool(photo_date),
         nearby_clinical_events=len(nearby),
+        client_batch_id=(upload_audit or {}).get("client_batch_id"),
+        client_item_id=(upload_audit or {}).get("client_item_id"),
     )
 
     return SourceDetail(
