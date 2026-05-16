@@ -290,13 +290,20 @@ Documentation is organized into a few layers. Some of these are works in progres
 
 ### For users
 
+- [Demo walkthrough](./user-docs/DEMO.md) — what you can see at <https://demo.ownchart.me> without installing anything.
+- [iOS companion app](./user-docs/IOS_PARITY.md) — pairing TestFlight build with your self-hosted server. TestFlight: <https://testflight.apple.com/join/z8QemcTe>.
+- [Risk, privacy, legal — plain English](./user-docs/RISK.md) — read this before pointing OwnChart at your own record.
+- [What's shipped vs roadmap](./user-docs/SHIPPED_VS_ROADMAP.md) — the honesty contract for the alpha.
 - [User Guide](./user-docs/USER_GUIDE.md) — how to use Ask, Events, Dossiers, Review Inbox, conversations. _coming soon_
-- [iOS companion app](./user-docs/IOS_PARITY.md) — pairing TestFlight build with your self-hosted server.
-- [Demo walkthrough](./user-docs/DEMO.md) — what you can see at <https://demo.ownchart.me> without installing anything. _coming soon_
 
 ### Installing and operating
 
-- [Install guide](./user-docs/INSTALL.md) — Docker Compose deploy, env vars, reverse proxy, first-run setup. _coming soon_
+- [Install guide](./user-docs/INSTALL.md) — Docker Compose deploy, services, volumes, env vars, first-run, backups, troubleshooting.
+- [Reverse proxy + SSL](./user-docs/REVERSE_PROXY.md) — TLS termination, body-size limits, NPM / nginx / Caddy, Cloudflare caps.
+- [Network access](./user-docs/NETWORK_ACCESS.md) — HTTPS / VPN / Tunnel exposure choices; what EHR callbacks actually need.
+- [LLM prompts and AI configuration](./user-docs/PROMPTS.md) — where versioned prompts live, how to review and edit them, the `ModelRun` audit trail.
+- [Upload contract](./user-docs/UPLOAD_CONTRACT.md) — how uploads flow from iOS through the api with batch correlation.
+- [Alpha release notes](./user-docs/RELEASE_NOTES_ALPHA.md) — what landed in 0.1, what's been hardened, what's deferred to beta.
 - [Operations runbook](./user-docs/OPERATIONS.md) — backups, upgrades, log rotation, common failure modes. _coming soon_
 - [Configuration reference](./user-docs/CONFIG.md) — every `infra/config.yaml` and `infra/.env` key. _coming soon_
 

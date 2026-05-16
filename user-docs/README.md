@@ -1,10 +1,36 @@
 # OwnChart user setup guides
 
-Public-facing setup documentation. The guides here walk an operator (you) through getting an OwnChart instance connected to the EHRs the patient actually uses.
+Public-facing documentation for operating OwnChart 0.1 alpha. This
+directory covers everything from standing up an instance to connecting
+EHRs to understanding the risk model.
 
-## Start here
+## Read first
 
-**[CONNECTORS.md](./CONNECTORS.md)** — the universal pattern. Every vendor's developer portal is shaped differently, but the core flow (developer account → patient-app registration → sandbox testing → wire `client_id` into OwnChart → per-customer rollout) is the same. Read this first; it makes the vendor-specific guides short.
+- **[RISK.md](./RISK.md)** — plain-English risk / privacy / legal
+  contract. Read this before pointing OwnChart at your own record.
+- **[SHIPPED_VS_ROADMAP.md](./SHIPPED_VS_ROADMAP.md)** — what's in the
+  alpha vs explicit non-goals.
+- **[DEMO.md](./DEMO.md)** — try the public demo at
+  <https://demo.ownchart.me> before installing.
+
+## Stand up your instance
+
+1. [**INSTALL.md**](./INSTALL.md) — Docker Compose, services,
+   volumes, env vars, first admin/user, backups, troubleshooting.
+2. [**REVERSE_PROXY.md**](./REVERSE_PROXY.md) — TLS termination, body
+   size, Cloudflare caps.
+3. [**NETWORK_ACCESS.md**](./NETWORK_ACCESS.md) — HTTPS / VPN /
+   Tunnel; what EHR callbacks need.
+4. [**PROMPTS.md**](./PROMPTS.md) — where LLM prompts live, how to
+   review or edit, audit trail.
+
+## Connect EHRs
+
+**[CONNECTORS.md](./CONNECTORS.md)** — the universal pattern. Every
+vendor's developer portal is shaped differently, but the core flow
+(developer account → patient-app registration → sandbox testing →
+wire `client_id` into OwnChart → per-customer rollout) is the same.
+Read this first; it makes the vendor-specific guides short.
 
 ## Vendor-specific guides
 
