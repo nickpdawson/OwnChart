@@ -104,3 +104,37 @@ def test_limit_respected():
 
 def test_empty_input_returns_empty():
     assert _ensure_tier_diversity([], limit=10) == []
+
+
+# Category-alias coverage — protects against the 2026-05-16 PM
+# regression where vision-extracted vaccination facts with
+# brand-name labels (COMIRNATY / FLUARIX) didn't appear in
+# retrieval for "covid vaccinations" because the label/description
+# substring match doesn't fire on brand names. The category-aware
+# path now pulls every `fact_type='vaccination'` row when the query
+# mentions vaccines.
+def test_vaccination_aliases_present():
+    from ownchart.retrieval.topics import _WORD_TO_FACT_TYPE
+    for word in (
+        "vaccine", "vaccines", "vaccination", "vaccinations",
+        "vax", "immunization", "immunizations", "shot", "shots",
+        "booster", "boosters",
+    ):
+        assert _WORD_TO_FACT_TYPE.get(word) == "vaccination", (
+            f"expected category alias {word!r} → vaccination"
+        )
+
+
+def test_allergy_aliases_present():
+    from ownchart.retrieval.topics import _WORD_TO_FACT_TYPE
+    assert _WORD_TO_FACT_TYPE.get("allergy") == "allergy"
+    assert _WORD_TO_FACT_TYPE.get("allergies") == "allergy"
+
+
+def test_appointment_aliases_split_from_encounter():
+    """encounter and appointment used to share aliases, which made
+    'list my upcoming appointments' return historical encounters.
+    They're separate fact_types now."""
+    from ownchart.retrieval.topics import _WORD_TO_FACT_TYPE
+    assert _WORD_TO_FACT_TYPE.get("appointment") == "appointment"
+    assert _WORD_TO_FACT_TYPE.get("encounter") == "encounter"

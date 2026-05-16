@@ -202,11 +202,20 @@ tools:
               description:
                 type: string
                 description: |
-                  Optional longer-form context — additional fields
-                  from the same record card (lot, dose, route, site,
-                  pharmacy, prescriber, indication). Each on its
-                  own line is fine. Empty when the label is
-                  self-contained.
+                  Longer-form context — additional fields from the
+                  same record card (lot, dose, route, site, pharmacy,
+                  prescriber, indication). Each on its own line is
+                  fine. **Also include the medical concept(s) the
+                  brand corresponds to**, so retrieval still finds
+                  the row when the user asks by concept rather than
+                  brand. Example: a Comirnaty vaccine card's
+                  description should mention "COVID-19 mRNA vaccine"
+                  even though the label is the brand. A Fluarix
+                  card's description should mention "influenza
+                  vaccine." A Trulicity card should mention "GLP-1
+                  agonist for type 2 diabetes." This makes the
+                  difference between "covid vaccinations" returning
+                  the row vs. returning nothing.
               date_start:
                 type: string
                 description: |

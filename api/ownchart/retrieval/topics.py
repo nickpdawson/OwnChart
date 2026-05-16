@@ -242,12 +242,34 @@ _FACT_TYPE_SYNONYMS: dict[str, tuple[str, ...]] = {
     ),
     "encounter": (
         "encounter", "encounters",
-        "visit", "visits", "appointment", "appointments",
+        "visit", "visits",
     ),
     "observation": ("observation", "observations", "vital", "vitals"),
     "lab_result": ("lab", "labs", "labwork", "bloodwork"),
     "imaging_study": ("imaging", "scan", "scans", "xray", "x-ray", "mri", "ct"),
     "provider_relationship": ("provider", "providers", "doctor", "doctors", "physician", "physicians"),
+    # 2026-05-16: vision-extracted vaccination cards produce facts
+    # with brand-name labels (`COMIRNATY 2025-2026 PFIZER ...`,
+    # `FLUARIX 2025-2026 GSK ...`) that don't contain the tokens
+    # `covid` / `flu` / `vaccine`. Without category-aware retrieval,
+    # the question "list my covid vaccinations" tokens-match zero
+    # rows. Adding the full alias set so any vaccine question pulls
+    # the whole vaccination fact_type bucket.
+    "vaccination": (
+        "vaccine", "vaccines", "vaccination", "vaccinations",
+        "vax", "immunization", "immunizations", "shot", "shots",
+        "booster", "boosters",
+    ),
+    "allergy": ("allergy", "allergies", "allergic"),
+    "appointment": (
+        "appointment", "appointments", "scheduled",
+        "upcoming", "next visit",
+    ),
+    "instruction": (
+        "instruction", "instructions",
+        "discharge", "take-home",
+        "aftercare",
+    ),
 }
 _WORD_TO_FACT_TYPE: dict[str, str] = {
     word: ft for ft, words in _FACT_TYPE_SYNONYMS.items() for word in words
