@@ -446,6 +446,12 @@ def _source_quality_tier(
         floor = _SOURCE_TYPE_FLOORS[t]
         if floor == "specialist_proximate" and not has_specialty:
             return "contemporaneous_support"
+        # FHIR / CCDA bundles from a specialty practice are
+        # specialty-primary records (the practice's own emit), not
+        # generic summaries. Promote `ehr_summary` floor to
+        # `specialist_proximate` when has_specialty fires.
+        if floor == "ehr_summary" and has_specialty:
+            return "specialist_proximate"
         return floor
 
     # 3. Specialty-label-only promotion as the last resort.
