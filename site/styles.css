@@ -718,7 +718,7 @@ footer {
    ============================================================ */
 
 .legal-doc.shots-page {
-  max-width: 1040px;
+  max-width: 1200px;
 }
 
 .legal-doc.shots-page h2 {
@@ -728,8 +728,8 @@ footer {
 
 .shots-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: clamp(20px, 3vw, 36px);
+  grid-template-columns: 1fr;
+  gap: clamp(28px, 4vw, 48px);
   margin: 32px 0 8px;
 }
 
@@ -850,7 +850,7 @@ footer {
 
   .trust-strip { font-size: 13px; padding: 12px var(--pad-x); }
 
-  .shots-grid { grid-template-columns: 1fr; gap: 20px; }
+  .shots-grid { gap: 22px; }
 
   .shots-page .phone-grid { grid-template-columns: repeat(2, 1fr); }
 }
