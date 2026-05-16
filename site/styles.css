@@ -647,6 +647,73 @@ footer {
 .ack a:hover { color: var(--ink); border-bottom-color: var(--ink-mute); }
 
 /* ============================================================
+   TRUST STRIP — small banded statement below the hero
+   ============================================================ */
+
+.trust-strip {
+  margin: 0;
+  padding: 14px var(--pad-x);
+  text-align: center;
+  background: var(--ivory-100);
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  font-size: 14px;
+  color: var(--ink-soft);
+  letter-spacing: 0.01em;
+}
+
+.trust-strip-inner {
+  display: inline-block;
+  max-width: var(--max-w);
+}
+
+/* ============================================================
+   EXAMPLE QUESTIONS — quoted list under the hero
+   ============================================================ */
+
+.prose.questions {
+  padding-top: 64px;
+}
+
+.example-questions {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.example-questions li {
+  font-family: var(--serif);
+  font-size: 22px;
+  line-height: 1.4;
+  color: var(--ink);
+  padding-left: 18px;
+  border-left: 2px solid var(--hairline);
+}
+
+/* ============================================================
+   ALPHA REALITY — trust-building disclosure block
+   ============================================================ */
+
+.prose.alpha-reality {
+  background: var(--ivory-100);
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+  padding-top: 48px;
+  padding-bottom: 48px;
+}
+
+.prose.alpha-reality h2 {
+  font-size: 28px;
+}
+
+.prose.alpha-reality p {
+  font-size: 17px;
+}
+
+/* ============================================================
    RESPONSIVE
    ============================================================ */
 
@@ -659,6 +726,10 @@ footer {
   .card .dot { top: 20px; right: 18px; }
 
   .features li { padding-left: 16px; }
+
+  .example-questions li { font-size: 18px; }
+
+  .trust-strip { font-size: 13px; padding: 12px var(--pad-x); }
 }
 
 /* High-DPI tweaks */
