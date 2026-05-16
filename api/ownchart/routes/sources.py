@@ -178,6 +178,12 @@ async def upload_photo(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
+    # Reliability doctrine (alpha P0, 2026-05-15): every error path must
+    # return structured JSON with a user-safe `detail` and log the real
+    # exception server-side. Bare 500s from uvicorn (the 21-byte plain
+    # "Internal Server Error" body) leave iOS unable to decode anything
+    # and the user sees only "Server error 500". Catch broadly, log
+    # narrowly.
     if file.content_type and file.content_type not in images.SUPPORTED_MIME:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -187,7 +193,14 @@ async def upload_photo(
     # Buffer once for hashing + thumbnail generation. Photos are typically
     # under 50MB; if we ever stream larger media we'll switch to spooled
     # tempfiles. Worth revisiting before DICOM.
-    raw = await file.read()
+    try:
+        raw = await file.read()
+    except Exception as e:  # noqa: BLE001
+        log.exception("photo_upload_read_failed", filename=file.filename)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Couldn't read uploaded file: {e.__class__.__name__}",
+        ) from e
     if not raw:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -209,7 +222,15 @@ async def upload_photo(
     async def _stream():
         yield raw
 
-    blob = await storage.write_blob(_stream(), suffix=suffix)
+    try:
+        blob = await storage.write_blob(_stream(), suffix=suffix)
+    except OSError as e:
+        log.exception("photo_upload_storage_failed",
+                      filename=file.filename, size_bytes=len(raw))
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail=f"Couldn't write to evidence vault: {e.__class__.__name__}",
+        ) from e
 
     # Allocate the SourceDocument id BEFORE thumbnailing so renders dir is
     # keyed by it.
@@ -220,6 +241,35 @@ async def upload_photo(
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=str(e),
+        ) from e
+    except OSError as e:
+        # PIL's UnidentifiedImageError (subclass of OSError) and HEIC
+        # decode failures land here. So do disk-write failures during
+        # thumbnail save. Treat decode-class as 415, disk-class as 507.
+        log.exception("photo_upload_image_processing_failed",
+                      filename=file.filename, size_bytes=len(raw),
+                      content_type=file.content_type)
+        # Heuristic: errno set → real I/O error; no errno → PIL identify
+        if getattr(e, "errno", None):
+            raise HTTPException(
+                status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+                detail=f"Couldn't process image: {e.__class__.__name__}",
+            ) from e
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                "Couldn't decode this image. The file may be corrupt or "
+                "an unsupported variant (e.g. HEIC depth or burst). "
+                "Try a JPEG export."
+            ),
+        ) from e
+    except Exception as e:  # noqa: BLE001
+        log.exception("photo_upload_image_unexpected_failure",
+                      filename=file.filename, size_bytes=len(raw),
+                      content_type=file.content_type)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Image processing failed: {e.__class__.__name__}",
         ) from e
 
     src = SourceDocument(
@@ -289,10 +339,35 @@ async def upload_photo(
     # same day as your appendectomy / fibula fracture" without the
     # user manually associating it. Runs synchronously — it's one DB
     # query against confirmed facts in a ±7 day window.
-    nearby = await attach_nearby_clinical_events(db, user, src)
+    #
+    # Reliability: failure here must NOT fail the upload. The photo +
+    # blob + fact have already been written; nearby_clinical_events is
+    # a UI nicety. Log the exception, set the field to [], move on.
+    try:
+        nearby = await attach_nearby_clinical_events(db, user, src)
+    except Exception as e:  # noqa: BLE001
+        log.exception("photo_upload_nearby_events_failed",
+                      source_id=str(src_id))
+        nearby = []
+        # Don't leave the session dirty from a half-applied query.
+        try:
+            raw_meta = dict(src.raw_metadata or {})
+            raw_meta["nearby_clinical_events"] = []
+            raw_meta["nearby_clinical_events_error"] = e.__class__.__name__
+            src.raw_metadata = raw_meta
+        except Exception:  # noqa: BLE001
+            pass
 
-    await db.commit()
-    await db.refresh(src)
+    try:
+        await db.commit()
+        await db.refresh(src)
+    except Exception as e:  # noqa: BLE001
+        log.exception("photo_upload_commit_failed", source_id=str(src_id))
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Couldn't save photo metadata: {e.__class__.__name__}",
+        ) from e
 
     # Fire-and-forget Claude vision over the photo — unless this is a
     # bulk camera-roll import (batch_import=true). For batched imports

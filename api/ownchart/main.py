@@ -137,6 +137,34 @@ if settings.cors_allow_origins:
 # middleware itself short-circuits when settings.demo_mode is False.
 app.middleware("http")(_demo_readonly_middleware)
 
+
+# Catch-all exception handler. Without this, an unhandled exception in
+# any route lets uvicorn return a plain-text "Internal Server Error"
+# (21 bytes), which iOS can't decode into OCError.detail — the user
+# sees only "Server error 500" with no actionable info. With this
+# handler we always return JSON `{"detail": "..."}` and log the real
+# exception with traceback. Triggered for the alpha by photo-upload
+# 500s on 2026-05-15 — Nick reported repeated upload failures with no
+# server-side context anywhere because nothing was logging.
+@app.exception_handler(Exception)
+async def _structured_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    log.exception(
+        "unhandled_exception",
+        method=request.method,
+        path=request.url.path,
+        exc_type=exc.__class__.__name__,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": (
+                f"Server error: {exc.__class__.__name__}. "
+                "The exception is logged server-side; share the timestamp "
+                "with your administrator."
+            ),
+        },
+    )
+
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(auth_device.router, prefix="/api/auth/device", tags=["auth-device"])

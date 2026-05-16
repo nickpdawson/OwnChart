@@ -56,6 +56,12 @@ class TopicSummary(BaseModel):
     slug: str
     aliases: list[str]
     description: str | None
+    # Aliases under 3 characters were silently dropped by the
+    # retrieval-time topic_membership_clause to avoid `%OA%`-style
+    # ILIKE seq-scan explosions over the fact table. We surface them
+    # here so the dossier UI can warn the user and suggest a rename.
+    # See retrieval/topics.py::topic_membership_clause (2026-05-15 PM).
+    ignored_aliases: list[str] = []
 
 
 class CreateTopic(BaseModel):
@@ -167,12 +173,20 @@ def _slugify(name: str) -> str:
 
 
 def _topic_summary(t: Topic) -> TopicSummary:
+    aliases = list(t.aliases or [])
+    # Mirror retrieval/topics.py::topic_membership_clause threshold —
+    # aliases shorter than 3 characters get silently dropped from the
+    # membership clause to avoid Postgres seq-scan explosions on
+    # `ILIKE '%OA%'`. Surface them as `ignored_aliases` so the UI
+    # can warn and suggest renaming.
+    ignored = [a for a in aliases if a and len(a.strip()) < 3]
     return TopicSummary(
         id=str(t.id),
         name=t.name,
         slug=t.slug,
-        aliases=list(t.aliases or []),
+        aliases=aliases,
         description=t.description,
+        ignored_aliases=ignored,
     )
 
 

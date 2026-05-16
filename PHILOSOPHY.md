@@ -53,6 +53,29 @@ Every claim supports the question **"why do you think that?"** — one click exp
 
 Confidence labels are **human-readable, not numeric**: Confirmed / High / Medium / Low / Possible / Unknown. Not "0.87." Not "p < 0.05." Plain words you can challenge.
 
+### Source authority doctrine
+
+OwnChart must not confuse precision with truth.
+
+When multiple sources describe the same health or life event, the system ranks evidence by authority, proximity, and purpose — not merely by whether a source contains a clean date or convenient label. Canonical truth beats convenient precision.
+
+Evidence authority generally flows in this order:
+
+1. Primary event records: operative reports, procedure notes, pathology reports, imaging reports, lab results, signed specialist assessments, device-recorded HealthKit data, and other records created to document the event itself.
+2. Specialist or source-proximate records: orthopedic notes about knees, ophthalmology notes about eyes, cardiology notes about rhythm, audiology reports about hearing, HealthKit workout records for workouts.
+3. Contemporaneous supporting records: PT notes, discharge instructions, prescriptions, visit summaries, calendar/travel/life events near the event.
+4. EHR summaries, problem lists, and copied history: useful, but often compressed, stale, or copied forward.
+5. Intake forms and self-reported history inside clinical records: useful clues, but not canonical unless the user confirms them.
+6. Model inference: always labeled as inferred and never allowed to overwrite source-backed or user-canonical truth.
+
+Answer behavior follows from that hierarchy:
+
+- Lead with the strongest source, even if it is less tidy.
+- If a weaker source provides a more precise date or label, present it as secondary.
+- If the strongest source proves the event but not the exact date, say so.
+- If sources conflict, surface the conflict instead of silently choosing the neatest answer.
+- If the user declares a correction, store it as user-canonical while preserving the source record.
+
 ## 4. Raw sources are immutable
 
 Every PDF, FHIR bundle, CCDA XML, page image, and OCR pass is stored content-addressed by SHA-256 and never overwritten. If a future ingest re-fetches the same document, it dedupes by hash. If the parser is buggy and re-extracts a fact wrong tomorrow, the source from which it came is bit-identical to what it was the day it landed.

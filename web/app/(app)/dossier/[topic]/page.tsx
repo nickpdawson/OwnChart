@@ -33,6 +33,19 @@ export default async function DossierPage({ params }: { params: Promise<Params> 
           : ""}
       </p>
 
+      {t.ignored_aliases && t.ignored_aliases.length > 0 && (
+        <p className="mt-2 inline-flex items-baseline gap-2 rounded-md border border-caution/30 bg-caution/5 px-3 py-1.5 text-xs text-caution">
+          <span>⚠</span>
+          <span>
+            Aliases <strong>{t.ignored_aliases.join(", ")}</strong> are
+            too short to use for retrieval (under 3 characters).
+            They&apos;d match thousands of unrelated facts. Rename to
+            longer terms (e.g. <em>OA → osteoarthritis</em>, <em>ALC → ACL</em>)
+            for these to count.
+          </span>
+        </p>
+      )}
+
       <Timeline facts={timeline_facts} />
 
       <DossierConversations slug={t.slug} />

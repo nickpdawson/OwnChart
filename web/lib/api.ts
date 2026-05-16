@@ -70,6 +70,11 @@ export type TopicSummary = {
   slug: string;
   aliases: string[];
   description: string | null;
+  // Aliases the backend silently dropped from retrieval because
+  // they're <3 chars (would cause seq-scan explosions). UI should
+  // warn and suggest renaming. Present only on /api/topics responses
+  // shaped by /api/topics/{slug}; older callers may not see this.
+  ignored_aliases?: string[];
 };
 
 export type FactReadout = {

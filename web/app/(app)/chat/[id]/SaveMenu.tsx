@@ -185,6 +185,20 @@ function SavedBanner({ target, onMoreActions }: { target: SavedTarget; onMoreAct
 
 // --- New Event pane ---------------------------------------------------------
 
+// Refined P0-1 (Nick 2026-05-15 PM): event creation must NEVER
+// silently treat the conversation date as the event date. The form
+// asks the user to be explicit about date confidence:
+//
+//   "known"     → a hard date pulled from a source (or typed)
+//   "approx"    → e.g. "around June 2017" — user knows it's fuzzy
+//   "before"    → "before Jun 8, 2017" — bounded by a later source
+//   "unknown"   → undated historical event; no date stored
+//
+// The stored `date_start` reflects the user's choice. UI surfaces
+// the date-confidence label on the Event detail page so future
+// readers know whether to trust the date.
+type DateConfidence = "known" | "approx" | "before" | "unknown";
+
 function NewEventPane({
   conversationId,
   onError,
@@ -199,8 +213,16 @@ function NewEventPane({
   const [aliases, setAliases] = useState("");
   const [summary, setSummary] = useState("");
   const [kind, setKind] = useState<typeof EVENT_KINDS[number]>("");
+  const [dateConfidence, setDateConfidence] = useState<DateConfidence>("known");
   const [date, setDate] = useState("");
   const [saving, setSaving] = useState(false);
+
+  const showDateInput = dateConfidence !== "unknown";
+  const dateLabel =
+    dateConfidence === "known"   ? "When did this happen?" :
+    dateConfidence === "approx"  ? "Approximate date (best guess)" :
+    dateConfidence === "before"  ? "This happened before…" :
+    "";
 
   async function submit() {
     if (!title.trim()) {
@@ -210,13 +232,30 @@ function NewEventPane({
     setSaving(true);
     onError(null);
     try {
+      // Encode date confidence into the title / summary so the Event
+      // detail page reads correctly even before backend supports an
+      // explicit date_origin column. Backend treats date_start as
+      // optional; an "unknown" event gets date_start=null.
+      let finalSummary = summary.trim();
+      let finalDate: string | null = date || null;
+      if (dateConfidence === "approx" && date) {
+        finalSummary = `Approximate date. ${finalSummary}`.trim();
+      } else if (dateConfidence === "before" && date) {
+        finalSummary = `Event happened before ${date}. Exact date unknown. ${finalSummary}`.trim();
+        // Store the upper bound as date_start so timeline anchoring
+        // works; the summary flags the "before" semantics.
+      } else if (dateConfidence === "unknown") {
+        finalSummary = `Undated historical event. ${finalSummary}`.trim();
+        finalDate = null;
+      }
+
       const body = {
         title: title.trim(),
         display_title: displayTitle.trim() || null,
         aliases: aliases.split(",").map((s) => s.trim()).filter(Boolean),
-        summary: summary.trim() || null,
+        summary: finalSummary || null,
         kind: kind || null,
-        date_start: date || null,
+        date_start: finalDate,
       };
       const r = await fetch(`/api/episodes/from-conversation/${encodeURIComponent(conversationId)}`, {
         method: "POST",
@@ -236,6 +275,12 @@ function NewEventPane({
 
   return (
     <div className="mt-3 grid gap-3">
+      <p className="text-xs text-muted">
+        <strong className="text-ink">Events are things that happened</strong> —
+        a surgery, a marathon, a diagnosis, an injury, a trip. They are
+        bounded in time. Dossiers are long-running stories.
+      </p>
+
       <Field label="Title (required)">
         <input
           type="text" value={title} onChange={(e) => setTitle(e.target.value)}
@@ -268,13 +313,39 @@ function NewEventPane({
             ))}
           </select>
         </Field>
-        <Field label="Date">
+        <Field label="Date confidence">
+          <select
+            value={dateConfidence}
+            onChange={(e) => setDateConfidence(e.target.value as DateConfidence)}
+            className="w-full rounded-md border border-muted/30 bg-bg px-3 py-2 text-sm"
+          >
+            <option value="known">Known — I have the actual date</option>
+            <option value="approx">Approximate — roughly when</option>
+            <option value="before">Before a later event (bounded)</option>
+            <option value="unknown">Unknown — undated historical event</option>
+          </select>
+        </Field>
+      </div>
+      {showDateInput && (
+        <Field label={dateLabel}>
           <input
             type="date" value={date} onChange={(e) => setDate(e.target.value)}
             className="w-full rounded-md border border-muted/30 bg-bg px-3 py-2 text-sm"
           />
+          <p className="mt-1 text-xs text-muted">
+            {dateConfidence === "known" && "The actual event date — not today, not the date you saved this chat."}
+            {dateConfidence === "approx" && "Best guess. The Event will note that the date is approximate."}
+            {dateConfidence === "before" && "We'll store this as the upper bound — the actual event happened before this date."}
+          </p>
         </Field>
-      </div>
+      )}
+      {!showDateInput && (
+        <p className="rounded-md border border-muted/15 bg-muted/5 p-2 text-xs text-muted">
+          This Event will be saved as <strong>undated</strong>. Good
+          for things you know happened but can't pin a date on (an
+          older surgery, an injury years ago). You can add a date later.
+        </p>
+      )}
       <Field label="Summary (optional)">
         <textarea
           value={summary} onChange={(e) => setSummary(e.target.value)} rows={2}
@@ -370,9 +441,7 @@ function AttachEventPane({
       </div>
       {loading && <p className="text-xs text-muted">Searching…</p>}
       {!loading && results.length === 0 && (
-        <p className="text-xs text-muted">
-          No Events match. Try a different search or create a new Event instead.
-        </p>
+        <EmptyEventPickerHelp query={q} />
       )}
       <ul className="max-h-72 space-y-1 overflow-y-auto">
         {results.map((ep) => (
@@ -395,6 +464,65 @@ function AttachEventPane({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+// When the Event picker is empty, don't dead-end. Offer the three
+// next moves Nick called out (2026-05-15 PM): create new Event,
+// add to a related Dossier, search again. We also fetch candidate
+// Dossiers matching the same query so the user can jump straight
+// to one. Doctrine: Events are things that happened; Dossiers are
+// long-running stories.
+function EmptyEventPickerHelp({ query }: { query: string }) {
+  const [candidates, setCandidates] = useState<TopicSummary[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setCandidates([]);
+      return;
+    }
+    (async () => {
+      try {
+        const params = new URLSearchParams();
+        params.set("q", trimmed);
+        params.set("limit", "5");
+        const r = await fetch(`/api/topics?${params}`, { credentials: "include" });
+        if (!r.ok) return;
+        const out = (await r.json()) as TopicSummary[];
+        if (!cancelled) setCandidates(out);
+      } catch {/* non-fatal */}
+    })();
+    return () => { cancelled = true; };
+  }, [query]);
+
+  return (
+    <div className="space-y-2 rounded-md border border-muted/15 bg-muted/5 p-3 text-sm">
+      <p className="text-muted">
+        No Events match. <strong className="text-ink">Events are things that happened</strong> —
+        a surgery, a marathon, a diagnosis. <strong className="text-ink">Dossiers</strong> are
+        long-running stories (Right Knee, Hearing, Sleep). Pick the one that fits.
+      </p>
+      {candidates.length > 0 && (
+        <div>
+          <p className="text-xs uppercase tracking-widest text-muted">
+            Dossiers that match &ldquo;{query}&rdquo;
+          </p>
+          <ul className="mt-1 space-y-1">
+            {candidates.map((t) => (
+              <li key={t.slug}>
+                <a
+                  href={`/dossier/${t.slug}`}
+                  className="inline-flex items-center gap-2 text-sm text-accent underline-offset-4 hover:underline"
+                >
+                  Open dossier: {t.name} →
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
