@@ -13,14 +13,15 @@ backwards-compatible.
 > UI from the **same host**. There is no `api.*` subdomain.
 >
 > Examples of valid instance origins:
-> - `https://demo.ownchart.me` (the public demo)
-> - `https://your-instance.example.com` (self-hosted)
+> - `https://ownchart.dzsec.net` (dev)
+> - `https://demo.ownchart.me` (release)
+> - `https://selfhoster.example.com` (self-hosted)
 >
 > All API paths live under `/api/*` on that same host:
 > `https://<instance>/api/conversations`, `/api/episodes/{id}`, etc.
 >
 > Native clients should store an **`instanceBaseURL`** (e.g.
-> `https://your-instance.example.com`) — NOT a separate `apiBaseURL`.
+> `https://ownchart.dzsec.net`) — NOT a separate `apiBaseURL`.
 > All requests are constructed as `instanceBaseURL + "/api/..."`.
 > If multi-origin deployments become a feature later, discovery
 > will happen *from* that one instance origin (e.g. via

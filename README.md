@@ -6,7 +6,7 @@
 
 **Your life tells the story of your health. OwnChart helps you read it.**
 
-OwnChart is a private, self-hosted AI research partner for your body, your care, and your life. It brings together medical records, wearable data, clinical notes, PDFs, CCDAs, FHIR bundles, photos, transcribed voice notes, supplements, workouts, and life events, then lets you ask questions across all of it with citations back to the evidence.
+OwnChart is a private, self-hosted AI research partner for your body, your care, and your life. It brings together medical records, wearable data, clinical notes, PDFs, CCDAs, FHIR bundles, photos, voice notes, supplements, workouts, and life events, then lets you ask questions across all of it with citations back to the evidence.
 
 OwnChart is not a patient portal. It is not an EMR clone. It is a patient-owned, person-owned tool for understanding the story your data is already telling.
 
@@ -35,7 +35,7 @@ Examples:
 - "When did my knee problems start showing up in the record?"
 - "What did the operative note actually say, in plain English?"
 - "Which medications show up in multiple systems, and are any duplicates?"
-- "What do my wearable data, notes, and workouts suggest about the weeks before this flare?"
+- "What do my wearable data and calendar suggest about the weeks before this flare?"
 - "What should I review before my next appointment?"
 - "What does OwnChart know, what is inferred, and what is still missing?"
 
@@ -59,9 +59,9 @@ Most of us do not have one health record. We have fragments:
 - workouts
 - sleep and HRV
 - medications and supplements
-- calendar and travel context, planned
+- calendars and travel
 - photos
-- transcribed voice notes
+- voice notes
 - memory
 
 Institutions have systems for storing, coding, billing, and reviewing those fragments. People usually do not.
@@ -110,7 +110,7 @@ Ask natural-language questions across your whole record or a specific Event, Dos
 
 OwnChart can help explain what happened around a meaningful event: a surgery, injury, race, medication change, trip, flare, or recovery window.
 
-It can connect clinical notes, medications, wearable data, photos, and personal notes when those sources are available.
+It can connect clinical notes, medications, wearable data, calendar context, photos, and personal notes when those sources are available.
 
 ### Build Dossiers
 
@@ -218,7 +218,7 @@ Ask:
 
 > "What happened around the Marine Corps Marathon in 2025?"
 
-OwnChart should be able to look at workouts, sleep, HRV, injuries, notes, and recovery patterns around the race.
+OwnChart should be able to look at workouts, travel, calendar events, sleep, HRV, injuries, notes, and recovery patterns around the race.
 
 ### Supplement change
 
@@ -290,20 +290,13 @@ Documentation is organized into a few layers. Some of these are works in progres
 
 ### For users
 
-- [Demo walkthrough](./user-docs/DEMO.md) — what you can see at <https://demo.ownchart.me> without installing anything.
-- [iOS companion app](./user-docs/IOS_PARITY.md) — pairing TestFlight build with your self-hosted server. TestFlight: <https://testflight.apple.com/join/z8QemcTe>.
-- [Risk, privacy, legal — plain English](./user-docs/RISK.md) — read this before pointing OwnChart at your own record.
-- [What's shipped vs roadmap](./user-docs/SHIPPED_VS_ROADMAP.md) — the honesty contract for the alpha.
 - [User Guide](./user-docs/USER_GUIDE.md) — how to use Ask, Events, Dossiers, Review Inbox, conversations. _coming soon_
+- [iOS companion app](./user-docs/IOS_PARITY.md) — pairing TestFlight build with your self-hosted server.
+- [Demo walkthrough](./user-docs/DEMO.md) — what you can see at <https://demo.ownchart.me> without installing anything. _coming soon_
 
 ### Installing and operating
 
-- [Install guide](./user-docs/INSTALL.md) — Docker Compose deploy, services, volumes, env vars, first-run, backups, troubleshooting.
-- [Reverse proxy + SSL](./user-docs/REVERSE_PROXY.md) — TLS termination, body-size limits, NPM / nginx / Caddy, Cloudflare caps.
-- [Network access](./user-docs/NETWORK_ACCESS.md) — HTTPS / VPN / Tunnel exposure choices; what EHR callbacks actually need.
-- [LLM prompts and AI configuration](./user-docs/PROMPTS.md) — where versioned prompts live, how to review and edit them, the `ModelRun` audit trail.
-- [Upload contract](./user-docs/UPLOAD_CONTRACT.md) — how uploads flow from iOS through the api with batch correlation.
-- [Alpha release notes](./user-docs/RELEASE_NOTES_ALPHA.md) — what landed in 0.1, what's been hardened, what's deferred to beta.
+- [Install guide](./user-docs/INSTALL.md) — Docker Compose deploy, env vars, reverse proxy, first-run setup. _coming soon_
 - [Operations runbook](./user-docs/OPERATIONS.md) — backups, upgrades, log rotation, common failure modes. _coming soon_
 - [Configuration reference](./user-docs/CONFIG.md) — every `infra/config.yaml` and `infra/.env` key. _coming soon_
 
@@ -427,32 +420,7 @@ OwnChart treats records, prompts, logs, model inputs, model outputs, embeddings,
 
 ## License
 
-OwnChart 0.1 alpha is licensed under the [PolyForm Noncommercial
-License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) —
-**source-available for personal, noncommercial self-hosting**. It is
-not open-source in the OSI-approved sense.
-
-Allowed under the [LICENSE](./LICENSE):
-
-- Personal use — manage your own health record, or a household
-  member's or someone you provide care for.
-- Educational, academic, and noncommercial research use, including
-  by charitable organizations, public-research organizations,
-  public-safety / public-health organizations, and government
-  institutions (per PolyForm NC's "Noncommercial Organizations"
-  clause).
-- Self-hosting on hardware you control.
-- Forking, modifying, and sharing modifications publicly — provided
-  the fork stays noncommercial and the license is preserved.
-
-Commercial use — including resale, hosted commercial service,
-enterprise or institutional deployment, data brokerage, or any
-derivative commercial product — requires **explicit written
-permission from Nick Dawson**. Open an issue with the subject
-"Commercial license inquiry" to start that conversation.
-
-OwnChart may move to an OSI-approved open-source license in the
-future; this alpha ships under PolyForm Noncommercial.
+MIT. See [LICENSE](./LICENSE).
 
 ---
 
@@ -466,6 +434,6 @@ Special thanks to:
 - **[Josh Mandel](https://github.com/jmandel)** and the SMART on FHIR ecosystem — for making patient-mediated access to health records possible. Two of Josh's projects parallel OwnChart's surfaces closely:
   - [`health-record-mcp`](https://github.com/jmandel/health-record-mcp) — Model Context Protocol server bringing SMART-on-FHIR records into LLM workflows.
   - [`health-skillz`](https://github.com/jmandel/health-skillz) — a Claude Skill for connecting to and analyzing personal health records via SMART on FHIR ([health-skillz.joshuamandel.com](https://health-skillz.joshuamandel.com)).
-- The many patients, caregivers, clinicians, designers, and builders in the open ecosystem pushing toward a world where people can actually use the data collected about them.
+- The many patients, caregivers, clinicians, designers, and open-source builders pushing toward a world where people can actually use the data collected about them.
 
 The mistakes are ours.

@@ -143,7 +143,7 @@ Before you start with any vendor:
 
 | EHR | Audience focus | Guide | Review path |
 |---|---|---|---|
-| **Epic** | Largest US hospitals, academic medical centers (Kaiser, Stanford, Bozeman Health, OrthoVirginia, ...) | [EPIC_SETUP.md](./EPIC_SETUP.md) | USCDI v3 auto-download |
+| **Epic** | Largest US hospitals, academic medical centers (Cleveland Clinic, Stanford, Mass General Brigham, Mayo, Kaiser, ...) | [EPIC_SETUP.md](./EPIC_SETUP.md) | USCDI v3 auto-download |
 | **athenahealth** | Mid-market ambulatory practices | [ATHENA_SETUP.md](./ATHENA_SETUP.md) | Human review |
 | **ModMed** | Specialty practices (dermatology, ophthalmology, orthopedics, gastroenterology, plastic surgery) | [MODMED_SETUP.md](./MODMED_SETUP.md) | Contact-driven |
 | **NextGen** | Ambulatory practices, community health centers | [NEXTGEN_SETUP.md](./NEXTGEN_SETUP.md) | Self-service portal |

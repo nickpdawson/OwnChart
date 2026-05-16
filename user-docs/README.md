@@ -1,36 +1,10 @@
 # OwnChart user setup guides
 
-Public-facing documentation for operating OwnChart 0.1 alpha. This
-directory covers everything from standing up an instance to connecting
-EHRs to understanding the risk model.
+Public-facing setup documentation. The guides here walk an operator (you) through getting an OwnChart instance connected to the EHRs the patient actually uses.
 
-## Read first
+## Start here
 
-- **[RISK.md](./RISK.md)** — plain-English risk / privacy / legal
-  contract. Read this before pointing OwnChart at your own record.
-- **[SHIPPED_VS_ROADMAP.md](./SHIPPED_VS_ROADMAP.md)** — what's in the
-  alpha vs explicit non-goals.
-- **[DEMO.md](./DEMO.md)** — try the public demo at
-  <https://demo.ownchart.me> before installing.
-
-## Stand up your instance
-
-1. [**INSTALL.md**](./INSTALL.md) — Docker Compose, services,
-   volumes, env vars, first admin/user, backups, troubleshooting.
-2. [**REVERSE_PROXY.md**](./REVERSE_PROXY.md) — TLS termination, body
-   size, Cloudflare caps.
-3. [**NETWORK_ACCESS.md**](./NETWORK_ACCESS.md) — HTTPS / VPN /
-   Tunnel; what EHR callbacks need.
-4. [**PROMPTS.md**](./PROMPTS.md) — where LLM prompts live, how to
-   review or edit, audit trail.
-
-## Connect EHRs
-
-**[CONNECTORS.md](./CONNECTORS.md)** — the universal pattern. Every
-vendor's developer portal is shaped differently, but the core flow
-(developer account → patient-app registration → sandbox testing →
-wire `client_id` into OwnChart → per-customer rollout) is the same.
-Read this first; it makes the vendor-specific guides short.
+**[CONNECTORS.md](./CONNECTORS.md)** — the universal pattern. Every vendor's developer portal is shaped differently, but the core flow (developer account → patient-app registration → sandbox testing → wire `client_id` into OwnChart → per-customer rollout) is the same. Read this first; it makes the vendor-specific guides short.
 
 ## Vendor-specific guides
 
@@ -38,7 +12,7 @@ Each OwnChart deployment registers its own app with each EHR vendor whose data i
 
 | EHR | Audience focus | Guide | Review path |
 |---|---|---|---|
-| **Epic** | Largest US hospitals, academic medical centers (Kaiser, Stanford, Bozeman Health, OrthoVirginia, etc.) | [EPIC_SETUP.md](./EPIC_SETUP.md) | USCDI v3 auto-download — no human review, ≤12 hours per Epic customer |
+| **Epic** | Largest US hospitals, academic medical centers (Cleveland Clinic, Stanford, Mass General Brigham, Mayo, Kaiser, etc.) | [EPIC_SETUP.md](./EPIC_SETUP.md) | USCDI v3 auto-download — no human review, ≤12 hours per Epic customer |
 | **athenahealth** | Mid-market ambulatory practices | [ATHENA_SETUP.md](./ATHENA_SETUP.md) | Human review, 1–4 weeks |
 | **ModMed** | Specialty practices (dermatology, ophthalmology, orthopedics, GI, plastic surgery, pain, OB-GYN) | [MODMED_SETUP.md](./MODMED_SETUP.md) | Contact-driven |
 | **NextGen** | Mid-sized ambulatory practices, FQHCs, community health centers, behavioral health | [NEXTGEN_SETUP.md](./NEXTGEN_SETUP.md) | Self-service portal |

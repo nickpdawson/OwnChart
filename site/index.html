@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OwnChart — Your life tells the story of your health</title>
-  <meta name="description" content="A private AI research partner for your body, your care, and your life. Bring together records, Apple Health data, screenshots, PDFs, notes, and portal exports. Ask questions. Get cited answers. Keep the evidence." />
+  <title>OwnChart — Your life tells the story of your health.</title>
+  <meta name="description" content="A private AI research partner for your body, your care, and your life. Bring together medical records, wearable data, PDFs, scans, notes, and life events. You own the data. You ask the questions. You stay the authority." />
   <meta name="theme-color" content="#F6EFE0" />
 
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -12,14 +12,14 @@
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 
   <!-- Open Graph / social -->
-  <meta property="og:title" content="OwnChart — Your life tells the story of your health" />
-  <meta property="og:description" content="A private AI research partner for your body, your care, and your life. Ask questions. Get cited answers. Keep the evidence." />
+  <meta property="og:title" content="OwnChart — Your life tells the story of your health." />
+  <meta property="og:description" content="A private AI research partner for your body, your care, and your life. You own the data. You ask the questions. You stay the authority." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://www.ownchart.me/" />
   <meta property="og:image" content="https://www.ownchart.me/og-image.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="OwnChart — Your life tells the story of your health" />
-  <meta name="twitter:description" content="A private AI research partner for your body, your care, and your life. Self-hosted. Evidence-first." />
+  <meta name="twitter:title" content="OwnChart — Your life tells the story of your health." />
+  <meta name="twitter:description" content="A private AI research partner for your body, your care, and your life. You own the data. You ask the questions. You stay the authority." />
   <meta name="twitter:image" content="https://www.ownchart.me/og-image.png" />
 
   <link rel="canonical" href="https://www.ownchart.me/" />
@@ -83,18 +83,15 @@
     </figure>
 
     <h1 id="hero-heading" class="wordmark">OwnChart</h1>
-    <p class="tagline">Your life tells the story of your health. OwnChart helps you read it.</p>
-    <p class="subtitle">A private AI research partner for your body, your care, and your life. Bring together records, Apple Health data, screenshots, PDFs, notes, and portal exports. Ask questions. Get cited answers. Keep the evidence.</p>
+    <p class="hero-lede serif">Your life tells the story of your health. OwnChart helps you read it.</p>
+    <p class="subtitle">OwnChart is a private AI research partner for your body, your care, and your life. Bring together medical records, wearable data, PDFs, scans, notes, and life events. Ask what happened, what changed, what connects, and what the evidence actually says.</p>
 
     <div class="cta-row">
       <a href="https://demo.ownchart.me/" class="cta cta-primary">
         Try the demo
       </a>
-      <a href="https://testflight.apple.com/join/z8QemcTe" class="cta cta-secondary">
-        Join TestFlight <span aria-hidden="true">→</span>
-      </a>
       <a href="https://github.com/nickpdawson/OwnChart" class="cta cta-secondary">
-        View on GitHub <span aria-hidden="true">→</span>
+        Read the philosophy <span aria-hidden="true">→</span>
       </a>
     </div>
 
@@ -102,30 +99,17 @@
       Demo sign-in: <code>demo@ownchart.me</code> &nbsp;/&nbsp; <code>MYHEALTHdata</code>
     </p>
 
+    <p class="hero-grounding">
+      <span>You own the data.</span>
+      <span>You ask the questions.</span>
+      <span>You stay the authority.</span>
+    </p>
+
     <div class="hero-rule" aria-hidden="true"></div>
   </div>
 </header>
 
-<p class="trust-strip"><span class="trust-strip-inner">Source-available for personal, noncommercial self-hosting. Commercial use requires written permission.</span></p>
-
 <main>
-
-<section class="prose questions" aria-labelledby="questions-heading">
-  <h2 id="questions-heading" class="serif">Ask things that don't fit in one chart.</h2>
-  <ul class="example-questions">
-    <li>&ldquo;When did I get my COVID booster?&rdquo;</li>
-    <li>&ldquo;What happened around my surgery?&rdquo;</li>
-    <li>&ldquo;What changed when I started this medication?&rdquo;</li>
-    <li>&ldquo;How did my sleep and HRV change after that race?&rdquo;</li>
-    <li>&ldquo;What does this clinical note actually mean?&rdquo;</li>
-  </ul>
-</section>
-
-<section class="prose" aria-labelledby="what-heading">
-  <h2 id="what-heading" class="serif">A private AI research partner for your body, your care, and your life.</h2>
-  <p>OwnChart is not a record viewer. You bring your data — every PDF, FHIR bundle, CCDA, HealthKit metric, faxed report, screenshot, and personal note you can pull together — and OwnChart brings structure, memory, retrieval, citations, and AI-assisted reasoning. You ask questions of your own health life. OwnChart answers with evidence, cites every source, and admits what it doesn't know.</p>
-  <p>You stay the final authority on what anything means.</p>
-</section>
 
 <section class="doctrine" aria-labelledby="doctrine-heading">
   <h2 id="doctrine-heading" class="serif center">The doctrine</h2>
@@ -141,7 +125,7 @@
     <article class="card">
       <span class="dot dot-ochre" aria-hidden="true"></span>
       <h3>Raw sources are immutable</h3>
-      <p>Original PDFs, FHIR bundles, CCDA XML, and uploaded images are stored content-addressed by SHA-256 and never modified. The source <em>is</em> the record. Everything else is a derivation.</p>
+      <p>Original PDFs, FHIR bundles, CCDA XML are stored content-addressed by SHA-256 and never modified. The source <em>is</em> the record. Everything else is a derivation.</p>
     </article>
 
     <article class="card">
@@ -153,7 +137,7 @@
     <article class="card">
       <span class="dot dot-plum" aria-hidden="true"></span>
       <h3>One consent gate, on egress</h3>
-      <p>No PHI leaves the host to any LLM provider without your explicit, scoped opt-in. The gate is uniform across providers.</p>
+      <p>No PHI leaves the host to any LLM provider — Claude, OpenAI, Gemini, local — without your explicit, scoped opt-in. The gate is uniform across providers.</p>
     </article>
 
     <article class="card">
@@ -174,45 +158,14 @@
   </p>
 </section>
 
-<section class="doctrine" aria-labelledby="ingest-heading">
-  <h2 id="ingest-heading" class="serif center">What you can bring in</h2>
-  <p class="section-lede">Patient-mediated data, with the originals kept.</p>
-
-  <div class="grid">
-    <article class="card">
-      <span class="dot dot-teal" aria-hidden="true"></span>
-      <h3>Records and FHIR</h3>
-      <p>FHIR R4 from Epic, athenahealth, ModMed, NextGen, and Oracle Health (additional vendors are documented or in progress). CCDA continuity-of-care XML. PDF chart exports. Originals preserved; structured facts extracted.</p>
-    </article>
-
-    <article class="card">
-      <span class="dot dot-ochre" aria-hidden="true"></span>
-      <h3>Capture what APIs miss</h3>
-      <p>Upload screenshots from CVS, portal pages, vaccine records, PDFs, handwritten notes, and photos. OwnChart keeps the original image, extracts structured facts when it can, and cites the source.</p>
-    </article>
-
-    <article class="card">
-      <span class="dot dot-sage" aria-hidden="true"></span>
-      <h3>Apple Health / HealthKit</h3>
-      <p>Activity, heart, sleep, HRV, workouts, weight, mindfulness, medications, and clinical records — synced from the iOS companion with per-metric privacy controls and idempotent re-syncs.</p>
-    </article>
-
-    <article class="card">
-      <span class="dot dot-plum" aria-hidden="true"></span>
-      <h3>Voice and personal notes</h3>
-      <p>On-device transcribed voice memos, free-text annotations, and corrections layered on top of any source. First-class evidence on the timeline, not a sidebar.</p>
-    </article>
-  </div>
-</section>
-
 <section class="ai-first" aria-labelledby="ai-heading">
   <h2 id="ai-heading" class="serif center">AI as a first-class citizen</h2>
   <ul class="features">
     <li>
-      <strong>Provider-agnostic by design.</strong> Anthropic is wired end-to-end today. Other providers and local models are designed into the architecture and will expand over time. Every call passes through the same consent gate.
+      <strong>Multi-provider.</strong> Claude, OpenAI, Gemini, and local models (Ollama, llama.cpp). Pick a default; override per task. The consent gate is the same for all.
     </li>
     <li>
-      <strong>Conversations are saved.</strong> Ask threads are searchable, resumable, and pinnable to Events and Dossiers. Your conversation history becomes part of your longitudinal learning.
+      <strong>Conversations are saved.</strong> Ask and Make Sense threads are searchable, resumable, and pinnable to dossiers. Your conversation history becomes part of your longitudinal learning.
     </li>
     <li>
       <strong>Every output is auditable.</strong> A <code>ModelRun</code> record captures provider, prompt version, inputs sent, consent mode, and your final action. "Why did OwnChart say this?" always has an answer.
@@ -222,16 +175,7 @@
 
 <section class="screenshots" aria-labelledby="screenshots-heading">
   <h2 id="screenshots-heading" class="serif center">A look inside</h2>
-  <p class="section-lede">Web and iOS, against the public synthetic-data demo.</p>
-
-  <p class="more-shots-row">
-    <a href="/screenshots" class="more-shots-cta">
-      See the full web + iOS tour
-      <span class="more-shots-arrow" aria-hidden="true">→</span>
-    </a>
-  </p>
-
-  <p class="section-lede center small">A few iOS shots below — the page above has the rest, plus the web UI.</p>
+  <p class="section-lede">From the iOS companion app. Same record, in your pocket.</p>
 
   <div class="phone-grid">
     <figure class="phone">
@@ -273,20 +217,14 @@
       Join the iOS beta
       <span aria-hidden="true" class="cta-arrow">→</span>
     </a>
-    <span class="testflight-note">iOS app is in public TestFlight. App Store review is in progress.</span>
+    <span class="testflight-note">Public TestFlight. No invite needed.</span>
   </p>
-</section>
-
-<section class="prose alpha-reality" aria-labelledby="alpha-heading">
-  <h2 id="alpha-heading" class="serif">Alpha reality</h2>
-  <p>OwnChart is alpha software. It is source-available for personal, noncommercial self-hosting. It is not medical advice, not a medical device, and not HIPAA-protected by default. You are responsible for your own deployment, security, and backups.</p>
-  <p class="small muted">See <a href="https://github.com/nickpdawson/OwnChart/blob/main/user-docs/RISK.md">RISK.md</a>, <a href="https://github.com/nickpdawson/OwnChart/blob/main/SECURITY.md">SECURITY.md</a>, and the <a href="https://github.com/nickpdawson/OwnChart/blob/main/LICENSE">PolyForm Noncommercial License</a> before pointing OwnChart at your own record.</p>
 </section>
 
 <section class="demo" aria-labelledby="demo-heading">
   <div class="demo-card">
     <h2 id="demo-heading" class="serif">See it for yourself</h2>
-    <p>The demo uses synthetic data and a shared public account. Do not enter real medical information.</p>
+    <p>A read-only demo instance with synthetic sample data. No real PHI; nothing you do persists.</p>
     <a href="https://demo.ownchart.me/" class="cta cta-primary large">
       Open the demo
     </a>
@@ -311,7 +249,6 @@
       <a href="https://github.com/nickpdawson/OwnChart">GitHub</a>
       <a href="https://github.com/nickpdawson/OwnChart/blob/main/PHILOSOPHY.md">Philosophy</a>
       <a href="https://github.com/nickpdawson/OwnChart/blob/main/SECURITY.md">Security</a>
-      <a href="https://github.com/nickpdawson/OwnChart/blob/main/user-docs/RISK.md">Risk</a>
       <a href="https://github.com/nickpdawson/OwnChart/tree/main/user-docs">Setup guides</a>
       <a href="/privacy">Privacy</a>
       <a href="https://github.com/nickpdawson/OwnChart/blob/main/LICENSE">License</a>
