@@ -10,7 +10,8 @@ redeploy + smoke can be executed in one block without surprises.
 
 | Gate | Status | Source of truth |
 |---|---|---|
-| Backend pytest suite (80 tests) | ✅ green | `docker exec -u root -w /app ownchart-api-1 /opt/venv/bin/python -m pytest ownchart/tests/` |
+| Backend pytest suite (93 tests) | ✅ green | `docker exec -u root -w /app ownchart-api-1 /opt/venv/bin/python -m pytest ownchart/tests/` |
+| PM demo-privacy blocker (per-visitor isolation + copy) | ✅ shipped | commit e8f4c07 — `core/demo_session.py`, copy in DemoBanner.tsx / DEMO.md / privacy.html |
 | Web typecheck (`tsc --noEmit`) | ✅ green | `npm --prefix web run typecheck` |
 | Web lint (`next lint`) | ✅ green | `npm --prefix web run lint` |
 | Alembic migrations contiguous (0001 → 0026) | ✅ green | `ls api/alembic/versions/` |
