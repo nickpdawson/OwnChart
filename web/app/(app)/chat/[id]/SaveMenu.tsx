@@ -342,7 +342,7 @@ function NewEventPane({
       {!showDateInput && (
         <p className="rounded-md border border-muted/15 bg-muted/5 p-2 text-xs text-muted">
           This Event will be saved as <strong>undated</strong>. Good
-          for things you know happened but can't pin a date on (an
+          for things you know happened but can&apos;t pin a date on (an
           older surgery, an injury years ago). You can add a date later.
         </p>
       )}
