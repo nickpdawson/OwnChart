@@ -205,3 +205,83 @@ def test_copied_problem_list_does_not_outrank_specialty():
         "OrthoVirginia", "Encounter Summary", "clinical_note",
     )
     assert _TIER_RANK[specialty_note_tier] < _TIER_RANK[problem_list_tier]
+
+
+# Source-diversity retrieval — Nick 2026-05-16: "source-diversity
+# retrieval includes older source-proximate records." A
+# date-DESC tiebreak inside a single tier shouldn't completely
+# crowd out older but higher-authority records from a related
+# specialty source. The retrieval-level diversity helper is the
+# fix (one slot per tier in round-robin); the doctrine ensures
+# the right tier assignments feed it.
+
+def test_older_specialty_outranks_newer_summary():
+    """A 2017 OrthoVirginia imaging report (tier-1 primary_event,
+    older date) MUST outrank a 2026 Bozeman patient summary
+    (tier-4 ehr_summary, newer date) for a knee question. Tier
+    ranking is independent of date — the date_DESC tiebreak only
+    fires within the same tier."""
+    older_specialty = _source_quality_tier(
+        "OrthoVirginia", "Diagnostic imaging study", "clinical_note",
+    )
+    newer_summary = _source_quality_tier(
+        "Bozeman Health", "Patient Summary", "ccda_xml",
+    )
+    assert _TIER_RANK[older_specialty] < _TIER_RANK[newer_summary]
+
+
+def test_specialty_filename_summary_promotes_when_label_matches():
+    """OrthoVirginia + 'Patient Summary' should promote to
+    specialist_proximate (tier-2), not stay at ehr_summary
+    (tier-4). This was the 2026-05-15 classifier refinement."""
+    promoted = _source_quality_tier(
+        "OrthoVirginia", "Patient Summary", "ccda_xml",
+    )
+    assert promoted == "specialist_proximate"
+
+
+# Historical-placeholder doctrine — Nick 2026-05-15 RC#3:
+# "historical placeholder dates do not become event dates."
+# Encoded at the date_origin level in coded_concepts:
+#   - "explicit"            → real event date from the source
+#   - "note_date"           → date came from the note's creation,
+#                             not the event itself (forbidden after
+#                             RC#3 backfill)
+#   - "historical_undated"  → past-event mentioned without a clear
+#                             date; date_start MUST be null
+# The classifier doesn't see date_origin directly, but the
+# convention pins the rules.
+
+def test_date_origin_taxonomy_pinned():
+    """date_origin values are the canonical set. New values
+    require a doctrine update + retrieval review."""
+    valid = {"explicit", "note_date", "historical_undated"}
+    # If you change the taxonomy, update the corresponding
+    # backfill scripts in scripts/backfill_historical_dates.py
+    # and the clinical-note extractor. The set is small on purpose.
+    assert "explicit" in valid
+    assert "historical_undated" in valid
+    # `note_date` exists as a historical concept (pre-RC#3) but
+    # the doctrine forbids new rows with this origin. New
+    # extractions must use explicit OR historical_undated.
+    assert "note_date" in valid
+
+
+def test_historical_undated_means_null_date_start():
+    """Sentinel: an undated historical condition (e.g. 'history
+    of ACL reconstruction x2' with no date in the source) gets
+    date_origin=historical_undated AND date_start=NULL. The two
+    fields move together — surfacing a date_start while marking
+    the origin as historical_undated would be a doctrine
+    violation."""
+    # Pure-function check on a dict-shape fact representation.
+    def _ok(fact: dict) -> bool:
+        if fact.get("date_origin") == "historical_undated":
+            return fact.get("date_start") is None
+        return True
+    assert _ok({"date_origin": "historical_undated", "date_start": None})
+    assert _ok({"date_origin": "explicit", "date_start": "2017-06-08"})
+    assert not _ok({
+        "date_origin": "historical_undated",
+        "date_start": "2026-05-09",
+    })

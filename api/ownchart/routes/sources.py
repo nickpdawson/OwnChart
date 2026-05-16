@@ -70,6 +70,23 @@ class SourceDetail(SourceSummary):
     extraction_error: str | None = None
     extraction_run_at: datetime | None = None
     extraction_failed_at: datetime | None = None
+    # Photo-vision lifecycle (2026-05-16). Distinct from
+    # extraction_*: this covers Claude vision on personal-photo
+    # uploads (camera-roll), not the clinical-note extractor that
+    # runs on EHR-fetched RTF/HTML/CCDA.
+    #
+    #   vision_status: uploaded | analysis_queued | analysis_complete | analysis_failed | none
+    #   vision_structured_fact_count: number of structured_facts
+    #       persisted from a screenshot (vaccine card, lab result,
+    #       prescription label, etc.). Zero on body/device/setting
+    #       photos — those produce a description but no structured
+    #       fact rows.
+    #   vision_relevance_score: 0–100, the model's call on how
+    #       clinically relevant the photo is. <30 hides from
+    #       clinical retrieval.
+    vision_status: str | None = None
+    vision_structured_fact_count: int | None = None
+    vision_relevance_score: int | None = None
 
 
 def _to_summary(s: SourceDocument) -> SourceSummary:
@@ -138,6 +155,33 @@ async def get_source(
                 return None
         return None
 
+    # Derive vision-pipeline state from raw_metadata for photos.
+    # `vision_status`:
+    #   - "uploaded"          → photo persisted but no vision data
+    #                           (either bulk-import not yet analyzed
+    #                            or non-photo source type)
+    #   - "analysis_queued"   → vision_pending flag set, no vision
+    #                           data yet
+    #   - "analysis_complete" → raw_metadata.vision is populated
+    #   - "analysis_failed"   → raw_metadata.vision.error set
+    vision_blob = rm.get("vision") if isinstance(rm.get("vision"), dict) else None
+    if src.source_type != "photo":
+        vision_status = None
+        vision_sf = None
+        vision_relev = None
+    elif vision_blob is None:
+        vision_status = "analysis_queued" if rm.get("vision_pending") else "uploaded"
+        vision_sf = None
+        vision_relev = None
+    elif vision_blob.get("error"):
+        vision_status = "analysis_failed"
+        vision_sf = vision_blob.get("structured_fact_count")
+        vision_relev = vision_blob.get("relevance_score")
+    else:
+        vision_status = "analysis_complete"
+        vision_sf = vision_blob.get("structured_fact_count") or 0
+        vision_relev = vision_blob.get("relevance_score")
+
     return SourceDetail(
         **_to_summary(src).model_dump(),
         storage_uri=src.storage_uri,
@@ -152,6 +196,9 @@ async def get_source(
         extraction_error=rm.get("extraction_error"),
         extraction_run_at=_parse_dt(rm.get("extraction_run_at")),
         extraction_failed_at=_parse_dt(rm.get("extraction_failed_at")),
+        vision_status=vision_status,
+        vision_structured_fact_count=vision_sf,
+        vision_relevance_score=vision_relev,
     )
 
 
