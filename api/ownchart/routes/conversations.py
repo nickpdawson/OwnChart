@@ -19,14 +19,20 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import re
 
+from ..core.config import get_settings
 from ..core.db import get_session
+from ..core.demo_session import (
+    apply_demo_session_scope,
+    demo_session_matches,
+    get_demo_session_id,
+)
 from ..llm import call_with_tool, get_registry
 from ..llm.conversations import (
     add_user_message_and_reply,
@@ -245,9 +251,15 @@ async def _question_mentions_event_alias(
 async def create_conversation_route(
     body: CreateRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
+    # In demo mode, stamp the per-visitor session id so list / detail
+    # filters can scope this conversation to its creator. No-op outside
+    # demo. See core/demo_session.py for the rationale.
+    scoped = apply_demo_session_scope(body.scope, request)
+    body = body.model_copy(update={"scope": scoped})
     # Auto-route episode-shaped /ask questions to Episode Intelligence.
     # Only when the caller hasn't already chosen a scope (whole_record
     # is the default for /ask). Existing dossier / source / episode-
@@ -280,8 +292,15 @@ async def create_conversation_route(
             seed_episode_intelligence_conversation,
             run_episode_intelligence_in_background,
         )
+        # Demo-mode visitors get a per-visitor scope stamp so their EI
+        # thread doesn't leak into the shared demo account's list.
+        ei_extra: dict = {}
+        sid = get_demo_session_id(request)
+        if get_settings().demo_mode and sid:
+            ei_extra["demo_session_id"] = sid
         ei_conv = await seed_episode_intelligence_conversation(
             db, user, first_message=body.first_message,
+            extra_scope=ei_extra or None,
         )
         background_tasks.add_task(
             run_episode_intelligence_in_background,
@@ -338,6 +357,7 @@ async def create_conversation_route(
 
 @router.get("", response_model=list[ConversationSummary])
 async def list_conversations(
+    request: Request,
     q: str | None = Query(default=None),
     kind: str | None = Query(default=None),
     starred: bool | None = Query(default=None),
@@ -347,6 +367,16 @@ async def list_conversations(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[ConversationSummary]:
+    # Demo-mode scoping: a shared demo account would otherwise leak
+    # every prior visitor's typed chat into this visitor's list. The
+    # demo_session_id cookie isolates by browser visit.
+    if get_settings().demo_mode:
+        sid = get_demo_session_id(request)
+        if not sid:
+            # First request from this visitor — cookie isn't on the
+            # request yet (the middleware sets it on the response).
+            # Return empty rather than dump the whole shared list.
+            return []
     stmt = (
         select(Conversation)
         .where(Conversation.user_id == user.id)
@@ -354,6 +384,11 @@ async def list_conversations(
                   Conversation.created_at.desc())
         .limit(limit)
     )
+    if get_settings().demo_mode:
+        stmt = stmt.where(
+            text("conversations.scope->>'demo_session_id' = :dsid")
+            .bindparams(dsid=get_demo_session_id(request))
+        )
     if kind:
         stmt = stmt.where(Conversation.kind == kind)
     if starred is not None:
@@ -387,11 +422,16 @@ async def list_conversations(
 @router.get("/{conv_id}", response_model=ConversationDetail)
 async def get_conversation_route(
     conv_id: uuid.UUID,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
     conv = await db.get(Conversation, conv_id)
     if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not demo_session_matches(conv.scope, request):
+        # Demo mode: another visitor's conversation. 404 — never
+        # disclose that the row exists.
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     msg_rows = list((await db.execute(
         select(ConversationMessage)
@@ -418,11 +458,14 @@ async def get_conversation_route(
 async def post_message_route(
     conv_id: uuid.UUID,
     body: SendRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
     conv = await db.get(Conversation, conv_id)
     if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not (body.content or "").strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="empty message")
@@ -438,11 +481,14 @@ async def post_message_route(
 async def patch_conversation_route(
     conv_id: uuid.UUID,
     body: PatchRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationSummary:
     conv = await db.get(Conversation, conv_id)
     if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if body.title is not None:
         conv.title = body.title
@@ -457,11 +503,14 @@ async def patch_conversation_route(
 @router.delete("/{conv_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation_route(
     conv_id: uuid.UUID,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> None:
     conv = await db.get(Conversation, conv_id)
     if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     # Soft-delete = archive. Hard delete is a future admin action.
     conv.archived = True
@@ -483,6 +532,7 @@ class CandidateRefOut(BaseModel):
 @router.get("/{conv_id}/candidates", response_model=list[CandidateRefOut])
 async def list_conversation_candidates(
     conv_id: uuid.UUID,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[CandidateRefOut]:
@@ -494,6 +544,8 @@ async def list_conversation_candidates(
 
     conv = await db.get(Conversation, conv_id)
     if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     # Find the most recent job whose model_run_id matches any assistant
     # message in this conversation, then list its candidates.
@@ -574,6 +626,7 @@ class SaveAsTopicResponse(BaseModel):
 @router.post("/{conv_id}/suggest-topic", response_model=TopicSuggestion)
 async def suggest_topic_route(
     conv_id: uuid.UUID,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> TopicSuggestion:
@@ -587,6 +640,8 @@ async def suggest_topic_route(
     """
     conv = await db.get(Conversation, conv_id)
     if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
     msgs = list((await db.execute(
@@ -646,6 +701,7 @@ async def suggest_topic_route(
 async def save_as_topic_route(
     conv_id: uuid.UUID,
     body: SaveAsTopicBody,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> SaveAsTopicResponse:
@@ -663,6 +719,8 @@ async def save_as_topic_route(
 
     conv = await db.get(Conversation, conv_id)
     if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
     name = body.name.strip()

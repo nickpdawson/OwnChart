@@ -9,9 +9,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .core.config import get_settings
 from .core.db import SessionLocal
 from .core.logger import configure_logging, get_logger
+from .core.demo_session import DemoSessionMiddleware
 from .core.seed import seed_provider_connectors
 from .core.upload_audit import upload_audit_from_request
-from .core.demo_data_seed import seed_demo_data_if_needed
+from .core.demo_data_seed import (
+    purge_stale_demo_state_if_needed,
+    seed_demo_data_if_needed,
+)
 from .core.demo_seed import seed_demo_user_if_needed
 from .routes import (
     ask,
@@ -55,6 +59,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 log.info("demo_user_seeded", seeded=seeded_user)
                 seeded_data = await seed_demo_data_if_needed(db)
                 log.info("demo_data_seeded", sources=seeded_data)
+                # Bound leakage window: drop visitor chats / saved
+                # events older than 24h on every restart. Per-visitor
+                # scoping in core/demo_session.py is the primary
+                # defense; this is belt-and-suspenders + DB hygiene.
+                purged = await purge_stale_demo_state_if_needed(db)
+                log.info("demo_state_purged", **purged)
     except Exception as e:  # noqa: BLE001
         log.warning("startup_seed_failed", error=str(e))
     yield
@@ -138,6 +148,12 @@ if settings.cors_allow_origins:
 # Demo-mode read-only guard. Registered unconditionally; the
 # middleware itself short-circuits when settings.demo_mode is False.
 app.middleware("http")(_demo_readonly_middleware)
+
+# Per-visitor cookie issuer for the shared demo account. No-op
+# outside demo mode. See core/demo_session.py for the rationale —
+# without this, every visitor's Ask chat lands on the same shared
+# demo user_id and ends up visible to subsequent visitors.
+app.add_middleware(DemoSessionMiddleware)
 
 
 # Catch-all exception handler. Without this, an unhandled exception in

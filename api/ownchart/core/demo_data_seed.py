@@ -28,10 +28,14 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select
+from datetime import timedelta
+
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ingest import storage
+from ..models.conversation import Conversation
+from ..models.episode import Episode
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
@@ -47,6 +51,61 @@ _DEFAULT_BUNDLE_PATH = "/app/infra/demo_data/sample_patient.json"
 
 def _bundle_path() -> Path:
     return Path(os.environ.get("OWNCHART_DEMO_BUNDLE_PATH", _DEFAULT_BUNDLE_PATH))
+
+
+async def purge_stale_demo_state_if_needed(
+    db: AsyncSession,
+    *,
+    max_age_hours: int = 24,
+) -> dict[str, int]:
+    """Purge per-visitor conversations + user-saved episodes older than
+    ``max_age_hours`` from the shared demo account.
+
+    The demo account is shared across visitors; per-visitor scoping
+    (see core/demo_session.py) hides one visitor's chat from the next,
+    but the rows still accumulate in the DB. This sweep keeps the DB
+    bounded and limits the leakage window if a filter ever regresses
+    — old chats are simply gone.
+
+    No-op outside demo mode. Returns counts for observability.
+    """
+    s = get_settings()
+    if not s.demo_mode:
+        return {"conversations": 0, "episodes": 0}
+
+    demo_user = (await db.execute(
+        select(User).where(User.email == s.demo_user_email)
+    )).scalar_one_or_none()
+    if demo_user is None:
+        return {"conversations": 0, "episodes": 0}
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+
+    # Conversations: every demo-mode conversation is a visitor chat
+    # (there's no seeded conversation in the demo bundle). Delete
+    # anything older than cutoff, regardless of session id.
+    conv_del = await db.execute(
+        delete(Conversation)
+        .where(Conversation.user_id == demo_user.id)
+        .where(Conversation.created_at < cutoff)
+    )
+
+    # Episodes: only user-created saves get the per-visitor stamp.
+    # Seeded / LLM / heuristic episodes stay forever; user saves
+    # purge with their parent conversation.
+    ep_del = await db.execute(
+        delete(Episode)
+        .where(Episode.user_id == demo_user.id)
+        .where(Episode.created_by == "user")
+        .where(Episode.created_at < cutoff)
+    )
+
+    await db.commit()
+
+    return {
+        "conversations": conv_del.rowcount or 0,
+        "episodes": ep_del.rowcount or 0,
+    }
 
 
 async def seed_demo_data_if_needed(db: AsyncSession) -> int:

@@ -461,6 +461,7 @@ async def seed_episode_intelligence_conversation(
     user: User,
     *,
     first_message: str,
+    extra_scope: dict | None = None,
 ) -> Conversation:
     """Create a kind=episode_intelligence Conversation + its user
     message synchronously. Returns the persisted Conversation (with
@@ -470,13 +471,20 @@ async def seed_episode_intelligence_conversation(
     The conversation's scope is marked `status: "running"` so the
     frontend knows to show a "OwnChart is reading the record"
     placeholder and poll until the assistant message appears.
+
+    `extra_scope` is shallow-merged on top of the base scope. Used by
+    the route in demo mode to stamp the per-visitor session id (see
+    core/demo_session.py).
     """
     now = datetime.now(timezone.utc)
+    scope: dict = {"type": "whole_record", "status": "running"}
+    if extra_scope:
+        scope.update(extra_scope)
     conv = Conversation(
         user_id=user.id,
         title=(first_message or "Episode Intelligence")[:96],
         kind="episode_intelligence",
-        scope={"type": "whole_record", "status": "running"},
+        scope=scope,
         created_at=now,
         updated_at=now,
     )

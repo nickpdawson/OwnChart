@@ -163,17 +163,28 @@ Source of truth: `infra/demo_data/sample_patient.json` +
   allowlist: auth, consent, conversations, episodes, sensemaking,
   home, ask. So evidence (sources, facts) cannot be added; the
   patient record stays exactly what the seed bundle produced.
-- **Demo conversations are written against the shared `demo@ownchart.me`
-  account.** A visitor's chat with the LLM is stored on that
-  account and visible to the next visitor's conversation list.
-  Docs should warn visitors not to type real PHI into the demo
-  Ask box. Alpha caveat; a per-session demo identity is
-  beta-scope (would change auth surface — out of alpha freeze).
+- **Per-visitor isolation for shared-account writes.** The demo
+  user `demo@ownchart.me` is logged in by every visitor. To prevent
+  one visitor's Ask chat from showing up on the next visitor's
+  Conversations list, an `oc_demo_session` cookie issues a random
+  UUID per browser. Conversations and saved Events created during
+  that visit get stamped with the UUID; list / detail endpoints
+  filter on it. Without the cookie, the conversation list returns
+  empty.
+- **24-hour purge of stale demo state.** Every API container start
+  drops demo conversations + user-saved events older than 24h.
+  Belt-and-suspenders to the per-visitor filter, plus DB hygiene.
+- **Public copy must not claim "nothing persists."** Per-visitor
+  isolation is real; durability is not. Anything a visitor types
+  into Ask is sent to the LLM provider and stored on disk for up
+  to 24h. Docs's wording: "uses synthetic data; do not enter real
+  medical information." The DemoBanner.tsx component already shows
+  this verbatim.
 - Demo upload support requires `OWNCHART_DEMO_ALLOW_INGEST=true`
   AND the reverse-proxy body-size widen on the demo host. We are
   NOT changing NPM / Cloudflare on the public demo for alpha.
   Docs should document this as a known alpha limitation: the
-  public demo is read-only by design.
+  public demo's patient record is read-only by design.
 
 ---
 

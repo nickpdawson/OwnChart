@@ -24,7 +24,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config import get_settings
 from ..core.db import get_session
+from ..core.demo_session import demo_session_matches, get_demo_session_id
 from ..core.logger import get_logger
 from ..llm.episode_intelligence import run_episode_intelligence
 from ..models.audit_event import AuditEvent
@@ -35,6 +37,29 @@ from .auth import get_current_user
 
 router = APIRouter()
 log = get_logger("ownchart.routes.episodes")
+
+
+def _episode_visible_in_demo(ep: Episode, request: Request) -> bool:
+    """Demo-mode visibility check for an Episode.
+
+    True when:
+      - we're not in demo mode (everything visible), OR
+      - the episode is seeded (created_by != 'user'), OR
+      - the episode is this visitor's own save (payload.demo_session_id
+        matches the request's oc_demo_session cookie).
+
+    False otherwise — the caller should treat that as 404, never
+    disclosing the row's existence.
+    """
+    if not get_settings().demo_mode:
+        return True
+    if (ep.created_by or "") != "user":
+        return True
+    sid = get_demo_session_id(request)
+    if not sid:
+        return False
+    payload = ep.payload if isinstance(ep.payload, dict) else {}
+    return payload.get("demo_session_id") == sid
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +191,7 @@ def _summary(e: Episode) -> EpisodeSummary:
 
 @router.get("", response_model=list[EpisodeSummary])
 async def list_episodes_route(
+    request: Request,
     q: str | None = Query(default=None, description="Match against title, display_title, or any alias (ILIKE)."),
     kind: str | None = Query(default=None),
     date_from: str | None = Query(default=None, description="ISO date — only include events on/after this date."),
@@ -188,6 +214,22 @@ async def list_episodes_route(
         .order_by(Episode.date_start.desc().nullslast(), Episode.created_at.desc())
         .limit(limit)
     )
+    if get_settings().demo_mode:
+        # Hide visitor-saved events (created_by='user') from other
+        # demo visitors. The shared demo account is otherwise leaky.
+        # Seeded events (created_by='imported' / 'llm' / 'heuristic')
+        # stay visible to everyone. A visitor's own saved events are
+        # gated by payload->>demo_session_id below.
+        sid = get_demo_session_id(request)
+        if sid:
+            stmt = stmt.where(
+                text(
+                    "(episodes.created_by != 'user' "
+                    "OR episodes.payload->>'demo_session_id' = :dsid)"
+                ).bindparams(dsid=sid)
+            )
+        else:
+            stmt = stmt.where(text("episodes.created_by != 'user'"))
     if q:
         from sqlalchemy import func, or_
         pat = f"%{q.strip()}%"
@@ -230,18 +272,31 @@ async def list_episodes_route(
 
 @router.get("/recent", response_model=list[EpisodeSummary])
 async def list_recent_episodes_route(
+    request: Request,
     limit: int = 6,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[EpisodeSummary]:
     """Newest canonical episodes — feeds Home + Timeline surfaces."""
-    rows = list((await db.execute(
+    stmt = (
         select(Episode)
         .where(Episode.user_id == user.id)
         .where(Episode.merged_into_id.is_(None))   # hide merged duplicates
         .order_by(Episode.date_start.desc().nullslast(), Episode.created_at.desc())
         .limit(max(1, min(limit, 50)))
-    )).scalars().all())
+    )
+    if get_settings().demo_mode:
+        sid = get_demo_session_id(request)
+        if sid:
+            stmt = stmt.where(
+                text(
+                    "(episodes.created_by != 'user' "
+                    "OR episodes.payload->>'demo_session_id' = :dsid)"
+                ).bindparams(dsid=sid)
+            )
+        else:
+            stmt = stmt.where(text("episodes.created_by != 'user'"))
+    rows = list((await db.execute(stmt)).scalars().all())
     return [_summary(e) for e in rows]
 
 
@@ -287,6 +342,8 @@ async def patch_episode_route(
 
     ep = await db.get(Episode, episode_id)
     if ep is None or ep.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not _episode_visible_in_demo(ep, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
 
     now = datetime.now(_tz.utc)
@@ -362,6 +419,8 @@ async def add_episode_alias_route(
     ep = await db.get(Episode, episode_id)
     if ep is None or ep.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not _episode_visible_in_demo(ep, request):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     new_alias = (body.alias or "").strip()
     if not new_alias:
         raise HTTPException(
@@ -403,6 +462,8 @@ async def remove_episode_alias_route(
     ep = await db.get(Episode, episode_id)
     if ep is None or ep.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not _episode_visible_in_demo(ep, request):
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
     target = (alias or "").strip().lower()
     if not target:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY)
@@ -429,11 +490,16 @@ async def get_episode_route(
     episode_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
+    request: Request = None,  # type: ignore[assignment]
 ) -> EpisodeDetail:
     from ..models.conversation import Conversation
 
     ep = await db.get(Episode, episode_id)
     if ep is None or ep.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    # request is None when called internally after a verified mutation
+    # (alias add/remove etc.); HTTP entry always supplies the request.
+    if request is not None and not _episode_visible_in_demo(ep, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     members = list((await db.execute(
         select(EpisodeMember)
@@ -675,6 +741,7 @@ async def promote_candidate_route(
 async def attach_candidate_to_episode_route(
     episode_id: uuid.UUID,
     candidate_id: uuid.UUID,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
@@ -685,6 +752,8 @@ async def attach_candidate_to_episode_route(
     """
     ep = await db.get(Episode, episode_id)
     if ep is None or ep.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Event not found")
+    if not _episode_visible_in_demo(ep, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Event not found")
     cand = await db.get(SensemakingCandidate, candidate_id)
     if cand is None or cand.user_id != user.id:
@@ -791,6 +860,7 @@ class SaveAsEventResponse(BaseModel):
 async def save_conversation_as_event_route(
     conv_id: uuid.UUID,
     body: SaveAsEventRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> SaveAsEventResponse:
@@ -804,6 +874,8 @@ async def save_conversation_as_event_route(
 
     conv = await db.get(Conversation, conv_id)
     if conv is None or conv.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
     title = body.title.strip()
@@ -836,6 +908,13 @@ async def save_conversation_as_event_route(
             )
 
     now = datetime.now(timezone.utc)
+    payload: dict = {}
+    # Demo-mode: stamp the visitor's session id so they (and only
+    # they) can see/edit this saved event later.
+    if get_settings().demo_mode:
+        sid = get_demo_session_id(request)
+        if sid:
+            payload["demo_session_id"] = sid
     ep = Episode(
         user_id=user.id,
         title=title[:512],
@@ -847,7 +926,7 @@ async def save_conversation_as_event_route(
         date_end=date_start,
         primary_fact_id=None,
         created_by="user",
-        payload={},
+        payload=payload,
         created_at=now,
         updated_at=now,
     )
@@ -882,6 +961,7 @@ class AttachConversationRequest(BaseModel):
 async def attach_conversation_to_episode_route(
     episode_id: uuid.UUID,
     body: AttachConversationRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
@@ -897,6 +977,8 @@ async def attach_conversation_to_episode_route(
 
     ep = await db.get(Episode, episode_id)
     if ep is None or ep.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Event not found")
+    if not _episode_visible_in_demo(ep, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Event not found")
     if ep.merged_into_id is not None:
         raise HTTPException(

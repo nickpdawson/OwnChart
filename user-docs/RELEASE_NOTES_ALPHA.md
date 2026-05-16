@@ -41,6 +41,7 @@ This is the alpha-readiness cut. Scope was narrowed at PM ask: ship what's neede
 - Structured JSON error contract: every error response is JSON `{detail, ...}` with `Content-Type: application/json`. No uvicorn plain-text 500s. Catches both `HTTPException` and unhandled exceptions.
 - EXIF NUL-byte fix: iPhone screenshot `UserComment` follows EXIF spec `"ASCII\x00\x00\x00<text>"`; `_safe()` strips NULs from str / bytes / dict-key paths before JSONB write (was crashing photo uploads with `asyncpg.UntranslatableCharacterError`).
 - Upload-batch audit (new for alpha): `X-Client-Batch-Id` / `X-Client-Item-Id` headers are stamped on `raw_metadata.upload_audit` on success and echoed in error JSON on failure, so iOS can map a 4xx/5xx back to its local `(item_id → file)` map. See `UPLOAD_CONTRACT.md`.
+- Demo-mode per-visitor isolation (new for alpha, PM-blocking RC fix 2026-05-16): the shared `demo@ownchart.me` account is logged in by every demo visitor, which would otherwise mean visitor A's Ask chat appears in visitor B's Conversations list. An `oc_demo_session` cookie scopes Conversations + Save-as-Event to each browser visit; list / detail endpoints filter on it. 24-hour purge of stale demo state runs at container start as belt-and-suspenders + DB hygiene. Source of truth: `api/ownchart/core/demo_session.py`.
 - SourceDetail surfaces `extraction_status`, `extraction_fact_count`, `extraction_error`, `vision_status`, `vision_structured_fact_count`, `vision_relevance_score` so the UI shows extraction state without digging into logs.
 
 ### Tests
@@ -56,6 +57,7 @@ This is the alpha-readiness cut. Scope was narrowed at PM ask: ship what's neede
 | `test_retrieval_diversity.py` | 9 | Tier round-robin + category aliases (vaccination / allergy / appointment / instruction). |
 | `test_source_authority.py` | 24 | 6-tier classifier across primary_event / specialist_proximate / contemporaneous_support / ehr_summary / self_reported_history; anti-pattern guards (PSH ≠ operative record); date_origin taxonomy. |
 | `test_upload_audit.py` | 10 | Stateless header → dict → raw_metadata correlation. |
+| `test_demo_session.py` | 13 | Per-visitor cookie → scope → match invariants for the shared demo account. |
 
 ## Known issues / deferred to beta
 

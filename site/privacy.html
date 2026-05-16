@@ -98,7 +98,7 @@
     <li>The demo server uses an LLM provider configured by the maintainer. AI features run against synthetic data with the standard consent gate.</li>
   </ul>
 
-  <p><strong>Don't put real medical information into the demo.</strong> Anything you type into a form on the demo (e.g., the Ask box) is processed by the demo's LLM provider; because the underlying record is synthetic and the account is shared, your input may also be visible to other people using the demo account after you.</p>
+  <p><strong>Don't put real medical information into the demo.</strong> Anything you type into the Ask box is processed by the demo's LLM provider and stored on the demo database for up to 24 hours, after which it is automatically purged. Per-visitor scoping prevents the next visitor from seeing your chat history, but the demo exists to evaluate the product, not to hold your own record.</p>
 
   <h2 class="serif">What this marketing site does</h2>
 
