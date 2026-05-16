@@ -1,313 +1,1012 @@
 {
   "resourceType": "Bundle",
   "type": "collection",
-  "id": "camila-lopez-demo",
+  "id": "avery-walker-demo",
   "meta": {
-    "source": "Epic FHIR R4 sandbox — test patient Camila Maria Lopez. Reproduced verbatim from the published sandbox CCD for OwnChart's public demo at demo.ownchart.me. Not real PHI."
+    "source": "OwnChart demo \u2014 synthetic patient Avery Walker. NOT a real person, NOT real PHI. Safe for GitHub and demo.ownchart.me."
   },
   "entry": [
     {
       "resource": {
         "resourceType": "Patient",
-        "id": "camila-lopez",
+        "id": "patient-avery-walker-demo",
+        "meta": {
+          "source": "OwnChart demo \u2014 synthetic patient, not a real person."
+        },
         "name": [
-          {"use": "official", "family": "Lopez", "given": ["Camila", "Maria"]}
+          {
+            "use": "official",
+            "family": "Walker",
+            "given": [
+              "Avery",
+              "T."
+            ]
+          }
         ],
         "gender": "female",
-        "birthDate": "1987-09-12",
+        "birthDate": "1972-04-18",
         "address": [
-          {"use": "home", "line": ["3268 W Johnson St Apt 117"], "city": "Garland", "state": "TX", "postalCode": "75043"}
+          {
+            "use": "home",
+            "line": [
+              "100 Demo Lane"
+            ],
+            "city": "Demoville",
+            "state": "CA",
+            "postalCode": "94000",
+            "country": "US"
+          }
         ],
         "telecom": [
-          {"system": "phone", "value": "469-888-8888", "use": "work"},
-          {"system": "phone", "value": "469-469-4321", "use": "mobile"},
-          {"system": "email", "value": "knixontestemail@epic.com"}
+          {
+            "system": "email",
+            "value": "demo@ownchart.me"
+          },
+          {
+            "system": "phone",
+            "value": "555-0100",
+            "use": "mobile"
+          }
         ],
-        "communication": [
-          {"language": {"text": "English"}, "preferred": true}
-        ],
-        "maritalStatus": {"text": "Married"}
+        "maritalStatus": {
+          "text": "Married"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Organization",
+        "id": "org-memorial-family-medicine",
+        "name": "Memorial Family Medicine",
+        "address": [
+          {
+            "line": [
+              "200 Care Center Dr"
+            ],
+            "city": "Demoville",
+            "state": "CA",
+            "postalCode": "94000"
+          }
+        ]
       }
     },
     {
       "resource": {
         "resourceType": "Practitioner",
-        "id": "pcp-mustafa-z",
-        "identifier": [{"system": "http://hl7.org/fhir/sid/us-npi", "value": "1627363736"}],
-        "name": [{"family": "Z", "given": ["Mustafa"]}],
-        "address": [{"line": ["123 Anywhere Street"], "city": "Madison", "state": "WI", "postalCode": "53719"}],
-        "telecom": [{"system": "phone", "value": "555-555-5555", "use": "work"}]
-      }
-    },
-    {
-      "resource": {
-        "resourceType": "Organization",
-        "id": "org-emc-family-medicine",
-        "name": "EMC Family Medicine",
-        "address": [{"line": ["123 Anywhere Street"], "city": "Verona", "state": "WI", "postalCode": "53593-9179"}]
-      }
-    },
-    {
-      "resource": {
-        "resourceType": "Organization",
-        "id": "org-emh-main-or",
-        "name": "EMH Main Operating Room",
-        "address": [{"line": ["123 Anywhere Street"], "city": "Verona", "state": "WI", "postalCode": "53593-9179"}]
+        "id": "pract-dr-jordan-rivera",
+        "name": [
+          {
+            "family": "Rivera",
+            "given": [
+              "Jordan",
+              "M."
+            ],
+            "prefix": [
+              "Dr."
+            ]
+          }
+        ]
       }
     },
     {
       "resource": {
         "resourceType": "Encounter",
-        "id": "enc-surgery-appendectomy",
+        "id": "enc-2019-physical",
         "status": "finished",
-        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "IMP", "display": "Inpatient"},
-        "type": [{"text": "Surgery: Appendectomy"}],
-        "subject": {"reference": "Patient/camila-lopez"},
-        "period": {"start": "2023-06-06T11:20:00-05:00", "end": "2023-06-06T12:35:00-05:00"},
-        "serviceProvider": {"reference": "Organization/org-emh-main-or"}
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Annual physical exam"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2019-09-10T15:00:00-08:00",
+          "end": "2019-09-10T15:30:00-08:00"
+        }
       }
     },
     {
       "resource": {
         "resourceType": "Encounter",
-        "id": "enc-office-2023-06-02",
+        "id": "enc-2021-spring",
         "status": "finished",
-        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "AMB", "display": "Ambulatory"},
-        "type": [{"text": "Office Visit"}],
-        "subject": {"reference": "Patient/camila-lopez"},
-        "period": {"start": "2023-06-02"},
-        "serviceProvider": {"reference": "Organization/org-emc-family-medicine"}
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Office visit"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2021-04-15T15:00:00-08:00",
+          "end": "2021-04-15T15:30:00-08:00"
+        }
       }
     },
     {
       "resource": {
         "resourceType": "Encounter",
-        "id": "enc-cardiology-2023-06-02",
+        "id": "enc-2022-physical",
         "status": "finished",
-        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "AMB", "display": "Ambulatory"},
-        "type": [{"text": "Hospital Encounter — Cardiology Procedures"}],
-        "subject": {"reference": "Patient/camila-lopez"},
-        "period": {"start": "2023-06-02T15:49:00-05:00"}
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Annual physical exam"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2022-09-22T15:00:00-08:00",
+          "end": "2022-09-22T15:30:00-08:00"
+        }
       }
     },
     {
       "resource": {
         "resourceType": "Encounter",
-        "id": "enc-xray-2023-06-02",
+        "id": "enc-2023-feb",
         "status": "finished",
-        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "AMB", "display": "Ambulatory"},
-        "type": [{"text": "Hospital Encounter — X-Ray Imaging"}],
-        "subject": {"reference": "Patient/camila-lopez"},
-        "period": {"start": "2023-06-02T15:41:00-05:00"}
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Office visit"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2023-02-08T15:00:00-08:00",
+          "end": "2023-02-08T15:30:00-08:00"
+        }
       }
     },
     {
       "resource": {
         "resourceType": "Encounter",
-        "id": "enc-office-2023-05-21",
+        "id": "enc-2023-physical",
         "status": "finished",
-        "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code": "AMB", "display": "Ambulatory"},
-        "type": [{"text": "Office Visit"}],
-        "subject": {"reference": "Patient/camila-lopez"},
-        "period": {"start": "2023-05-21"},
-        "serviceProvider": {"reference": "Organization/org-emc-family-medicine"}
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Annual physical exam"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2023-09-18T15:00:00-08:00",
+          "end": "2023-09-18T15:30:00-08:00"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-2024-bp1",
+        "status": "finished",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Office visit"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2024-04-29T15:00:00-08:00",
+          "end": "2024-04-29T15:30:00-08:00"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-2024-htn-dx",
+        "status": "finished",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Office visit"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2024-05-12T15:00:00-08:00",
+          "end": "2024-05-12T15:30:00-08:00"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-2024-htn-rx",
+        "status": "finished",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Office visit"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2024-06-03T15:00:00-08:00",
+          "end": "2024-06-03T15:30:00-08:00"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-2024-physical",
+        "status": "finished",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Annual physical exam"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2024-09-04T15:00:00-08:00",
+          "end": "2024-09-04T15:30:00-08:00"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-2025-bp-fu",
+        "status": "finished",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Office visit \u2014 hypertension follow-up"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2025-01-13T15:00:00-08:00",
+          "end": "2025-01-13T15:30:00-08:00"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-2025-physical",
+        "status": "finished",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Annual physical exam"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2025-09-09T15:00:00-08:00",
+          "end": "2025-09-09T15:30:00-08:00"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-2026-bp-fu",
+        "status": "finished",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "AMB",
+          "display": "ambulatory"
+        },
+        "type": [
+          {
+            "text": "Office visit \u2014 hypertension follow-up"
+          }
+        ],
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "Practitioner/pract-dr-jordan-rivera"
+            }
+          }
+        ],
+        "serviceProvider": {
+          "reference": "Organization/org-memorial-family-medicine"
+        },
+        "period": {
+          "start": "2026-03-04T15:00:00-08:00",
+          "end": "2026-03-04T15:30:00-08:00"
+        }
       }
     },
     {
       "resource": {
         "resourceType": "Condition",
-        "id": "cond-polycystic-ovaries",
-        "clinicalStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-clinical", "code": "active"}]},
-        "verificationStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-ver-status", "code": "confirmed"}]},
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-category", "code": "problem-list-item"}]}],
+        "id": "cond-vit-d-deficiency",
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed"
+            }
+          ]
+        },
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "encounter-diagnosis"
+              }
+            ]
+          }
+        ],
         "code": {
-          "coding": [{"system": "http://snomed.info/sct", "code": "69878008", "display": "Polycystic ovaries"}],
-          "text": "Polycystic ovaries"
+          "text": "Vitamin D deficiency",
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "34713006",
+              "display": "Vitamin D deficiency"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "onsetDateTime": "2005-09-20",
-        "recordedDate": "2005-09-20"
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2023-feb"
+        },
+        "onsetDateTime": "2023-02-08",
+        "recordedDate": "2023-02-08"
       }
     },
     {
       "resource": {
         "resourceType": "Condition",
-        "id": "cond-pain-adl",
-        "clinicalStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-clinical", "code": "active"}]},
-        "verificationStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-ver-status", "code": "confirmed"}]},
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-category", "code": "encounter-diagnosis"}]}],
-        "code": {"text": "Pain aggravated by activities of daily living"},
-        "subject": {"reference": "Patient/camila-lopez"},
-        "encounter": {"reference": "Encounter/enc-office-2023-05-21"},
-        "onsetDateTime": "2023-05-21",
-        "recordedDate": "2023-05-21"
+        "id": "cond-essential-hypertension",
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed"
+            }
+          ]
+        },
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "encounter-diagnosis"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Essential hypertension",
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "59621000",
+              "display": "Essential hypertension"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2024-htn-dx"
+        },
+        "onsetDateTime": "2024-05-12",
+        "recordedDate": "2024-05-12"
       }
     },
     {
       "resource": {
-        "resourceType": "MedicationStatement",
-        "id": "med-yaz",
-        "status": "active",
-        "medicationCodeableConcept": {
-          "coding": [{"system": "http://www.nlm.nih.gov/research/umls/rxnorm", "code": "748856", "display": "drospirenone 3 MG / ethinyl estradiol 0.02 MG Oral Tablet"}],
-          "text": "drospirenone-ethinyl estradiol (YAZ) 3-0.02 MG per tablet"
+        "resourceType": "AllergyIntolerance",
+        "id": "allergy-nkda",
+        "clinicalStatus": {
+          "coding": [
+            {
+              "code": "active"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "effectivePeriod": {"start": "2019-05-28"},
-        "dosage": [
-          {"text": "Take 1 tablet by mouth 1 (one) time each day.", "patientInstruction": "Take 1 tablet by mouth 1 (one) time each day."}
+        "verificationStatus": {
+          "coding": [
+            {
+              "code": "confirmed"
+            }
+          ]
+        },
+        "code": {
+          "text": "No known drug allergies"
+        },
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "recordedDate": "2019-09-10"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "MedicationRequest",
+        "id": "rx-lisinopril-10mg-2024",
+        "status": "active",
+        "intent": "order",
+        "medicationCodeableConcept": {
+          "text": "Lisinopril 10 MG Oral Tablet",
+          "coding": [
+            {
+              "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
+              "code": "314076",
+              "display": "Lisinopril 10 MG Oral Tablet"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2024-htn-rx"
+        },
+        "authoredOn": "2024-06-03",
+        "requester": {
+          "reference": "Practitioner/pract-dr-jordan-rivera"
+        },
+        "reasonReference": [
+          {
+            "reference": "Condition/cond-essential-hypertension"
+          }
+        ],
+        "dosageInstruction": [
+          {
+            "text": "Take 1 tablet by mouth daily"
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "MedicationRequest",
+        "id": "rx-cholecalciferol-2023",
+        "status": "active",
+        "intent": "order",
+        "medicationCodeableConcept": {
+          "text": "Cholecalciferol 2000 IU Oral Capsule",
+          "coding": [
+            {
+              "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
+              "code": "1652648",
+              "display": "Cholecalciferol 2000 UNT Oral Capsule"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2023-feb"
+        },
+        "authoredOn": "2023-02-08",
+        "requester": {
+          "reference": "Practitioner/pract-dr-jordan-rivera"
+        },
+        "reasonReference": [
+          {
+            "reference": "Condition/cond-vit-d-deficiency"
+          }
+        ],
+        "dosageInstruction": [
+          {
+            "text": "Take 1 capsule by mouth daily"
+          }
         ]
       }
     },
     {
       "resource": {
         "resourceType": "Immunization",
-        "id": "imm-tdap",
+        "id": "imm-flu-2019",
         "status": "completed",
         "vaccineCode": {
-          "coding": [{"system": "http://hl7.org/fhir/sid/cvx", "code": "115", "display": "Tdap"}],
-          "text": "Tdap"
+          "text": "Influenza vaccine, seasonal",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "150",
+              "display": "Influenza, injectable, quadrivalent"
+            }
+          ]
         },
-        "patient": {"reference": "Patient/camila-lopez"},
-        "encounter": {"reference": "Encounter/enc-office-2023-05-21"},
-        "occurrenceDateTime": "2023-05-21"
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2019-10-12T11:00:00-08:00",
+        "primarySource": true
       }
     },
     {
       "resource": {
-        "resourceType": "Procedure",
-        "id": "proc-appendectomy",
+        "resourceType": "Immunization",
+        "id": "imm-flu-2020",
         "status": "completed",
-        "code": {
-          "coding": [{"system": "http://snomed.info/sct", "code": "80146002", "display": "Removal of appendix"}],
-          "text": "Removal of appendix (appendectomy)"
+        "vaccineCode": {
+          "text": "Influenza vaccine, seasonal",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "150",
+              "display": "Influenza, injectable, quadrivalent"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "encounter": {"reference": "Encounter/enc-surgery-appendectomy"},
-        "performedDateTime": "2023-06-06T08:56:00-05:00"
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2020-10-04T11:00:00-08:00",
+        "primarySource": true
       }
     },
     {
       "resource": {
-        "resourceType": "Procedure",
-        "id": "proc-tte",
+        "resourceType": "Immunization",
+        "id": "imm-covid-1",
         "status": "completed",
-        "code": {
-          "coding": [{"system": "http://www.ama-assn.org/go/cpt", "code": "93306", "display": "Transthoracic Echocardiogram, complete"}],
-          "text": "Transthoracic Echo (TTE) Complete"
+        "vaccineCode": {
+          "text": "COVID-19 mRNA vaccine (Pfizer-BioNTech), dose 1",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "208",
+              "display": "COVID-19, mRNA, LNP-S, PF, 30 mcg/0.3 mL dose"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "encounter": {"reference": "Encounter/enc-cardiology-2023-06-02"},
-        "performedDateTime": "2023-06-02T15:50:00-05:00",
-        "reasonCode": [{"text": "Ischemic chest pain"}]
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2021-03-19T11:00:00-08:00",
+        "primarySource": true
       }
     },
     {
       "resource": {
-        "resourceType": "Procedure",
-        "id": "proc-xr-chest",
+        "resourceType": "Immunization",
+        "id": "imm-covid-2",
         "status": "completed",
-        "code": {
-          "coding": [{"system": "http://www.ama-assn.org/go/cpt", "code": "71046", "display": "Radiologic examination, chest; 2 views"}],
-          "text": "XR Chest 2 Views"
+        "vaccineCode": {
+          "text": "COVID-19 mRNA vaccine (Pfizer-BioNTech), dose 2",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "208",
+              "display": "COVID-19, mRNA, LNP-S, PF, 30 mcg/0.3 mL dose"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "encounter": {"reference": "Encounter/enc-xray-2023-06-02"},
-        "performedDateTime": "2023-06-02T15:43:00-05:00"
-      }
-    },
-    {
-      "resource": {
-        "resourceType": "DiagnosticReport",
-        "id": "dr-tte",
-        "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0074", "code": "CV", "display": "Cardiovascular"}]}],
-        "code": {"text": "Transthoracic Echo (TTE) Complete"},
-        "subject": {"reference": "Patient/camila-lopez"},
-        "encounter": {"reference": "Encounter/enc-cardiology-2023-06-02"},
-        "effectiveDateTime": "2023-06-02T15:50:00-05:00",
-        "issued": "2023-07-25T08:27:00-05:00",
-        "conclusion": "Left ventricle ejection fraction is normal. Septal wall has abnormal motion consistent with post-operative status. Cavity is normal. End-diastolic volume appears mildly increased. Normal wall thickness observed. Mid-cavity obstruction is present. Shape is normal. Normal fractional shortening. Normal left ventricle diastolic function. The findings are consistent with dilated cardiomyopathy."
-      }
-    },
-    {
-      "resource": {
-        "resourceType": "DiagnosticReport",
-        "id": "dr-xr-chest",
-        "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0074", "code": "RAD", "display": "Radiology"}]}],
-        "code": {"text": "XR Chest 2 Views"},
-        "subject": {"reference": "Patient/camila-lopez"},
-        "encounter": {"reference": "Encounter/enc-xray-2023-06-02"},
-        "effectiveDateTime": "2023-06-02T15:43:00-05:00",
-        "issued": "2023-07-25T08:27:00-05:00",
-        "conclusion": "No findings. Refer to cardiology. Patient presents with history of chest pain. No rib fractures or lesions found."
-      }
-    },
-    {
-      "resource": {
-        "resourceType": "DiagnosticReport",
-        "id": "dr-pathology-tissue",
-        "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0074", "code": "LAB", "display": "Laboratory"}]}],
-        "code": {"text": "Pathology Tissue (Specimen to Pathology)"},
-        "subject": {"reference": "Patient/camila-lopez"},
-        "encounter": {"reference": "Encounter/enc-cardiology-2023-06-02"},
-        "effectiveDateTime": "2023-06-02T16:02:00-05:00",
-        "issued": "2023-06-02T16:02:00-05:00"
-      }
-    },
-    {
-      "resource": {
-        "resourceType": "DiagnosticReport",
-        "id": "dr-hba1c",
-        "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/v2-0074", "code": "LAB", "display": "Laboratory"}]}],
-        "code": {
-          "coding": [{"system": "http://loinc.org", "code": "4548-4", "display": "Hemoglobin A1c/Hemoglobin.total in Blood"}],
-          "text": "Hemoglobin A1C"
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "effectiveDateTime": "2019-05-28T09:22:00-05:00",
-        "issued": "2019-05-28T09:22:00-05:00",
-        "result": [{"reference": "Observation/obs-hba1c"}]
+        "occurrenceDateTime": "2021-04-09T11:00:00-08:00",
+        "primarySource": true
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "imm-flu-2021",
+        "status": "completed",
+        "vaccineCode": {
+          "text": "Influenza vaccine, seasonal",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "150",
+              "display": "Influenza, injectable, quadrivalent"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2021-10-09T11:00:00-08:00",
+        "primarySource": true
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "imm-covid-booster",
+        "status": "completed",
+        "vaccineCode": {
+          "text": "COVID-19 mRNA vaccine (Pfizer-BioNTech), booster",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "208",
+              "display": "COVID-19, mRNA, LNP-S, PF, 30 mcg/0.3 mL dose"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2021-11-15T11:00:00-08:00",
+        "primarySource": true
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "imm-flu-2022",
+        "status": "completed",
+        "vaccineCode": {
+          "text": "Influenza vaccine, seasonal",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "150",
+              "display": "Influenza, injectable, quadrivalent"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2022-09-22T11:00:00-08:00",
+        "primarySource": true
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "imm-flu-2023",
+        "status": "completed",
+        "vaccineCode": {
+          "text": "Influenza vaccine, seasonal",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "150",
+              "display": "Influenza, injectable, quadrivalent"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2023-09-18T11:00:00-08:00",
+        "primarySource": true
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "imm-tdap-2023",
+        "status": "completed",
+        "vaccineCode": {
+          "text": "Tdap (Tetanus, Diphtheria, Pertussis), adult",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "115",
+              "display": "tetanus, diphtheria, pertussis (Tdap)"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2023-09-18T11:00:00-08:00",
+        "primarySource": true
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "imm-flu-2024",
+        "status": "completed",
+        "vaccineCode": {
+          "text": "Influenza vaccine, seasonal",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "150",
+              "display": "Influenza, injectable, quadrivalent"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2024-09-04T11:00:00-08:00",
+        "primarySource": true
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "imm-flu-2025",
+        "status": "completed",
+        "vaccineCode": {
+          "text": "Influenza vaccine, seasonal",
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "150",
+              "display": "Influenza, injectable, quadrivalent"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "occurrenceDateTime": "2025-09-09T11:00:00-08:00",
+        "primarySource": true
       }
     },
     {
       "resource": {
         "resourceType": "Observation",
-        "id": "obs-hba1c",
+        "id": "bp-2019",
         "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "laboratory"}]}],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
         "code": {
-          "coding": [{"system": "http://loinc.org", "code": "4548-4", "display": "Hemoglobin A1c/Hemoglobin.total in Blood"}],
-          "text": "Hemoglobin A1C"
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "effectiveDateTime": "2019-05-28T09:22:00-05:00",
-        "valueQuantity": {"value": 5.1, "unit": "%", "system": "http://unitsofmeasure.org", "code": "%"}
-      }
-    },
-    {
-      "resource": {
-        "resourceType": "Observation",
-        "id": "obs-bp",
-        "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
-        "code": {
-          "coding": [{"system": "http://loinc.org", "code": "85354-9", "display": "Blood pressure panel"}],
-          "text": "Blood pressure"
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "effectiveDateTime": "2021-02-04T15:43:00-06:00",
+        "encounter": {
+          "reference": "Encounter/enc-2019-physical"
+        },
+        "effectiveDateTime": "2019-09-10T15:05:00-08:00",
         "component": [
           {
-            "code": {"coding": [{"system": "http://loinc.org", "code": "8480-6", "display": "Systolic blood pressure"}]},
-            "valueQuantity": {"value": 153, "unit": "mm[Hg]", "system": "http://unitsofmeasure.org", "code": "mm[Hg]"}
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 118,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
           },
           {
-            "code": {"coding": [{"system": "http://loinc.org", "code": "8462-4", "display": "Diastolic blood pressure"}]},
-            "valueQuantity": {"value": 82, "unit": "mm[Hg]", "system": "http://unitsofmeasure.org", "code": "mm[Hg]"}
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 76,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
           }
         ]
       }
@@ -315,61 +1014,1763 @@
     {
       "resource": {
         "resourceType": "Observation",
-        "id": "obs-pulse",
+        "id": "bp-2021",
         "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
         "code": {
-          "coding": [{"system": "http://loinc.org", "code": "8867-4", "display": "Heart rate"}],
-          "text": "Pulse"
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "effectiveDateTime": "2021-02-04T15:43:00-06:00",
-        "valueQuantity": {"value": 84, "unit": "/min", "system": "http://unitsofmeasure.org", "code": "/min"}
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2021-spring"
+        },
+        "effectiveDateTime": "2021-04-15T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 124,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 80,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
       }
     },
     {
       "resource": {
         "resourceType": "Observation",
-        "id": "obs-temp",
+        "id": "bp-2022",
         "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
         "code": {
-          "coding": [{"system": "http://loinc.org", "code": "8310-5", "display": "Body temperature"}],
-          "text": "Body temperature"
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "effectiveDateTime": "2021-01-11T14:33:00-06:00",
-        "valueQuantity": {"value": 37, "unit": "Cel", "system": "http://unitsofmeasure.org", "code": "Cel"}
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2022-physical"
+        },
+        "effectiveDateTime": "2022-09-22T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 134,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 86,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
       }
     },
     {
       "resource": {
         "resourceType": "Observation",
-        "id": "obs-weight",
+        "id": "bp-2023-feb",
         "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
         "code": {
-          "coding": [{"system": "http://loinc.org", "code": "29463-7", "display": "Body weight"}],
-          "text": "Body weight"
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "effectiveDateTime": "2021-02-04T00:41:00-06:00",
-        "valueQuantity": {"value": 71.1, "unit": "kg", "system": "http://unitsofmeasure.org", "code": "kg"}
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2023-feb"
+        },
+        "effectiveDateTime": "2023-02-08T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 138,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 88,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
       }
     },
     {
       "resource": {
         "resourceType": "Observation",
-        "id": "obs-height",
+        "id": "bp-2023-sep",
         "status": "final",
-        "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "vital-signs"}]}],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
         "code": {
-          "coding": [{"system": "http://loinc.org", "code": "8302-2", "display": "Body height"}],
-          "text": "Body height"
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
         },
-        "subject": {"reference": "Patient/camila-lopez"},
-        "effectiveDateTime": "2021-01-11T14:33:00-06:00",
-        "valueQuantity": {"value": 220, "unit": "cm", "system": "http://unitsofmeasure.org", "code": "cm"}
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2023-physical"
+        },
+        "effectiveDateTime": "2023-09-18T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 142,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 90,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "bp-2024-apr",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2024-bp1"
+        },
+        "effectiveDateTime": "2024-04-29T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 150,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 94,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "bp-2024-may",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2024-htn-dx"
+        },
+        "effectiveDateTime": "2024-05-12T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 148,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 92,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "bp-2024-jun",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2024-htn-rx"
+        },
+        "effectiveDateTime": "2024-06-03T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 146,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 92,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "bp-2024-sep",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2024-physical"
+        },
+        "effectiveDateTime": "2024-09-04T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 132,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 84,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "bp-2025-jan",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2025-bp-fu"
+        },
+        "effectiveDateTime": "2025-01-13T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 128,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 80,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "bp-2025-sep",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2025-physical"
+        },
+        "effectiveDateTime": "2025-09-09T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 126,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 78,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "bp-2026-mar",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Blood pressure",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2026-bp-fu"
+        },
+        "effectiveDateTime": "2026-03-04T15:05:00-08:00",
+        "component": [
+          {
+            "code": {
+              "text": "Systolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 124,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "text": "Diastolic",
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 78,
+              "unit": "mmHg",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "hr-2019",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Heart rate",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2019-physical"
+        },
+        "effectiveDateTime": "2019-09-10T15:05:00-08:00",
+        "valueQuantity": {
+          "value": 68,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "hr-2021",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Heart rate",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2021-spring"
+        },
+        "effectiveDateTime": "2021-04-15T15:05:00-08:00",
+        "valueQuantity": {
+          "value": 72,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "hr-2022",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Heart rate",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2022-physical"
+        },
+        "effectiveDateTime": "2022-09-22T15:05:00-08:00",
+        "valueQuantity": {
+          "value": 74,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "hr-2023",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Heart rate",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2023-physical"
+        },
+        "effectiveDateTime": "2023-09-18T15:05:00-08:00",
+        "valueQuantity": {
+          "value": 70,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "hr-2024-may",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Heart rate",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2024-htn-dx"
+        },
+        "effectiveDateTime": "2024-05-12T15:05:00-08:00",
+        "valueQuantity": {
+          "value": 78,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "hr-2024-sep",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Heart rate",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2024-physical"
+        },
+        "effectiveDateTime": "2024-09-04T15:05:00-08:00",
+        "valueQuantity": {
+          "value": 70,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "hr-2025-jan",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Heart rate",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2025-bp-fu"
+        },
+        "effectiveDateTime": "2025-01-13T15:05:00-08:00",
+        "valueQuantity": {
+          "value": 66,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "hr-2025-sep",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Heart rate",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2025-physical"
+        },
+        "effectiveDateTime": "2025-09-09T15:05:00-08:00",
+        "valueQuantity": {
+          "value": 68,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "hr-2026-mar",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Heart rate",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2026-bp-fu"
+        },
+        "effectiveDateTime": "2026-03-04T15:05:00-08:00",
+        "valueQuantity": {
+          "value": 64,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-01",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-01T23:00:00-08:00",
+          "end": "2026-05-02T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 7.2,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-02",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-02T23:00:00-08:00",
+          "end": "2026-05-03T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 7.8,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-03",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-03T23:00:00-08:00",
+          "end": "2026-05-04T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 6.9,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-04",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-04T23:00:00-08:00",
+          "end": "2026-05-05T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 7.5,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-05",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-05T23:00:00-08:00",
+          "end": "2026-05-06T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 8.1,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-06",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-06T23:00:00-08:00",
+          "end": "2026-05-07T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 6.4,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-07",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-07T23:00:00-08:00",
+          "end": "2026-05-08T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 7.6,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-08",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-08T23:00:00-08:00",
+          "end": "2026-05-09T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 7.0,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-09",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-09T23:00:00-08:00",
+          "end": "2026-05-10T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 7.9,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-10",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-10T23:00:00-08:00",
+          "end": "2026-05-11T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 6.7,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-11",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-11T23:00:00-08:00",
+          "end": "2026-05-12T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 7.3,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-12",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-12T23:00:00-08:00",
+          "end": "2026-05-13T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 7.4,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-13",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-13T23:00:00-08:00",
+          "end": "2026-05-14T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 8.0,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "sleep-2026-05-14",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "activity"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Sleep duration",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "93832-4",
+              "display": "Sleep duration"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "effectivePeriod": {
+          "start": "2026-05-14T23:00:00-08:00",
+          "end": "2026-05-15T07:00:00-08:00"
+        },
+        "valueQuantity": {
+          "value": 7.1,
+          "unit": "h",
+          "system": "http://unitsofmeasure.org",
+          "code": "h"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "DiagnosticReport",
+        "id": "dr-lipid-panel-2024",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v2-0074",
+                "code": "LAB"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "Lipid panel",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "57698-3",
+              "display": "Lipid panel with direct LDL"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2024-htn-dx"
+        },
+        "effectiveDateTime": "2024-05-12",
+        "issued": "2024-05-12T10:00:00-08:00",
+        "conclusion": "Total cholesterol 198 mg/dL. LDL 118 mg/dL. HDL 56 mg/dL. Triglycerides 120 mg/dL. Borderline LDL; recommend lifestyle modifications."
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "DiagnosticReport",
+        "id": "dr-vitd-2023",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v2-0074",
+                "code": "LAB"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "text": "25-hydroxyvitamin D",
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "62292-8",
+              "display": "25-hydroxyvitamin D2+D3"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "Patient/patient-avery-walker-demo"
+        },
+        "encounter": {
+          "reference": "Encounter/enc-2023-feb"
+        },
+        "effectiveDateTime": "2023-02-08",
+        "issued": "2023-02-08T10:00:00-08:00",
+        "conclusion": "25-OH Vitamin D 18 ng/mL (low \u2014 reference 30-100). Cholecalciferol 2000 IU PO daily prescribed."
       }
     }
   ]

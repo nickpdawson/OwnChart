@@ -11,23 +11,51 @@ infra/demo_data/sample_patient.json
 
 (override with `OWNCHART_DEMO_BUNDLE_PATH`)
 
-## How to generate one
+## What ships in this repo
 
-The simplest source of synthetic FHIR R4 bundles is **Synthea**:
+`sample_patient.json` — **Avery T. Walker** (DOB 1972-04-18, female,
+synthetic). A hand-curated 68-resource FHIR R4 bundle covering a
+five-year primary-care story:
 
-```bash
-git clone https://github.com/synthetichealth/synthea
-cd synthea
-./run_synthea -p 1 --exporter.fhir.export true
-cp output/fhir/<one_patient>.json /path/to/ownchart/infra/demo_data/sample_patient.json
-```
+- **12 encounters** at Memorial Family Medicine, 2019 → 2026 (annual
+  physicals + hypertension follow-ups).
+- **2 conditions**: Vitamin D deficiency (2023-02-08), Essential
+  hypertension (2024-05-12).
+- **2 prescriptions**: Lisinopril 10 mg started 2024-06-03 after the
+  HTN diagnosis; Cholecalciferol 2000 IU started 2023-02-08.
+- **11 immunizations**: 3 COVID-19 mRNA doses (March / April /
+  November 2021), 7 annual flu shots (2019-2025), 1 Tdap (2023).
+- **12 BP readings**: pre-Rx baseline 118/76 → creep to 150/94 →
+  post-Rx normalization to 124/78.
+- **9 HR readings** + **14 nights of sleep duration** (May 2026).
+- **2 DiagnosticReports**: 2024 lipid panel, 2023 vitamin D level.
 
-Synthea-generated bundles are Apache-2.0 licensed and contain no
-real PHI — they're suitable for a public demo.
+The bundle supports the canonical demo questions:
+- "When did I get my COVID vaccine?"
+- "What changed around starting lisinopril?"
+- "How has my sleep looked recently?"
+- "What does my record say about blood pressure?"
 
-You can also use the public Epic FHIR sandbox patient bundles or
-any other R4-compliant synthetic dataset; the ingest pipeline
-treats them the same way.
+Avery Walker is not a real person. The address (100 Demo Lane,
+Demoville, CA 94000), phone (555-0100), and email (demo@ownchart.me)
+are deliberately non-routable placeholders.
+
+## Substituting your own bundle
+
+You can replace `sample_patient.json` with any R4-compliant synthetic
+dataset:
+
+- **Synthea** (https://github.com/synthetichealth/synthea, Apache-2.0)
+  generates rich bundles — hundreds of resources per patient — but
+  they don't always include the specific facts a focused demo needs:
+  ```
+  ./run_synthea -p 1 --exporter.fhir.export true
+  cp output/fhir/<one_patient>.json infra/demo_data/sample_patient.json
+  ```
+- Public **Epic FHIR sandbox** patient bundles work for testing live
+  SMART-on-FHIR ingestion against `fhir.epic.com`.
+
+Whatever you ship, it MUST contain no real PHI.
 
 ## What gets ingested
 
