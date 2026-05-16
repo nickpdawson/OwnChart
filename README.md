@@ -420,7 +420,32 @@ OwnChart treats records, prompts, logs, model inputs, model outputs, embeddings,
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+OwnChart 0.1 alpha is licensed under the [PolyForm Noncommercial
+License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) —
+**source-available for personal, noncommercial self-hosting**. It is
+not open-source in the OSI-approved sense.
+
+Allowed under the [LICENSE](./LICENSE):
+
+- Personal use — manage your own health record, or a household
+  member's or someone you provide care for.
+- Educational, academic, and noncommercial research use, including
+  by charitable organizations, public-research organizations,
+  public-safety / public-health organizations, and government
+  institutions (per PolyForm NC's "Noncommercial Organizations"
+  clause).
+- Self-hosting on hardware you control.
+- Forking, modifying, and sharing modifications publicly — provided
+  the fork stays noncommercial and the license is preserved.
+
+Commercial use — including resale, hosted commercial service,
+enterprise or institutional deployment, data brokerage, or any
+derivative commercial product — requires **explicit written
+permission from Nick Dawson**. Open an issue with the subject
+"Commercial license inquiry" to start that conversation.
+
+OwnChart may move to an OSI-approved open-source license in the
+future; this alpha ships under PolyForm Noncommercial.
 
 ---
 
@@ -434,6 +459,6 @@ Special thanks to:
 - **[Josh Mandel](https://github.com/jmandel)** and the SMART on FHIR ecosystem — for making patient-mediated access to health records possible. Two of Josh's projects parallel OwnChart's surfaces closely:
   - [`health-record-mcp`](https://github.com/jmandel/health-record-mcp) — Model Context Protocol server bringing SMART-on-FHIR records into LLM workflows.
   - [`health-skillz`](https://github.com/jmandel/health-skillz) — a Claude Skill for connecting to and analyzing personal health records via SMART on FHIR ([health-skillz.joshuamandel.com](https://health-skillz.joshuamandel.com)).
-- The many patients, caregivers, clinicians, designers, and open-source builders pushing toward a world where people can actually use the data collected about them.
+- The many patients, caregivers, clinicians, designers, and builders in the open ecosystem pushing toward a world where people can actually use the data collected about them.
 
 The mistakes are ours.

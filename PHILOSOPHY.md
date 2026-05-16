@@ -314,7 +314,9 @@ Crediting them up front; the implementation choices and mistakes here are the pr
 
 ## 21. Doctrine travels with the fork
 
-The MIT license covers the code. This document covers the project. A fork is welcome — please use it for whatever you want. But if you call your fork "patient-owned," these principles are the meaning of the phrase.
+OwnChart 0.1 alpha is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) (see [LICENSE](./LICENSE)) — personal, educational, research, and patient/caregiver self-hosting are explicitly allowed. Commercial use, including hosted services, enterprise deployments, and derivative commercial products, requires written permission from Nick Dawson. The project may move to an OSI-approved open-source license later; for the alpha, it ships under PolyForm Noncommercial.
+
+A personal, noncommercial fork is welcome under the license. This document covers the project. If you call your fork "patient-owned," these principles are the meaning of the phrase.
 
 Strip the consent gate and you have an EHR scraper. Add telemetry and you have a SaaS. Let the institution override the user's correction and you have what we already had. Replace the Evidence Contract with confident-sounding summaries and you have the failure mode this project exists to refuse.
 

@@ -90,10 +90,10 @@ Because no personal data is transferred to the project maintainer, this section 
 
 You can:
 
-- Read every line of code that touches your data — the source is open.
+- Read every line of code that touches your data — the source is published on GitHub.
 - Inspect every AI call your server made, with a full audit record.
 - Delete everything by tearing down your server.
-- Use the project under the MIT license — fork it, modify it, host it yourself.
+- Use the project under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) — fork it, modify it, and self-host for personal, educational, research, or caregiver use. See [LICENSE](./LICENSE) for what counts as commercial use (which requires written permission).
 
 You do not need to request a data export from the developer because the developer does not have your data.
 
