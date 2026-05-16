@@ -82,16 +82,28 @@ def _decode_exif(img: Image.Image) -> tuple[dict[str, Any], bool]:
 
 
 def _safe(v: Any) -> Any:
-    """JSON-friendly coercion (Pillow can return IFDRational, bytes, tuples)."""
+    """JSON-friendly coercion (Pillow can return IFDRational, bytes, tuples).
+
+    Postgres `text`/`jsonb` cannot store NULL bytes (`\\x00`). iOS PNG
+    screenshots' EXIF `UserComment` tag follows the spec
+    `"ASCII\\x00\\x00\\x00<text>"` (8-byte charset header), so the
+    nulls land in the *middle* of the decoded string — `.rstrip` won't
+    save us. Strip every `\\x00` from all decoded strings on the way
+    out. Caught the alpha-day photo-upload P0 on 2026-05-16:
+    `asyncpg.exceptions.UntranslatableCharacterError: \\u0000 cannot be
+    converted to text` when writing `source_documents.exif_metadata`.
+    """
     if isinstance(v, bytes):
         try:
-            return v.decode("utf-8", errors="replace").rstrip("\x00")
+            return v.decode("utf-8", errors="replace").replace("\x00", "")
         except Exception:  # noqa: BLE001
             return v.hex()
+    if isinstance(v, str):
+        return v.replace("\x00", "")
     if isinstance(v, (tuple, list)):
         return [_safe(x) for x in v]
     if isinstance(v, dict):
-        return {str(k): _safe(x) for k, x in v.items()}
+        return {str(k).replace("\x00", ""): _safe(x) for k, x in v.items()}
     if hasattr(v, "numerator") and hasattr(v, "denominator"):
         try:
             return float(v)
