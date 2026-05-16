@@ -1221,6 +1221,7 @@ async def patch_source(
 @router.post("/{source_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_photo_analyze(
     source_id: uuid.UUID,
+    force: bool = False,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
@@ -1228,10 +1229,15 @@ async def trigger_photo_analyze(
 
     Companion to the batch_import=true upload mode: bulk camera-roll
     imports land without auto-vision; this endpoint lets the user
-    cherry-pick which ones to actually analyze. Idempotent — if
-    raw_metadata.vision is already populated, returns the existing
-    job result without re-running. (Re-running would double-charge
-    for content that hasn't changed.)
+    cherry-pick which ones to actually analyze. Idempotent by default
+    — if raw_metadata.vision is already populated, returns
+    `already_analyzed` without re-running so we don't double-charge
+    on content that hasn't changed.
+
+    Pass `?force=true` to re-run vision on a photo that has already
+    been analyzed. Use case: the personal-photo prompt has changed
+    materially (e.g. 2026-05-16's structured_facts addition) and
+    older photos need to be re-extracted to pick up the new fields.
     """
     src = await db.get(SourceDocument, source_id)
     if src is None or src.owner_user_id != user.id:
@@ -1241,7 +1247,7 @@ async def trigger_photo_analyze(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"/analyze only supports photo sources, got {src.source_type}",
         )
-    if (src.raw_metadata or {}).get("vision") is not None:
+    if not force and (src.raw_metadata or {}).get("vision") is not None:
         return {"status": "already_analyzed"}
 
     job_id = await enqueue_personal_photo_vision(str(src.id))
@@ -1250,7 +1256,7 @@ async def trigger_photo_analyze(
     raw["vision_pending"] = True
     src.raw_metadata = raw
     await db.commit()
-    return {"status": "enqueued", "job_id": job_id}
+    return {"status": "enqueued", "job_id": job_id, "forced": str(force).lower()}
 
 
 @router.post("/{source_id}/extract-facts", status_code=status.HTTP_202_ACCEPTED)
