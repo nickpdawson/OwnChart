@@ -189,12 +189,19 @@ async def facts_for_topic(
     limit: int = 200,
     include_archived: bool = False,
     include_source_only: bool = False,
+    person_record_id: uuid.UUID | None = None,
 ) -> list[ExtractedFact]:
     """Return facts that belong to a topic. See ``topic_membership_clause``.
 
     `include_source_only=False` (default, 2026-05-11): also hide facts
     whose `significance='source_only'`. The source detail page is the
     only surface that opts in via its "show source-only" toggle.
+
+    M02 perimeter (Batch 5): when `person_record_id` is supplied,
+    constrain matches to that record's facts. Post-migration 0032
+    Topics already carry person_record_id, so the topic_id itself
+    is record-scoped; this clause is defense-in-depth against future
+    cross-record alias collisions.
     """
     clause = topic_membership_clause(topic)
     if clause is None:
@@ -205,6 +212,8 @@ async def facts_for_topic(
         .order_by(ExtractedFact.date_start.asc().nullslast(), ExtractedFact.created_at.desc())
         .limit(limit)
     )
+    if person_record_id is not None:
+        stmt = stmt.where(ExtractedFact.person_record_id == person_record_id)
     if not include_archived:
         stmt = stmt.where(ExtractedFact.review_state.notin_(_HIDDEN_STATES))
     if not include_source_only:

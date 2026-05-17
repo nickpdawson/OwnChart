@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import re
 
+from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.config import get_settings
 from ..core.db import get_session
 from ..core.demo_session import (
@@ -45,8 +46,6 @@ from ..models.conversation import (
     ConversationMessage,
 )
 from ..models.topic import Topic
-from ..models.user import User
-from .auth import get_current_user
 
 router = APIRouter()
 
@@ -179,7 +178,9 @@ def _message_out(m: ConversationMessage, citations: list[ConversationCitation]) 
 
 
 @router.get("/providers", response_model=list[ProviderShape])
-async def list_providers(_user: User = Depends(get_current_user)) -> list[ProviderShape]:
+async def list_providers(
+    _ctx: AuthContext = Depends(get_auth_context),
+) -> list[ProviderShape]:
     return [ProviderShape(**p) for p in available_providers()]
 
 
@@ -218,22 +219,33 @@ def _is_episode_shaped(text: str) -> bool:
 
 
 async def _question_mentions_event_alias(
-    db: AsyncSession, *, user_id: uuid.UUID, text: str,
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    text: str,
+    person_record_id: uuid.UUID | None = None,
 ) -> bool:
     """True if `text` literally contains an Event display_title or
     alias the user has registered. Used to route alias-only questions
     ("How did 2026 left eye affect my training?") into Episode
     Intelligence even when no episode-keyword fires.
+
+    M02 perimeter (Batch 5): scopes by `person_record_id` when
+    supplied so a caregiver's alias from another record can't trigger
+    EI routing against the active record.
     """
     from ..models.episode import Episode
     if not text:
         return False
     q = text.lower()
-    rows = list((await db.execute(
+    ep_stmt = (
         select(Episode)
         .where(Episode.user_id == user_id)
         .where((Episode.aliases != []) | (Episode.display_title.isnot(None)))  # type: ignore[arg-type]
-    )).scalars().all())
+    )
+    if person_record_id is not None:
+        ep_stmt = ep_stmt.where(Episode.person_record_id == person_record_id)
+    rows = list((await db.execute(ep_stmt)).scalars().all())
     for ep in rows:
         candidates: list[str] = []
         if ep.display_title:
@@ -252,9 +264,10 @@ async def create_conversation_route(
     body: CreateRequest,
     background_tasks: BackgroundTasks,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
+    user = ctx.user
     # In demo mode, stamp the per-visitor session id so list / detail
     # filters can scope this conversation to its creator. No-op outside
     # demo. See core/demo_session.py for the rationale.
@@ -275,6 +288,7 @@ async def create_conversation_route(
             should_route_to_ei = True
         elif await _question_mentions_event_alias(
             db, user_id=user.id, text=body.first_message,
+            person_record_id=ctx.active_record_id,
         ):
             should_route_to_ei = True
     if should_route_to_ei:
@@ -301,12 +315,14 @@ async def create_conversation_route(
         ei_conv = await seed_episode_intelligence_conversation(
             db, user, first_message=body.first_message,
             extra_scope=ei_extra or None,
+            person_record_id=ctx.active_record_id,
         )
         background_tasks.add_task(
             run_episode_intelligence_in_background,
             conversation_id=ei_conv.id,
             user_id=user.id,
             natural_language=body.first_message,
+            person_record_id=ctx.active_record_id,
         )
         # Fetch the seeded conv + its single user message and return.
         msgs = list((await db.execute(
@@ -332,6 +348,7 @@ async def create_conversation_route(
         kind=body.kind,
         title=body.title,
         scope=body.scope,
+        person_record_id=ctx.active_record_id,
     )
     messages_out: list[MessageOut] = []
     if body.first_message:
@@ -364,9 +381,10 @@ async def list_conversations(
     archived: bool | None = Query(default=None),
     anchor_fact_id: str | None = Query(default=None),
     limit: int = Query(default=50, le=200),
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[ConversationSummary]:
+    user = ctx.user
     # Demo-mode scoping: a shared demo account would otherwise leak
     # every prior visitor's typed chat into this visitor's list. The
     # demo_session_id cookie isolates by browser visit.
@@ -377,9 +395,15 @@ async def list_conversations(
             # request yet (the middleware sets it on the response).
             # Return empty rather than dump the whole shared list.
             return []
+    # M02 perimeter (Batch 5): scope by active record AND keep the
+    # user_id filter. The user_id filter is preserved because
+    # conversations are user-owned (the actor); person_record_id
+    # gates which record the thread is about. A caregiver switching
+    # active records sees a different list each time.
     stmt = (
         select(Conversation)
         .where(Conversation.user_id == user.id)
+        .where(Conversation.person_record_id == ctx.active_record_id)
         .order_by(Conversation.last_message_at.desc().nullslast(),
                   Conversation.created_at.desc())
         .limit(limit)
@@ -423,11 +447,19 @@ async def list_conversations(
 async def get_conversation_route(
     conv_id: uuid.UUID,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
+    user = ctx.user
     conv = await db.get(Conversation, conv_id)
-    if conv is None or conv.user_id != user.id:
+    # M02 perimeter: 404 on cross-record. Existing user_id + demo
+    # checks are preserved (they're orthogonal — record gates which
+    # patient; user/demo gates which actor + visitor).
+    if (
+        conv is None
+        or conv.user_id != user.id
+        or conv.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not demo_session_matches(conv.scope, request):
         # Demo mode: another visitor's conversation. 404 — never
@@ -459,11 +491,16 @@ async def post_message_route(
     conv_id: uuid.UUID,
     body: SendRequest,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationDetail:
+    user = ctx.user
     conv = await db.get(Conversation, conv_id)
-    if conv is None or conv.user_id != user.id:
+    if (
+        conv is None
+        or conv.user_id != user.id
+        or conv.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -474,7 +511,7 @@ async def post_message_route(
         provider_override=body.provider,
         model_override=body.model,
     )
-    return await get_conversation_route(conv_id, user, db)
+    return await get_conversation_route(conv_id, request, ctx, db)
 
 
 @router.patch("/{conv_id}", response_model=ConversationSummary)
@@ -482,11 +519,16 @@ async def patch_conversation_route(
     conv_id: uuid.UUID,
     body: PatchRequest,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> ConversationSummary:
+    user = ctx.user
     conv = await db.get(Conversation, conv_id)
-    if conv is None or conv.user_id != user.id:
+    if (
+        conv is None
+        or conv.user_id != user.id
+        or conv.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -504,11 +546,16 @@ async def patch_conversation_route(
 async def delete_conversation_route(
     conv_id: uuid.UUID,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> None:
+    user = ctx.user
     conv = await db.get(Conversation, conv_id)
-    if conv is None or conv.user_id != user.id:
+    if (
+        conv is None
+        or conv.user_id != user.id
+        or conv.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -533,7 +580,7 @@ class CandidateRefOut(BaseModel):
 async def list_conversation_candidates(
     conv_id: uuid.UUID,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[CandidateRefOut]:
     """Candidates produced by this conversation's most recent sensemaking
@@ -542,8 +589,13 @@ async def list_conversation_candidates(
     from ..models.sensemaking_candidate import SensemakingCandidate
     from ..models.sensemaking_job import SensemakingJob
 
+    user = ctx.user
     conv = await db.get(Conversation, conv_id)
-    if conv is None or conv.user_id != user.id:
+    if (
+        conv is None
+        or conv.user_id != user.id
+        or conv.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -560,9 +612,13 @@ async def list_conversation_candidates(
     ]
     if not msg_run_ids:
         return []
+    # M02 perimeter: scope SensemakingJob by active record so a
+    # model_run_id collision (astronomically improbable but cheap to
+    # guard) cannot surface a job from a different record.
     jobs = list((await db.execute(
         select(SensemakingJob)
         .where(SensemakingJob.user_id == user.id)
+        .where(SensemakingJob.person_record_id == ctx.active_record_id)
         .where(SensemakingJob.model_run_id.in_(msg_run_ids))
         .order_by(SensemakingJob.created_at.desc())
     )).scalars().all())
@@ -570,6 +626,7 @@ async def list_conversation_candidates(
         return []
     cands = list((await db.execute(
         select(SensemakingCandidate)
+        .where(SensemakingCandidate.person_record_id == ctx.active_record_id)
         .where(SensemakingCandidate.job_id.in_([j.id for j in jobs]))
         .order_by(SensemakingCandidate.created_at.asc())
     )).scalars().all())
@@ -627,7 +684,7 @@ class SaveAsTopicResponse(BaseModel):
 async def suggest_topic_route(
     conv_id: uuid.UUID,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> TopicSuggestion:
     """LLM-suggested Topic for promoting this chat to a Dossier.
@@ -638,8 +695,13 @@ async def suggest_topic_route(
     Save-as-Dossier modal with. The user is the final editor; this is
     just a starting point.
     """
+    user = ctx.user
     conv = await db.get(Conversation, conv_id)
-    if conv is None or conv.user_id != user.id:
+    if (
+        conv is None
+        or conv.user_id != user.id
+        or conv.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -660,9 +722,15 @@ async def suggest_topic_route(
             detail="Conversation has no user question + assistant answer yet",
         )
 
+    # M02 perimeter: only the active record's topics. Topic names
+    # repeat across records ("Pregnancy" on multiple records); we
+    # must not leak the parent's topic list into the caregiver's
+    # save-as-dossier modal.
     existing_topics = [
         t.name for t in (await db.execute(
-            select(Topic).order_by(Topic.name)
+            select(Topic)
+            .where(Topic.person_record_id == ctx.active_record_id)
+            .order_by(Topic.name)
         )).scalars().all()
     ]
     existing_block = (
@@ -702,7 +770,7 @@ async def save_as_topic_route(
     conv_id: uuid.UUID,
     body: SaveAsTopicBody,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SaveAsTopicResponse:
     """Create a Topic from this conversation and re-scope the chat to it.
@@ -714,11 +782,22 @@ async def save_as_topic_route(
     Slug collision: return existing Topic id with `conflict=true` so the
     UI can prompt "Add this conversation to your existing X dossier?"
     rather than failing the save.
+
+    M02 perimeter (Batch 5): requires caregiver+ since this creates a
+    record-level Topic, which shapes how every dossier surface
+    retrieves facts. Slug collision is now per-record (Topics post-
+    migration 0032 have UNIQUE(person_record_id, slug)) so two records
+    can each have a "Pregnancy" dossier without colliding.
     """
     from .topics import _slugify  # local import; topics.py defines it
 
+    user = ctx.user
     conv = await db.get(Conversation, conv_id)
-    if conv is None or conv.user_id != user.id:
+    if (
+        conv is None
+        or conv.user_id != user.id
+        or conv.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -728,8 +807,11 @@ async def save_as_topic_route(
     aliases = [a.strip() for a in body.aliases if a and a.strip()]
     description = body.description.strip() if body.description else None
 
+    # M02 perimeter: per-record slug collision check.
     existing = (await db.execute(
-        select(Topic).where(Topic.slug == slug)
+        select(Topic)
+        .where(Topic.person_record_id == ctx.active_record_id)
+        .where(Topic.slug == slug)
     )).scalar_one_or_none()
     if existing is not None:
         # Don't overwrite the existing topic — attach the conversation
@@ -751,6 +833,7 @@ async def save_as_topic_route(
         description=description,
         related_concepts=[],
         created_by=user.id,
+        person_record_id=ctx.active_record_id,
     )
     db.add(topic)
     await db.flush()

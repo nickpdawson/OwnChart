@@ -24,6 +24,11 @@ class SensemakingCandidate(Base, TimestampMixin):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    # M02 perimeter (Batch 5): denormalize record scope from parent
+    # job so list / inbox queries can filter without a join.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
     job_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sensemaking_jobs.id", ondelete="CASCADE"),
         nullable=False,

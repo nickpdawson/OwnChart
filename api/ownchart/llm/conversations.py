@@ -50,10 +50,19 @@ async def create_conversation(
     kind: str = "ask",
     title: str | None = None,
     scope: dict[str, Any] | None = None,
+    person_record_id: uuid.UUID | None = None,
 ) -> Conversation:
+    """Create a Conversation row.
+
+    M02 perimeter (Batch 5): `person_record_id` is the record this
+    thread is *about*; required for all route-driven calls. Defaults
+    to None for legacy in-process callers (workers, tests) but the
+    route layer always passes ctx.active_record_id.
+    """
     now = datetime.now(timezone.utc)
     conv = Conversation(
         user_id=user.id,
+        person_record_id=person_record_id,
         title=title,
         kind=kind,
         scope=scope or {"type": "whole_record"},
@@ -67,6 +76,7 @@ async def create_conversation(
     await db.flush()
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=person_record_id,
         event_type="conversation_created",
         subject_type="conversation",
         subject_id=str(conv.id),
@@ -87,6 +97,7 @@ async def _gather_evidence(
     question: str,
     limit: int = 25,
     user_id: uuid.UUID | None = None,
+    person_record_id: uuid.UUID | None = None,
 ) -> tuple[list[ExtractedFact], list[SourceDocument]]:
     """Pull facts + sources relevant to the conversation's scope + the
     user's latest question.
@@ -99,13 +110,28 @@ async def _gather_evidence(
       - For `episode` scope, fetch all member facts.
       - For `whole_record` (default), run search_facts() against the
         question.
+
+    M02 perimeter (Batch 5): when `person_record_id` is supplied,
+    EVERY scope branch's retrieval is constrained to that record.
+    This is load-bearing because conversations feed LLM context;
+    without it, a caregiver chatting about a parent's topic could
+    surface their own facts that happen to share a slug.
     """
     kind = scope.get("type") or "whole_record"
     facts: list[ExtractedFact] = []
     sources: list[SourceDocument] = []
 
+    def _scope_record(stmt):
+        """Apply the active-record filter when caller scoped it."""
+        if person_record_id is None:
+            return stmt
+        return stmt.where(ExtractedFact.person_record_id == person_record_id)
+
     if kind == "whole_record":
-        facts = await search_facts(db, question, limit=limit, user_id=user_id)
+        facts = await search_facts(
+            db, question, limit=limit,
+            user_id=user_id, person_record_id=person_record_id,
+        )
 
     elif kind == "period":
         from datetime import datetime as _dt
@@ -121,38 +147,57 @@ async def _gather_evidence(
             .order_by(ExtractedFact.date_start.desc().nullslast())
             .limit(limit * 2)
         )
+        stmt = _scope_record(stmt)
         if start_dt is not None:
             stmt = stmt.where(ExtractedFact.date_start >= start_dt)
         if end_dt is not None:
             stmt = stmt.where(ExtractedFact.date_start <= end_dt)
         rows = list((await db.execute(stmt)).scalars().all())
         # Intersect with question-search to keep relevance.
-        searched = await search_facts(db, question, limit=limit, user_id=user_id)
+        searched = await search_facts(
+            db, question, limit=limit,
+            user_id=user_id, person_record_id=person_record_id,
+        )
         searched_ids = {s.id for s in searched}
         facts = [r for r in rows if r.id in searched_ids] or rows[:limit]
 
     elif kind == "source":
         sids = [uuid.UUID(s) for s in scope.get("source_ids", [])]
         from ..models.evidence_anchor import EvidenceAnchor
-        anchor_ids = list((await db.execute(
-            select(EvidenceAnchor.id)
-            .where(EvidenceAnchor.source_document_id.in_(sids))
+        from ..models.source_document import SourceDocument as _SD
+        # M02 perimeter: only resolve anchors for sources that live
+        # under the active record. A user passing scope.source_ids
+        # that point at another record cannot retrieve via this path.
+        source_filter = _SD.id.in_(sids)
+        if person_record_id is not None:
+            source_filter = source_filter & (_SD.person_record_id == person_record_id)
+        in_scope_source_ids = list((await db.execute(
+            select(_SD.id).where(source_filter)
         )).scalars().all())
-        if anchor_ids:
-            stmt = (
-                select(ExtractedFact)
-                .where(ExtractedFact.evidence_anchor_ids.op("&&")(anchor_ids))
-                .order_by(ExtractedFact.date_start.desc().nullslast())
-                .limit(limit)
-            )
-            facts = list((await db.execute(stmt)).scalars().all())
+        if in_scope_source_ids:
+            anchor_ids = list((await db.execute(
+                select(EvidenceAnchor.id)
+                .where(EvidenceAnchor.source_document_id.in_(in_scope_source_ids))
+            )).scalars().all())
+            if anchor_ids:
+                stmt = (
+                    select(ExtractedFact)
+                    .where(ExtractedFact.evidence_anchor_ids.op("&&")(anchor_ids))
+                    .order_by(ExtractedFact.date_start.desc().nullslast())
+                    .limit(limit)
+                )
+                stmt = _scope_record(stmt)
+                facts = list((await db.execute(stmt)).scalars().all())
 
     elif kind == "topic":
         slug = scope.get("topic_slug")
         if slug:
-            topic = (await db.execute(
-                select(Topic).where(Topic.slug == slug)
-            )).scalar_one_or_none()
+            topic_stmt = select(Topic).where(Topic.slug == slug)
+            if person_record_id is not None:
+                topic_stmt = topic_stmt.where(
+                    Topic.person_record_id == person_record_id,
+                )
+            topic = (await db.execute(topic_stmt)).scalar_one_or_none()
             if topic is not None:
                 from ..retrieval.topics import facts_for_topic
                 # Topic-scoped chats also need to honor the user's
@@ -160,9 +205,13 @@ async def _gather_evidence(
                 # the user asks "look at my OrthoVirginia records,"
                 # retrieval must reach OrthoVirginia — not just
                 # left-knee-aliased facts. Round-3 read 2026-05-15 PM.
-                topic_facts = await facts_for_topic(db, topic, limit=limit)
+                topic_facts = await facts_for_topic(
+                    db, topic, limit=limit,
+                    person_record_id=person_record_id,
+                )
                 question_facts = await search_facts(
-                    db, question, limit=limit, user_id=user_id,
+                    db, question, limit=limit,
+                    user_id=user_id, person_record_id=person_record_id,
                 )
                 # Topic facts first (the dossier context the user
                 # explicitly opened), then question-driven results.
@@ -178,18 +227,31 @@ async def _gather_evidence(
                 facts = merged
 
     elif kind == "episode":
-        from ..models.episode import EpisodeMember
+        from ..models.episode import Episode, EpisodeMember
         eid = scope.get("episode_id")
         if eid:
             episode_id = uuid.UUID(eid)
-            fact_ids = list((await db.execute(
-                select(EpisodeMember.subject_id)
-                .where(EpisodeMember.episode_id == episode_id)
-                .where(EpisodeMember.member_type == "fact")
-            )).scalars().all())
-            if fact_ids:
-                stmt = select(ExtractedFact).where(ExtractedFact.id.in_(fact_ids))
-                facts = list((await db.execute(stmt)).scalars().all())
+            # M02 perimeter: only resolve the episode if it lives on
+            # the active record. Episodes carry person_record_id from
+            # migration 0029.
+            ep_stmt = select(Episode.id).where(Episode.id == episode_id)
+            if person_record_id is not None:
+                ep_stmt = ep_stmt.where(
+                    Episode.person_record_id == person_record_id,
+                )
+            in_scope = (await db.execute(ep_stmt)).scalar_one_or_none()
+            if in_scope is not None:
+                fact_ids = list((await db.execute(
+                    select(EpisodeMember.subject_id)
+                    .where(EpisodeMember.episode_id == episode_id)
+                    .where(EpisodeMember.member_type == "fact")
+                )).scalars().all())
+                if fact_ids:
+                    stmt = select(ExtractedFact).where(
+                        ExtractedFact.id.in_(fact_ids),
+                    )
+                    stmt = _scope_record(stmt)
+                    facts = list((await db.execute(stmt)).scalars().all())
 
     elif kind == "fact":
         # 2026-05-11 PM bug fix: a fact-scoped conversation needs the
@@ -206,6 +268,18 @@ async def _gather_evidence(
                 anchor_uuid = uuid.UUID(str(anchor_id_str))
             except (TypeError, ValueError):
                 anchor_uuid = None
+            # M02 perimeter: don't run the planner against an anchor
+            # fact that lives on another record. Resolve + scope-check
+            # the anchor first; a fact-scoped chat against a sibling
+            # record's anchor must produce zero context.
+            if anchor_uuid is not None and person_record_id is not None:
+                anchor_check = (await db.execute(
+                    select(ExtractedFact.id)
+                    .where(ExtractedFact.id == anchor_uuid)
+                    .where(ExtractedFact.person_record_id == person_record_id)
+                )).scalar_one_or_none()
+                if anchor_check is None:
+                    anchor_uuid = None
             if anchor_uuid is not None:
                 planner = await plan_episode_intelligence(
                     db, fact_id=anchor_uuid,
@@ -235,10 +309,12 @@ async def _gather_evidence(
                         except ValueError:
                             continue
                     if fact_uuids:
-                        rows = list((await db.execute(
+                        ids_stmt = (
                             select(ExtractedFact)
                             .where(ExtractedFact.id.in_(fact_uuids))
-                        )).scalars().all())
+                        )
+                        ids_stmt = _scope_record(ids_stmt)
+                        rows = list((await db.execute(ids_stmt)).scalars().all())
                         facts = rows
                     # Carry wearable-window aggregates into the prompt
                     # via a synthetic system fact. Cheap; lets the LLM
@@ -307,9 +383,19 @@ async def _gather_evidence(
             )).scalars().all()
             sid_list = [s for s in sid_rows if s is not None]
             if sid_list:
-                src_rows = (await db.execute(
-                    select(SourceDocument).where(SourceDocument.id.in_(sid_list))
-                )).scalars().all()
+                # M02 perimeter: defense-in-depth on the source
+                # resolution. The fact set is already record-scoped
+                # above, but a stray anchor pointing at a cross-record
+                # source from a pre-migration row should still be
+                # caught.
+                src_stmt = select(SourceDocument).where(
+                    SourceDocument.id.in_(sid_list),
+                )
+                if person_record_id is not None:
+                    src_stmt = src_stmt.where(
+                        SourceDocument.person_record_id == person_record_id,
+                    )
+                src_rows = (await db.execute(src_stmt)).scalars().all()
                 sources = list(src_rows)
 
     return facts[:limit], sources
@@ -548,9 +634,15 @@ async def add_user_message_and_reply(
     ai.default_provider from settings.
     """
     now = datetime.now(timezone.utc)
+    # M02 perimeter (Batch 5): inherit the record scope from the
+    # parent Conversation. Every message + assistant reply on this
+    # thread carries the same person_record_id; retrieval below uses
+    # the same value to constrain evidence gathering.
+    conv_record_id = conv.person_record_id
     user_msg = ConversationMessage(
         conversation_id=conv.id,
         user_id=user.id,
+        person_record_id=conv_record_id,
         role="user",
         content=content,
         created_at=now,
@@ -568,6 +660,7 @@ async def add_user_message_and_reply(
         sys_msg = ConversationMessage(
             conversation_id=conv.id,
             user_id=user.id,
+            person_record_id=conv_record_id,
             role="assistant",
             content=refusal,
             privacy_mode=privacy_mode,
@@ -582,6 +675,7 @@ async def add_user_message_and_reply(
     facts, sources = await _gather_evidence(
         db, scope=conv.scope or {"type": "whole_record"}, question=content,
         user_id=user.id,
+        person_record_id=conv_record_id,
     )
 
     # Load recent history (this conversation only) for prompt context.
@@ -686,6 +780,7 @@ async def add_user_message_and_reply(
     assistant_msg = ConversationMessage(
         conversation_id=conv.id,
         user_id=user.id,
+        person_record_id=conv_record_id,
         role="assistant",
         content=answer_text,
         provider=result.provider,
@@ -704,6 +799,17 @@ async def add_user_message_and_reply(
     await db.flush()
 
     # Persist citations as their own rows, deduped on (type, subject_id).
+    #
+    # M02 perimeter (Batch 5): citations the LLM emits must point at
+    # subjects that live on the active record. We pre-compute the
+    # in-scope `fact` and `source` id sets from the evidence we just
+    # gathered and drop any citation whose subject_id isn't in it.
+    # Other citation types (`anchor`, `episode`, `candidate`, `event`)
+    # pass through — they don't surface across records in V1, but if
+    # a future LLM emits one we don't silently insert it without
+    # being scoped. Validate those separately when we light them up.
+    in_scope_fact_ids = {f.id for f in facts}
+    in_scope_source_ids = {s.id for s in sources}
     seen: set[tuple[str, uuid.UUID]] = set()
     for ord_, c in enumerate(citations_in):
         ctype = c.get("citation_type")
@@ -715,6 +821,11 @@ async def add_user_message_and_reply(
         except (TypeError, ValueError):
             continue
         if (ctype, subject_id) in seen:
+            continue
+        if ctype == "fact" and subject_id not in in_scope_fact_ids:
+            # Hallucinated or out-of-record fact id — drop silently.
+            continue
+        if ctype == "source" and subject_id not in in_scope_source_ids:
             continue
         seen.add((ctype, subject_id))
         db.add(ConversationCitation(

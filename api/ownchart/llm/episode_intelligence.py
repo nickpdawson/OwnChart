@@ -56,6 +56,7 @@ async def run_episode_intelligence(
     natural_language: str | None = None,
     question: str | None = None,
     prefilled_conversation_id: uuid.UUID | None = None,
+    person_record_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """Returns a dict with the persisted job_id / conversation_id /
     candidate_id and the rendered structured output. Caller (the
@@ -68,12 +69,19 @@ async def run_episode_intelligence(
     synchronously, returns immediately, and schedules this function
     as a background task. The frontend polls the conversation for
     the assistant message to appear.
+
+    M02 perimeter (Batch 5): `person_record_id` stamps the active
+    record onto SensemakingJob, the (possibly-new) Conversation,
+    Messages, Candidate, and AuditEvent rows. When prefilled, we
+    inherit it from the seeded Conversation so the background path
+    can't drift from what the route set.
     """
     now = datetime.now(timezone.utc)
     privacy_mode = await setting_effective(db, user, "ai.privacy_mode")
 
     job = SensemakingJob(
         user_id=user.id,
+        person_record_id=person_record_id,
         job_type="episode_intelligence",
         status="pending",
         privacy_mode=str(privacy_mode) if privacy_mode is not None else "unknown",
@@ -89,6 +97,7 @@ async def run_episode_intelligence(
     await db.flush()
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=person_record_id,
         event_type="episode_intelligence_started",
         subject_type="sensemaking_job",
         subject_id=str(job.id),
@@ -162,6 +171,13 @@ async def run_episode_intelligence(
             return {"job_id": str(job.id), "status": "failed",
                     "error": job.error, "candidate": None,
                     "conversation_id": None}
+        # M02 perimeter: prefer the conversation's record over the
+        # caller's kwarg. The seeded conversation is the source of
+        # truth for the background path; if a caller passed a
+        # different person_record_id, we drift back to the seed.
+        if conv.person_record_id is not None:
+            person_record_id = conv.person_record_id
+            job.person_record_id = person_record_id
         # Stamp the resolved anchor on the conv so the UI can navigate
         # to the Event later from this conversation.
         scope = dict(conv.scope or {})
@@ -177,6 +193,7 @@ async def run_episode_intelligence(
     else:
         conv = Conversation(
             user_id=user.id,
+            person_record_id=person_record_id,
             title=(question or anchor.get("label") or "Episode Intelligence")[:96],
             kind="episode_intelligence",
             scope={"type": "fact", "anchor_fact_id": anchor.get("fact_id")},
@@ -190,6 +207,7 @@ async def run_episode_intelligence(
             db.add(ConversationMessage(
                 conversation_id=conv.id,
                 user_id=user.id,
+                person_record_id=person_record_id,
                 role="user",
                 content=question,
                 created_at=now,
@@ -260,6 +278,7 @@ async def run_episode_intelligence(
         job.status = "completed"
         db.add(SensemakingCandidate(
             user_id=user.id,
+            person_record_id=person_record_id,
             job_id=job.id,
             candidate_type="safety_response",
             title=None,
@@ -271,6 +290,7 @@ async def run_episode_intelligence(
         db.add(ConversationMessage(
             conversation_id=conv.id,
             user_id=user.id,
+            person_record_id=person_record_id,
             role="assistant",
             content=structured["safety_response"],
             provider=result.provider,
@@ -353,6 +373,7 @@ async def run_episode_intelligence(
     a_msg = ConversationMessage(
         conversation_id=conv.id,
         user_id=user.id,
+        person_record_id=person_record_id,
         role="assistant",
         content=narrative,
         provider=result.provider,
@@ -403,6 +424,7 @@ async def run_episode_intelligence(
             )
     candidate = SensemakingCandidate(
         user_id=user.id,
+        person_record_id=person_record_id,
         job_id=job.id,
         candidate_type="episode",
         title=anchor.get("label") or "Episode",
@@ -426,6 +448,7 @@ async def run_episode_intelligence(
 
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=person_record_id,
         event_type="episode_intelligence_completed",
         subject_type="sensemaking_job",
         subject_id=str(job.id),
@@ -462,6 +485,7 @@ async def seed_episode_intelligence_conversation(
     *,
     first_message: str,
     extra_scope: dict | None = None,
+    person_record_id: uuid.UUID | None = None,
 ) -> Conversation:
     """Create a kind=episode_intelligence Conversation + its user
     message synchronously. Returns the persisted Conversation (with
@@ -475,6 +499,10 @@ async def seed_episode_intelligence_conversation(
     `extra_scope` is shallow-merged on top of the base scope. Used by
     the route in demo mode to stamp the per-visitor session id (see
     core/demo_session.py).
+
+    M02 perimeter (Batch 5): `person_record_id` stamps the active
+    record onto the Conversation + its first ConversationMessage so
+    the background EI run inherits the scope from the seed row.
     """
     now = datetime.now(timezone.utc)
     scope: dict = {"type": "whole_record", "status": "running"}
@@ -482,6 +510,7 @@ async def seed_episode_intelligence_conversation(
         scope.update(extra_scope)
     conv = Conversation(
         user_id=user.id,
+        person_record_id=person_record_id,
         title=(first_message or "Episode Intelligence")[:96],
         kind="episode_intelligence",
         scope=scope,
@@ -493,6 +522,7 @@ async def seed_episode_intelligence_conversation(
     db.add(ConversationMessage(
         conversation_id=conv.id,
         user_id=user.id,
+        person_record_id=person_record_id,
         role="user",
         content=first_message,
         created_at=now,
@@ -507,6 +537,7 @@ async def run_episode_intelligence_in_background(
     conversation_id: uuid.UUID,
     user_id: uuid.UUID,
     natural_language: str,
+    person_record_id: uuid.UUID | None = None,
 ) -> None:
     """Background task entry point. Opens its own SessionLocal —
     callers (FastAPI BackgroundTasks) run this after the response
@@ -515,6 +546,11 @@ async def run_episode_intelligence_in_background(
     On any exception, persists an assistant message with the error
     so the frontend's poll loop terminates and the user sees a
     clear failure instead of a forever-spinner.
+
+    M02 perimeter (Batch 5): the route passes the active record's
+    id explicitly. `run_episode_intelligence` will overwrite it
+    from the seeded conversation's person_record_id if they differ,
+    so the seed is authoritative.
     """
     from ..core.db import SessionLocal  # local import: avoid cycles
     from ..models.user import User as _User
@@ -530,6 +566,7 @@ async def run_episode_intelligence_in_background(
                 natural_language=natural_language,
                 question=natural_language,
                 prefilled_conversation_id=conversation_id,
+                person_record_id=person_record_id,
             )
         except Exception as e:  # noqa: BLE001
             log.warning(
@@ -547,6 +584,11 @@ async def run_episode_intelligence_in_background(
                     db.add(ConversationMessage(
                         conversation_id=conv.id,
                         user_id=user_id,
+                        # Inherit the conversation's record scope so
+                        # the failure message lives where the thread
+                        # is filtered (otherwise it stays NULL until
+                        # backfill and the thread looks half-empty).
+                        person_record_id=conv.person_record_id,
                         role="assistant",
                         content=(
                             "OwnChart hit an error while reading your "

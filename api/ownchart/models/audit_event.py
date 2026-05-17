@@ -29,6 +29,14 @@ class AuditEvent(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
+    # M02 perimeter (Batch 5): the record this audit row relates to.
+    # NULL is allowed for systemic events that aren't record-scoped
+    # (server startup, auth credential changes, etc.). Per migration
+    # 0029, audit_events stays nullable in 0031 specifically because
+    # of those systemic-row use cases.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     subject_type: Mapped[str | None] = mapped_column(String(48))
     subject_id: Mapped[str | None] = mapped_column(String(128))

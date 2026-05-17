@@ -23,6 +23,12 @@ class SensemakingJob(Base, TimestampMixin):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    # M02 perimeter (Batch 5): the record this job ran against.
+    # Distinct from user_id, which is the actor. Added by migration
+    # 0029; nullable until backfill (0030) + NOT NULL (0031).
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
 
     # source_summary | episode_candidates | review_queue_triage |
     # label_translation | period_summary

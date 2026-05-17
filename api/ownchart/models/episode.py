@@ -27,6 +27,13 @@ class Episode(Base, TimestampMixin):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    # M02 perimeter (Batch 5): the record this episode belongs to.
+    # Added by migration 0029, NOT NULL by 0031. Episodes are
+    # record-scoped — a caregiver's "Mom's hip surgery" episode lives
+    # on Mom's record, not the caregiver's.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     # User-renameable display title. UI shows display_title if set,
     # else falls back to title (the planner-derived label, often an
