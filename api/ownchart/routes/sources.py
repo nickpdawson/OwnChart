@@ -478,116 +478,19 @@ async def upload_photo(
 # worker that fills in retroactively.
 
 
-class NoteCreate(BaseModel):
-    body: str
-    title: str | None = None
-    event_date: datetime | None = None
-    source_label: str | None = None
-
-
-@router.post("/note", status_code=status.HTTP_201_CREATED)
-async def upload_note(
-    payload: NoteCreate,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_session),
-) -> SourceDetail:
-    """Typed note from the iOS Upload tab.
-
-    Creates a SourceDocument(source_type='note') + a confirmed
-    life_context_event fact at `event_date` (defaults to now) so the note
-    participates in timeline and dossier retrieval the moment it lands.
-    """
-    body = payload.body.strip()
-    if not body:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Empty note body",
-        )
-    if len(body) > 50_000:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Note body exceeds 50KB; split into multiple notes",
-        )
-
-    raw_bytes = body.encode("utf-8")
-
-    async def _stream():
-        yield raw_bytes
-
-    blob = await storage.write_blob(_stream(), suffix=".txt")
-    src_id = uuid.uuid4()
-    event_at = payload.event_date or datetime.now(timezone.utc)
-
-    src = SourceDocument(
-        id=src_id,
-        owner_user_id=user.id,
-        source_type="note",
-        original_filename=(payload.title or "note") + ".txt",
-        storage_uri=blob.storage_uri,
-        hash=f"sha256:{blob.sha256}",
-        mime_type="text/plain",
-        acquired_at=datetime.now(timezone.utc),
-        source_system="patient_upload",
-        source_label=payload.source_label or payload.title,
-        raw_metadata={
-            "title": payload.title,
-            "char_count": len(body),
-            "byte_count": len(raw_bytes),
-            "deduplicated": blob.already_existed,
-        },
-        captured_at=payload.event_date,
-        user_supplied_event_date=payload.event_date,
-    )
-    db.add(src)
-    await db.flush()
-
-    anchor = EvidenceAnchor(
-        source_document_id=src.id,
-        anchor_type="note_full",
-        text_excerpt=body[:2000],
-    )
-    db.add(anchor)
-    await db.flush()
-
-    label = (payload.title or body.split("\n", 1)[0])[:512]
-    fact = ExtractedFact(
-        fact_type="life_context_event",
-        label=label,
-        description=body[:4000],
-        date_start=event_at,
-        date_end=None,
-        date_precision="day",
-        confidence=100,
-        review_state="confirmed",
-        evidence_anchor_ids=[anchor.id],
-        extraction_method="patient_self_report",
-    )
-    db.add(fact)
-    # Auto-association — same pattern as photo upload.
-    nearby = await attach_nearby_clinical_events(db, user, src)
-    await db.commit()
-    await db.refresh(src)
-
-    log.info(
-        "note_uploaded",
-        source_id=str(src.id),
-        char_count=len(body),
-        dated=bool(payload.event_date),
-        titled=bool(payload.title),
-        nearby_clinical_events=len(nearby),
-    )
-
-    return SourceDetail(
-        **_to_summary(src).model_dump(),
-        storage_uri=src.storage_uri,
-        hash=src.hash,
-        mime_type=src.mime_type,
-        acquired_at=src.acquired_at,
-        raw_metadata=src.raw_metadata,
-        exif_metadata=None,
-        has_gps=False,
-    )
-
+# NOTE: a prior duplicate `@router.post("/note")` handler used to
+# live here (with a `NoteCreate` model carrying `event_date` +
+# `source_label`, body length cap, and a `attach_nearby_clinical_events`
+# call). FastAPI's last-registered-wins router resolution meant the
+# *second* `/note` handler further down in this file always shadowed
+# it — the duplicate was dead code as far back as Round-2 smoke.
+# Removed in M02 Slice 1 cleanup (BE-2 audit finding).
+#
+# Followup: the surviving `/note` handler (search this file for
+# `class NoteUpload`) lacks the body-size cap and the nearby-event
+# attachment. Both are worth restoring as part of the perimeter
+# rollout work for /api/sources/* (batch 2), but kept as separate
+# fixes from the dead-code removal so the diff stays minimal.
 
 _AUDIO_MIME_PREFIXES = ("audio/",)
 _VOICE_MAX_BYTES = 50 * 1024 * 1024  # 50MB; ~80 min of m4a
