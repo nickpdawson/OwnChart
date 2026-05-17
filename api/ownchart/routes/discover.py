@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import re
 import statistics
+import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -38,12 +39,11 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.auth_context import AuthContext, get_auth_context
 from ..core.db import get_session
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
-from ..models.user import User
-from .auth import get_current_user
 from .timeline import WEARABLE_METHODS
 
 router = APIRouter()
@@ -78,7 +78,9 @@ class DiscoverResponse(BaseModel):
 _STRENGTH_RANK = {"strong": 0, "moderate": 1, "needs_review": 2}
 
 
-async def _dense_periods(db: AsyncSession) -> list[DiscoverItem]:
+async def _dense_periods(
+    db: AsyncSession, *, person_record_id: uuid.UUID,
+) -> list[DiscoverItem]:
     """Years with clinical event counts well above the user's baseline.
 
     Tightened heuristic (UX polish 2026-05-10) — the prior rule was
@@ -100,6 +102,7 @@ async def _dense_periods(db: AsyncSession) -> list[DiscoverItem]:
     bucket = func.date_trunc("year", ExtractedFact.date_start)
     rows = (await db.execute(
         select(bucket.label("yr"), func.count().label("n"))
+        .where(ExtractedFact.person_record_id == person_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.extraction_method.notin_(WEARABLE_METHODS))
         .group_by("yr")
@@ -161,7 +164,9 @@ async def _dense_periods(db: AsyncSession) -> list[DiscoverItem]:
     return out
 
 
-async def _long_gaps(db: AsyncSession) -> list[DiscoverItem]:
+async def _long_gaps(
+    db: AsyncSession, *, person_record_id: uuid.UUID,
+) -> list[DiscoverItem]:
     """Stretches of >12mo with no clinical events between dated facts.
 
     A gap is only meaningful if there's activity on both sides — a
@@ -171,6 +176,7 @@ async def _long_gaps(db: AsyncSession) -> list[DiscoverItem]:
     """
     rows = (await db.execute(
         select(ExtractedFact.date_start)
+        .where(ExtractedFact.person_record_id == person_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.extraction_method.notin_(WEARABLE_METHODS))
         .order_by(ExtractedFact.date_start.asc())
@@ -219,7 +225,9 @@ async def _long_gaps(db: AsyncSession) -> list[DiscoverItem]:
     return out
 
 
-async def _connected_episodes(db: AsyncSession) -> list[DiscoverItem]:
+async def _connected_episodes(
+    db: AsyncSession, *, person_record_id: uuid.UUID,
+) -> list[DiscoverItem]:
     """Detect "this is parts of one event, not separate life events."
 
     Heuristic (V1, on-read): facts grouped by `(UTC date, first-anchor
@@ -252,6 +260,7 @@ async def _connected_episodes(db: AsyncSession) -> list[DiscoverItem]:
             ExtractedFact.date_start.label("date_start"),
             anchor_id,
         )
+        .where(ExtractedFact.person_record_id == person_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.fact_type.in_(
             ("procedure", "condition", "encounter", "medication", "observation")
@@ -300,6 +309,7 @@ async def _connected_episodes(db: AsyncSession) -> list[DiscoverItem]:
         s_q = await db.execute(
             select(SourceDocument.id, SourceDocument.source_label, SourceDocument.original_filename)
             .where(SourceDocument.id.in_(source_ids))
+            .where(SourceDocument.person_record_id == person_record_id)
         )
         for sid, slabel, sfile in s_q.all():
             src_labels[sid] = (slabel or sfile or "this source")
@@ -383,7 +393,9 @@ def _looks_like_fhir_id(label: str) -> bool:
     return bool(_FHIR_ID_PATTERN.match(label or ""))
 
 
-async def _unreviewed_high_counts(db: AsyncSession) -> list[DiscoverItem]:
+async def _unreviewed_high_counts(
+    db: AsyncSession, *, person_record_id: uuid.UUID,
+) -> list[DiscoverItem]:
     """Fact types with conspicuous needs_review backlog.
 
     Always uses the `needs_review` strength label — this isn't a
@@ -392,6 +404,7 @@ async def _unreviewed_high_counts(db: AsyncSession) -> list[DiscoverItem]:
     """
     rows = (await db.execute(
         select(ExtractedFact.fact_type, func.count().label("n"))
+        .where(ExtractedFact.person_record_id == person_record_id)
         .where(ExtractedFact.review_state == "needs_review")
         .group_by(ExtractedFact.fact_type)
         .having(func.count() >= 5)
@@ -426,7 +439,7 @@ async def _unreviewed_high_counts(db: AsyncSession) -> list[DiscoverItem]:
 
 @router.get("")
 async def get_discover(
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
     limit: int = Query(default=20, ge=1, le=100),
     include_dismissed: bool = Query(default=False),
@@ -438,12 +451,21 @@ async def get_discover(
     derived (e.g. `connected_episode:{date}:{source_id}`). Per-user
     dismissals live in `audit_events`
     (event_type='discover_dismissed', subject_type='discover_item').
+
+    M02 perimeter (Batch 7): every aggregation passes
+    ctx.active_record_id to its helper so dense-period years,
+    long-gap stretches, connected-episode bundles, and
+    needs-review counts are all derived from the active record's
+    facts only. Dismissals are scoped by `(user, active_record)`
+    so dismissing "dense year 2026" on Mom's record doesn't hide
+    it on the caregiver's own record.
     """
+    user = ctx.user
     items: list[DiscoverItem] = []
-    items.extend(await _connected_episodes(db))
-    items.extend(await _dense_periods(db))
-    items.extend(await _long_gaps(db))
-    items.extend(await _unreviewed_high_counts(db))
+    items.extend(await _connected_episodes(db, person_record_id=ctx.active_record_id))
+    items.extend(await _dense_periods(db, person_record_id=ctx.active_record_id))
+    items.extend(await _long_gaps(db, person_record_id=ctx.active_record_id))
+    items.extend(await _unreviewed_high_counts(db, person_record_id=ctx.active_record_id))
 
     items.sort(key=lambda i: _STRENGTH_RANK[i.signal_strength])
 
@@ -452,6 +474,7 @@ async def get_discover(
         dismissed_ids = set((await db.execute(
             select(_AE.subject_id)
             .where(_AE.user_id == user.id)
+            .where(_AE.person_record_id == ctx.active_record_id)
             .where(_AE.event_type == "discover_dismissed")
             .where(_AE.subject_type == "discover_item")
         )).scalars().all())
@@ -464,21 +487,26 @@ async def get_discover(
 async def dismiss_discover_item(
     item_id: str,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> None:
-    """Persist a per-user dismiss for a discover item.
+    """Persist a per-(user, record) dismiss for a discover item.
 
     `item_id` is the content-derived string (e.g.
     `connected_episode:2026-05-01:<source_uuid>`), so it can contain
     colons — hence the `:path` converter. Idempotent: re-dismissing
     is a no-op via the existing audit-row uniqueness check at read
     time (we just write another row; the read-time filter dedupes).
+
+    M02 perimeter (Batch 7): the dismiss is scoped to the active
+    record. Dismissing a discover item while looking at Mom's
+    record does NOT also hide it while looking at Dad's.
     """
     from ..models.audit_event import AuditEvent
-    from datetime import timezone as _tz
+    user = ctx.user
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         event_type="discover_dismissed",
         subject_type="discover_item",
         subject_id=item_id[:128],
@@ -492,18 +520,24 @@ async def dismiss_discover_item(
 @router.post("/{item_id:path}/undismiss", status_code=204)
 async def undismiss_discover_item(
     item_id: str,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> None:
-    """Reverse a prior dismiss. Writes a 'discover_undismissed' audit
-    row that suppresses the dismiss at read time."""
+    """Reverse a prior dismiss for this (user, record) pair.
+
+    Writes a 'discover_undismissed' audit row that suppresses the
+    dismiss at read time. M02 perimeter: only deletes dismisses
+    scoped to the active record, so undismissing on Mom's record
+    leaves the dismiss intact on Dad's."""
     from ..models.audit_event import AuditEvent
     from sqlalchemy import delete
+    user = ctx.user
     # Hard-delete the dismiss audit rows for this item — undismiss is
     # rare, so cleaning up is preferable to layered tombstones.
     await db.execute(
         delete(AuditEvent)
         .where(AuditEvent.user_id == user.id)
+        .where(AuditEvent.person_record_id == ctx.active_record_id)
         .where(AuditEvent.event_type == "discover_dismissed")
         .where(AuditEvent.subject_type == "discover_item")
         .where(AuditEvent.subject_id == item_id[:128])

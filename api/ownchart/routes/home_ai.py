@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.db import get_session
 from ..llm.providers import available_providers
 from ..models.conversation import Conversation
@@ -41,7 +42,6 @@ from ..models.sensemaking_candidate import SensemakingCandidate
 from ..models.source_document import SourceDocument
 from ..models.topic import Topic
 from ..models.user import User
-from .auth import get_current_user
 
 router = APIRouter()
 
@@ -98,19 +98,27 @@ class HomeAiPartnerResponse(BaseModel):
     insight: HomeInsight | None = None
 
 
-# Insight cache: (user_id, YYYY-MM-DD) → HomeInsight | None. None
-# means "we tried today and the model declined / failed — don't
-# re-try until tomorrow". Single-process scope is fine for V1; if
-# the API scales horizontally we'd move this to Redis.
+# Insight cache: (user_id, person_record_id, YYYY-MM-DD) →
+# HomeInsight | None. None means "we tried today and the model
+# declined / failed — don't re-try until tomorrow". The
+# person_record_id dimension is load-bearing: caregivers switching
+# between Mom's and Dad's records must see different insights.
+# Single-process scope is fine for V1; if the API scales horizontally
+# we'd move this to Redis.
 _INSIGHT_CACHE: dict[tuple, HomeInsight | None] = {}
 
 
 @router.get("/ai-partner", response_model=HomeAiPartnerResponse)
 async def get_home_ai_partner(
     background_tasks: BackgroundTasks,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> HomeAiPartnerResponse:
+    """M02 perimeter (Batch 7): every aggregation below is scoped to
+    ctx.active_record_id. Suggested questions, recent conversations,
+    recent episodes, make-sense targets, and the cached insight all
+    derive from the active record only."""
+    user = ctx.user
     out = HomeAiPartnerResponse(providers=available_providers())
     now = datetime.now(timezone.utc)
 
@@ -124,6 +132,7 @@ async def get_home_ai_partner(
 
     most_recent_major = (await db.execute(
         select(ExtractedFact)
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.significance.in_(
             ("major_event", "major_procedure")
@@ -157,7 +166,9 @@ async def get_home_ai_partner(
         }
 
     top_topic = (await db.execute(
-        select(Topic).order_by(Topic.created_at.asc()).limit(1)
+        select(Topic)
+        .where(Topic.person_record_id == ctx.active_record_id)
+        .order_by(Topic.created_at.asc()).limit(1)
     )).scalar_one_or_none()
     topic_ctx: dict[str, Any] | None = None
     if top_topic is not None:
@@ -191,6 +202,7 @@ async def get_home_ai_partner(
     convs = list((await db.execute(
         select(Conversation)
         .where(Conversation.user_id == user.id)
+        .where(Conversation.person_record_id == ctx.active_record_id)
         .where(Conversation.archived.is_(False))
         .order_by(Conversation.last_message_at.desc().nullslast(),
                   Conversation.created_at.desc())
@@ -213,7 +225,7 @@ async def get_home_ai_partner(
     # ---------------------------------------------------------------
     eps = list((await db.execute(
         select(Episode)
-        .where(Episode.user_id == user.id)
+        .where(Episode.person_record_id == ctx.active_record_id)
         .order_by(Episode.date_start.desc().nullslast(), Episode.created_at.desc())
         .limit(6)
     )).scalars().all())
@@ -238,6 +250,7 @@ async def get_home_ai_partner(
     cutoff_30 = now - timedelta(days=30)
     recent_sources = list((await db.execute(
         select(SourceDocument)
+        .where(SourceDocument.person_record_id == ctx.active_record_id)
         .where(SourceDocument.acquired_at >= cutoff_30)
         .order_by(SourceDocument.acquired_at.desc())
         .limit(3)
@@ -276,6 +289,7 @@ async def get_home_ai_partner(
     # topics — the topic-membership runtime is downstream of /dossier.
     dossier_rows = list((await db.execute(
         select(Topic)
+        .where(Topic.person_record_id == ctx.active_record_id)
         .order_by(Topic.created_at.desc())
         .limit(2)
     )).scalars().all())
@@ -292,6 +306,7 @@ async def get_home_ai_partner(
     low_conf = list((await db.execute(
         select(SensemakingCandidate)
         .where(SensemakingCandidate.user_id == user.id)
+        .where(SensemakingCandidate.person_record_id == ctx.active_record_id)
         .where(SensemakingCandidate.candidate_type == "source_summary")
         .where(SensemakingCandidate.disposition == "pending")
         .where(SensemakingCandidate.claim_label.in_(("inferred", "unknown")))
@@ -318,6 +333,7 @@ async def get_home_ai_partner(
         conv_scopes = list((await db.execute(
             select(Conversation.scope)
             .where(Conversation.user_id == user.id)
+            .where(Conversation.person_record_id == ctx.active_record_id)
             .where(Conversation.created_at >= cutoff_30)
         )).scalars().all())
         opened_ids: set[str] = set()
@@ -354,13 +370,18 @@ async def get_home_ai_partner(
     # `insight=null` is already the documented client contract
     # (HomeInsight | None) — the InsightCard component handles it.
     # -----------------------------------------------------------------
-    key = (user.id, now.date().isoformat())
+    # M02 perimeter: cache key includes person_record_id so a
+    # caregiver switching records gets each record's insight
+    # independently. Same user_id viewing two different records
+    # must NOT see the same cached body.
+    key = (user.id, ctx.active_record_id, now.date().isoformat())
     if key in _INSIGHT_CACHE:
         out.insight = _INSIGHT_CACHE[key]
     else:
         background_tasks.add_task(
             _background_build_home_insight,
             user_id=user.id,
+            person_record_id=ctx.active_record_id,
             day_iso=now.date().isoformat(),
         )
 
@@ -368,11 +389,16 @@ async def get_home_ai_partner(
 
 
 async def _background_build_home_insight(
-    *, user_id: uuid.UUID, day_iso: str,
+    *, user_id: uuid.UUID, person_record_id: uuid.UUID, day_iso: str,
 ) -> None:
     """Runs the home_insight prompt out-of-band so the home GET
     returns immediately. Opens its own DB session because the
     request session is closed by the time this fires.
+
+    M02 perimeter (Batch 7): the active record id from the request
+    is captured at schedule-time and passed in, so the background
+    run can never drift to a different record's insight even if
+    the user switches records before the background fires.
     """
     from ..core.db import SessionLocal
     from ..core.logger import get_logger
@@ -390,7 +416,10 @@ async def _background_build_home_insight(
             # background ran past midnight UTC, we still build for
             # today's date — the cache key uses `now.date()`.
             del day_iso  # documentation; kept in signature for log lookup
-            await _build_home_insight(db, user, now)
+            await _build_home_insight(
+                db, user, now,
+                person_record_id=person_record_id,
+            )
     except Exception as e:  # noqa: BLE001
         log.warning(
             "home_insight_bg_failed",
@@ -401,6 +430,7 @@ async def _background_build_home_insight(
 async def _build_home_insight(
     db: AsyncSession, user: User, now: datetime,
     *,
+    person_record_id: uuid.UUID,
     force_refresh: bool = False,
 ) -> HomeInsight | None:
     """Run the home_insight prompt over recent record state and cache
@@ -411,8 +441,13 @@ async def _build_home_insight(
     `force_refresh=True` (manual "Make sense of what changed" trigger)
     bypasses the cache and adds a hint to the user_template focusing
     the model on what's new since the last refresh.
+
+    M02 perimeter (Batch 7): `person_record_id` is required (keyword-
+    only, no default). Every fact/conversation/topic query is scoped
+    to the record; the cache key carries the record dimension so two
+    records' insights are stored independently for the same user.
     """
-    key = (user.id, now.date().isoformat())
+    key = (user.id, person_record_id, now.date().isoformat())
     if not force_refresh and key in _INSIGHT_CACHE:
         return _INSIGHT_CACHE[key]
 
@@ -421,6 +456,7 @@ async def _build_home_insight(
 
     recent_major = list((await db.execute(
         select(ExtractedFact)
+        .where(ExtractedFact.person_record_id == person_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= cutoff_90)
         .where(ExtractedFact.review_state.in_(("confirmed", "corrected", "pattern_managed")))
@@ -433,6 +469,7 @@ async def _build_home_insight(
 
     recent_all = list((await db.execute(
         select(ExtractedFact)
+        .where(ExtractedFact.person_record_id == person_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= cutoff_30)
         .where(ExtractedFact.review_state.in_(("confirmed", "corrected", "pattern_managed")))
@@ -441,12 +478,15 @@ async def _build_home_insight(
     )).scalars().all())
 
     topics_list = list((await db.execute(
-        select(Topic).order_by(Topic.created_at.asc())
+        select(Topic)
+        .where(Topic.person_record_id == person_record_id)
+        .order_by(Topic.created_at.asc())
     )).scalars().all())
 
     recent_convo_titles = list((await db.execute(
         select(Conversation.title)
         .where(Conversation.user_id == user.id)
+        .where(Conversation.person_record_id == person_record_id)
         .where(Conversation.archived.is_(False))
         .where(Conversation.title.isnot(None))
         .where(Conversation.created_at >= cutoff_30)
@@ -486,6 +526,7 @@ async def _build_home_insight(
     scope_rows = list((await db.execute(
         select(Conversation.scope)
         .where(Conversation.user_id == user.id)
+        .where(Conversation.person_record_id == person_record_id)
         .where(Conversation.archived.is_(False))
         .where(Conversation.last_message_at >= cutoff_30)
     )).scalars().all())
@@ -566,7 +607,7 @@ async def _build_home_insight(
 
 @router.post("/insight/refresh", response_model=HomeInsight)
 async def refresh_home_insight(
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> HomeInsight:
     """Manual "Make sense of what changed" trigger. Bypasses the
@@ -576,9 +617,18 @@ async def refresh_home_insight(
 
     Returns 422 if the record is too sparse for the model to observe
     anything (rather than the daily auto-render's silent skip).
+
+    M02 perimeter (Batch 7): caregiver+ since this regenerates an
+    LLM-shaped surface that influences how the user sees the record.
+    Scoped to the active record's facts only.
     """
+    user = ctx.user
     now = datetime.now(timezone.utc)
-    insight = await _build_home_insight(db, user, now, force_refresh=True)
+    insight = await _build_home_insight(
+        db, user, now,
+        person_record_id=ctx.active_record_id,
+        force_refresh=True,
+    )
     if insight is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

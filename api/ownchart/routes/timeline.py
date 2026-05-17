@@ -31,12 +31,11 @@ from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.auth_context import AuthContext, get_auth_context
 from ..core.db import get_session
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
-from ..models.user import User
-from .auth import get_current_user
 # Reuse the dossier route's cluster_id derivation so a cluster has the
 # same id whether surfaced via a topic dossier or a global timeline
 # period drill. Pure function, safe to import across routes.
@@ -341,7 +340,7 @@ def _source_event_date_expr():
 
 @router.get("")
 async def get_timeline(
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
     from_: datetime | None = Query(default=None, alias="from"),
     to_: datetime | None = Query(default=None, alias="to"),
@@ -352,6 +351,13 @@ async def get_timeline(
     The defaults (when from/to are omitted) span from the earliest
     dated fact to now, capped at a sane lower bound so a brand-new
     install with one 1980s fact doesn't render 45 empty buckets.
+
+    M02 perimeter (Batch 7): every aggregation below filters by
+    person_record_id == ctx.active_record_id. The pre-M02 timeline
+    queried global facts (no user filter at all), so this batch
+    also closes a pre-existing record-leak — not just a caregiver-
+    upgrade. Counts, date ranges, and the narrative all derive
+    from the active record only.
     """
     if grain not in ("year", "month", "week"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid grain")
@@ -363,6 +369,7 @@ async def get_timeline(
     if from_ is None:
         earliest = (await db.execute(
             select(func.min(ExtractedFact.date_start))
+            .where(ExtractedFact.person_record_id == ctx.active_record_id)
         )).scalar_one_or_none()
         from_ = earliest or now
     if to_ is None:
@@ -383,6 +390,7 @@ async def get_timeline(
             ExtractedFact.fact_type,
             func.count().label("n"),
         )
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= from_)
         .where(ExtractedFact.date_start <= to_)
@@ -403,6 +411,7 @@ async def get_timeline(
             func.max(rep).label("metric_label"),
             func.count().label("n"),
         )
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= from_)
         .where(ExtractedFact.date_start <= to_)
@@ -411,14 +420,16 @@ async def get_timeline(
     )
 
     # 3. Source lane: source_documents grouped by (bucket, source_type)
-    #    using the coalesced event date.
+    #    using the coalesced event date. M02: scope by record, not by
+    #    owner_user_id — a caregiver's uploads onto a parent's record
+    #    should still surface on the parent's timeline.
     src_q = await db.execute(
         select(
             bucket_expr_sources.label("bucket"),
             SourceDocument.source_type,
             func.count().label("n"),
         )
-        .where(SourceDocument.owner_user_id == user.id)
+        .where(SourceDocument.person_record_id == ctx.active_record_id)
         .where(src_date.isnot(None))
         .where(src_date >= from_)
         .where(src_date <= to_)
@@ -450,6 +461,7 @@ async def get_timeline(
             ExtractedFact.significance,
             ExtractedFact.evidence_anchor_ids,
         )
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= from_)
         .where(ExtractedFact.date_start <= to_)
@@ -473,6 +485,7 @@ async def get_timeline(
             ExtractedFact.id.label("fact_id"),
             contrib_anchor_id,
         )
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= from_)
         .where(ExtractedFact.date_start <= to_)
@@ -487,7 +500,7 @@ async def get_timeline(
         )
         .join(EvidenceAnchor, EvidenceAnchor.id == contrib_sub.c.anchor_id)
         .join(SourceDocument, SourceDocument.id == EvidenceAnchor.source_document_id)
-        .where(SourceDocument.owner_user_id == user.id)
+        .where(SourceDocument.person_record_id == ctx.active_record_id)
         .group_by(contrib_sub.c.bucket, SourceDocument.source_label, SourceDocument.original_filename)
         .order_by(contrib_sub.c.bucket.desc(), func.count(func.distinct(contrib_sub.c.fact_id)).desc())
     )
@@ -506,6 +519,7 @@ async def get_timeline(
             select(EvidenceAnchor.id, SourceDocument.source_label, SourceDocument.original_filename)
             .join(SourceDocument, SourceDocument.id == EvidenceAnchor.source_document_id)
             .where(EvidenceAnchor.id.in_(first_anchor_ids))
+            .where(SourceDocument.person_record_id == ctx.active_record_id)
         )
         for aid, slabel, sfile in a_q.all():
             anchor_to_source_label[aid] = (slabel or sfile)
@@ -592,7 +606,7 @@ async def get_timeline(
     from ..models.episode import Episode
     ep_rows = list((await db.execute(
         select(Episode)
-        .where(Episode.user_id == user.id)
+        .where(Episode.person_record_id == ctx.active_record_id)
         .where(Episode.date_start.isnot(None))
         .where(Episode.date_start >= from_)
         .where(Episode.date_start <= to_)
@@ -728,7 +742,7 @@ _PERIOD_CLUSTER_FACTS_MAX = 2000
 
 @router.get("/period")
 async def get_timeline_period(
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
     start: datetime = Query(...),
     end: datetime = Query(...),
@@ -739,12 +753,17 @@ async def get_timeline_period(
     the dossier uses), a wearable aggregate summary, and source
     documents. Per docs/06: this is the cross-lane test — clusters,
     metrics, and evidence side-by-side for the same window.
+
+    M02 perimeter (Batch 7): every aggregation below is scoped to
+    ctx.active_record_id. Counts, date ranges, cluster ids, and
+    source contributions all derive from the active record only.
     """
     if start > end:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start > end")
 
     norm = _norm_label_expr()
     base_clinical = (
+        ExtractedFact.person_record_id == ctx.active_record_id,
         ExtractedFact.date_start.isnot(None),
         ExtractedFact.date_start >= start,
         ExtractedFact.date_start <= end,
@@ -843,6 +862,7 @@ async def get_timeline_period(
             func.max(rep_expr).label("metric_label"),
             func.count().label("n"),
         )
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_start >= start)
         .where(ExtractedFact.date_start <= end)
@@ -862,7 +882,7 @@ async def get_timeline_period(
     src_date = _source_event_date_expr()
     s_rows = (await db.execute(
         select(SourceDocument, src_date.label("event_date"))
-        .where(SourceDocument.owner_user_id == user.id)
+        .where(SourceDocument.person_record_id == ctx.active_record_id)
         .where(src_date.isnot(None))
         .where(src_date >= start)
         .where(src_date <= end)
@@ -928,7 +948,7 @@ _NOTABLE_FACT_TYPES: tuple[str, ...] = (
 
 @router.get("/notable-events")
 async def get_notable_events(
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
     limit: int = Query(default=8, ge=1, le=50),
 ) -> NotableEventsResponse:
@@ -958,6 +978,7 @@ async def get_notable_events(
 
     rows = (await db.execute(
         select(ExtractedFact)
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
         .where(ExtractedFact.significance.in_(MAJOR))
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.review_state.notin_(("deferred", "rejected", "source_only")))
@@ -983,7 +1004,9 @@ async def get_notable_events(
     src_by_id: dict = {}
     if src_ids:
         s_q = await db.execute(
-            select(SourceDocument).where(SourceDocument.id.in_(src_ids))
+            select(SourceDocument)
+            .where(SourceDocument.id.in_(src_ids))
+            .where(SourceDocument.person_record_id == ctx.active_record_id)
         )
         src_by_id = {s.id: s for s in s_q.scalars().all()}
 
@@ -1013,7 +1036,7 @@ async def get_notable_events(
 
 @router.get("/period/cluster/facts")
 async def get_period_cluster_facts(
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
     start: datetime = Query(...),
     end: datetime = Query(...),
@@ -1032,6 +1055,7 @@ async def get_period_cluster_facts(
 
     norm = _norm_label_expr()
     base_clinical = (
+        ExtractedFact.person_record_id == ctx.active_record_id,
         ExtractedFact.date_start.isnot(None),
         ExtractedFact.date_start >= start,
         ExtractedFact.date_start <= end,
@@ -1074,6 +1098,7 @@ async def get_period_cluster_facts(
         a_q = await db.execute(
             select(EvidenceAnchor.id, EvidenceAnchor.source_document_id)
             .where(EvidenceAnchor.id.in_(anchor_ids))
+            .where(EvidenceAnchor.person_record_id == ctx.active_record_id)
         )
         anchor_to_source = {aid: sid for (aid, sid) in a_q.all()}
 
