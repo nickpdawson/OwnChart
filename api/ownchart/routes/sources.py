@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.auth_context import AuthContext, get_auth_context
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
 from ..core.logger import get_logger
@@ -104,17 +105,23 @@ def _to_summary(s: SourceDocument) -> SourceSummary:
 
 @router.get("")
 async def list_sources(
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[SourceSummary]:
-    result = await db.execute(select(SourceDocument).order_by(SourceDocument.acquired_at.desc()))
+    # Record-scoped (M02 perimeter batch 2). Only sources belonging
+    # to the active person_record surface here.
+    result = await db.execute(
+        select(SourceDocument)
+        .where(SourceDocument.person_record_id == ctx.active_record_id)
+        .order_by(SourceDocument.acquired_at.desc())
+    )
     return [_to_summary(s) for s in result.scalars().all()]
 
 
 @router.get("/{source_id}")
 async def get_source(
     source_id: str,
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
     # Accept UUID prefixes (>=8 chars) so citation chips like
@@ -144,6 +151,10 @@ async def get_source(
             src = matches[0]
         # 0 or >1 → fall through to 404 below
     if src is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    # Record-scope check (M02 perimeter batch 2). 404 (not 403)
+    # to avoid disclosing that a source exists on another record.
+    if src.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     has_gps = bool((src.exif_metadata or {}).get("GPSInfo"))
     rm = src.raw_metadata or {}
