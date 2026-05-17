@@ -3,6 +3,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.app_config import get_app_config
 from ..core.config import get_settings
 from ..core.db import get_session
 from ..core.security import hash_password, sign_session, verify_password
@@ -56,14 +57,48 @@ async def register(
     response: Response,
     db: AsyncSession = Depends(get_session),
 ) -> MeResponse:
-    """V1 single-tenant. After the first owner is created, /register is closed."""
-    existing_count = (await db.execute(select(User))).scalars().first()
-    if existing_count is not None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Owner account already exists; registration is closed.",
-        )
-    user = User(email=body.email, password_hash=hash_password(body.password))
+    """Self-registration endpoint.
+
+    Two gates, per PM A-6 (2026-05-17):
+
+      1. **Fresh DB** (no users yet) — accept unconditionally and
+         flag the new user as `is_instance_admin=True`. This is the
+         "first user creates owner" path; matches today's behavior
+         and is independent of the `allow_self_registration` flag.
+      2. **Any user already exists** — gate by
+         `auth.allow_self_registration` from `infra/config.yaml`
+         (default `false`). When `true`, family members can
+         register their own logins; new accounts get no
+         auto-membership (admin/owner adds them via the membership
+         flow once `/api/person-records/members` lands).
+
+    The flag wire-up resolves the docs-site M01 blocker:
+    `auth.allow_self_registration` was declared but unread until
+    now. PM resolution promotes it from dead config to live gate.
+    """
+    existing_first = (
+        await db.execute(select(User).limit(1))
+    ).scalars().first()
+    is_first_user = existing_first is None
+
+    if not is_first_user:
+        # Subsequent signups need the operator to have opted in.
+        cfg = get_app_config()
+        if not cfg.auth.allow_self_registration:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Self-registration is closed on this instance. "
+                    "Ask your admin to add you, or set "
+                    "auth.allow_self_registration in config.yaml."
+                ),
+            )
+
+    user = User(
+        email=body.email,
+        password_hash=hash_password(body.password),
+        is_instance_admin=is_first_user,
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)
