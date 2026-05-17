@@ -1,4 +1,5 @@
 from .audit_event import AuditEvent
+from .auto_export_token import AutoExportToken
 from .base import Base
 from .brief_message import BriefMessage
 from .conversation import Conversation, ConversationCitation, ConversationMessage
@@ -27,6 +28,7 @@ from .user_setting import UserSetting
 
 __all__ = [
     "AuditEvent",
+    "AutoExportToken",
     "Base",
     "BriefMessage",
     "Conversation",
