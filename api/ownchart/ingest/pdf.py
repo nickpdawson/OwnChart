@@ -139,6 +139,10 @@ async def process_pdf_source(
     for p in ingest.pages:
         anchor = EvidenceAnchor(
             source_document_id=src.id,
+            # M02 perimeter (Batch 2c): denormalize record scope
+            # from the parent SourceDocument so retrieval can filter
+            # without traversing the anchor chain at every read.
+            person_record_id=src.person_record_id,
             anchor_type="pdf_page",
             page_number=p.page_number,
             text_excerpt=(p.text_layer or None) and p.text_layer[:2000],

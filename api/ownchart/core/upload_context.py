@@ -70,15 +70,17 @@ async def attach_nearby_clinical_events(
     window_start = anchor_date - timedelta(days=window_days)
     window_end = anchor_date + timedelta(days=window_days)
 
-    # Pull this user's confirmed major-significance facts in the window.
-    # User-scoping goes via evidence_anchor_ids[] → evidence_anchors →
-    # source_documents.owner_user_id. We can't index into a Postgres
-    # array directly in SQLAlchemy, so use EXISTS with ANY().
+    # Per M02 perimeter (BE-2): scope by the source's
+    # person_record_id, not the caller's user_id. Caregivers can
+    # upload to a parent's record; the nearby-events lookup must
+    # see THAT record's history, not the caregiver's own. The
+    # `user` argument is retained for the signature's existing
+    # callers but no longer load-bearing for scoping.
     user_scope = (
         exists()
         .where(EvidenceAnchor.id == ExtractedFact.evidence_anchor_ids.any_())
         .where(SourceDocument.id == EvidenceAnchor.source_document_id)
-        .where(SourceDocument.owner_user_id == user.id)
+        .where(SourceDocument.person_record_id == source.person_record_id)
         .where(SourceDocument.id != source.id)
     )
     q = (

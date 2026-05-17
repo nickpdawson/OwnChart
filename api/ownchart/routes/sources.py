@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.auth_context import AuthContext, get_auth_context
+from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
 from ..core.logger import get_logger
@@ -39,7 +39,6 @@ from ..models.extracted_fact import ExtractedFact
 from ..models.extraction_job import ExtractionJob
 from ..models.source_document import SourceDocument
 from ..models.user import User
-from .auth import get_current_user
 
 router = APIRouter()
 log = get_logger("ownchart.routes.sources")
@@ -234,10 +233,14 @@ async def upload_photo(
     event_date: datetime | None = Form(default=None),
     source_label: str | None = Form(default=None),
     batch_import: bool = Form(default=False),
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
     upload_audit: dict[str, str] | None = Depends(upload_audit_dep),
 ) -> SourceDetail:
+    # M02 perimeter (Batch 2c): caregiver+ on the active record.
+    # `ctx.user` is the actor; `ctx.active_record_id` is the target
+    # record. Inserted rows stamp both.
+    user = ctx.user
     # Reliability doctrine (alpha P0, 2026-05-15): every error path must
     # return structured JSON with a user-safe `detail` and log the real
     # exception server-side. Bare 500s from uvicorn (the 21-byte plain
@@ -335,6 +338,7 @@ async def upload_photo(
     src = SourceDocument(
         id=src_id,
         owner_user_id=user.id,
+        person_record_id=ctx.active_record_id,
         source_type="photo",
         original_filename=file.filename,
         storage_uri=blob.storage_uri,
@@ -374,6 +378,7 @@ async def upload_photo(
     if caption or photo_date:
         anchor = EvidenceAnchor(
             source_document_id=src.id,
+            person_record_id=ctx.active_record_id,
             anchor_type="image_full",
             text_excerpt=caption[:2000] if caption else None,
         )
@@ -382,6 +387,7 @@ async def upload_photo(
         claim_label = caption or file.filename or "photo"
         fact = ExtractedFact(
             fact_type="life_context_event",
+            person_record_id=ctx.active_record_id,
             label=claim_label[:512],
             description=caption,
             date_start=photo_date,
@@ -514,9 +520,11 @@ async def upload_voice(
     title: str | None = Form(default=None),
     event_date: datetime | None = Form(default=None),
     source_label: str | None = Form(default=None),
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
+    # M02 perimeter (Batch 2c).
+    user = ctx.user
     """Voice memo from the iOS Upload tab.
 
     iOS does on-device transcription via Apple's Speech framework when
@@ -555,6 +563,7 @@ async def upload_voice(
     src = SourceDocument(
         id=src_id,
         owner_user_id=user.id,
+        person_record_id=ctx.active_record_id,
         source_type="voice_memo",
         original_filename=file.filename,
         storage_uri=blob.storage_uri,
@@ -581,6 +590,7 @@ async def upload_voice(
     if transcript_text:
         anchor = EvidenceAnchor(
             source_document_id=src.id,
+            person_record_id=ctx.active_record_id,
             anchor_type="voice_transcript",
             text_excerpt=transcript_text[:2000],
         )
@@ -590,6 +600,7 @@ async def upload_voice(
         label = (title or transcript_text.split("\n", 1)[0])[:512]
         fact = ExtractedFact(
             fact_type="life_context_event",
+            person_record_id=ctx.active_record_id,
             label=label,
             description=transcript_text[:4000],
             date_start=event_at,
@@ -634,9 +645,11 @@ async def upload_voice(
 async def upload_pdf(
     file: UploadFile = File(...),
     source_label: str | None = Form(default=None),
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
+    # M02 perimeter (Batch 2c).
+    user = ctx.user
     if file.content_type and file.content_type not in {"application/pdf", "application/x-pdf"}:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -657,6 +670,7 @@ async def upload_pdf(
     src = SourceDocument(
         id=src_id,
         owner_user_id=user.id,
+        person_record_id=ctx.active_record_id,
         source_type="pdf",  # process_pdf_source flips to fax_pdf if appropriate
         original_filename=file.filename,
         storage_uri=blob.storage_uri,
@@ -728,6 +742,8 @@ async def _ingest_one_ccda(
     mime_type: str | None,
     source_label: str | None,
     parent_source_document_id: uuid.UUID | None,
+    *,
+    person_record_id: uuid.UUID,
 ) -> tuple[SourceDocument, int]:
     """Ingest a single CCDA XML's bytes. Caller commits.
 
@@ -750,6 +766,7 @@ async def _ingest_one_ccda(
     src = SourceDocument(
         id=uuid.uuid4(),
         owner_user_id=user.id,
+        person_record_id=person_record_id,
         parent_source_document_id=parent_source_document_id,
         source_type="ccda_xml",
         original_filename=filename,
@@ -775,6 +792,7 @@ async def _ingest_one_ccda(
     for cc in parsed.facts:
         anchor = EvidenceAnchor(
             source_document_id=src.id,
+            person_record_id=person_record_id,
             anchor_type="ccda_section",
             section_path=cc.section_path,
             text_excerpt=(cc.text_excerpt or "")[:2000] or None,
@@ -784,6 +802,7 @@ async def _ingest_one_ccda(
 
         fact = ExtractedFact(
             fact_type=cc.fact_type,
+            person_record_id=person_record_id,
             label=cc.label,
             description=cc.description,
             date_start=cc.date_start,
@@ -806,9 +825,11 @@ async def _ingest_one_ccda(
 async def upload_ccda(
     files: list[UploadFile] = File(...),
     source_label: str | None = Form(default=None),
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> CcdaImportSummary:
+    # M02 perimeter (Batch 2c).
+    user = ctx.user
     """Multi-file CCDA ingest.
 
     Accepts one or more XML files in a single request. Each file is
@@ -855,6 +876,7 @@ async def upload_ccda(
                 mime_type=f.content_type,
                 source_label=source_label,
                 parent_source_document_id=None,
+                person_record_id=ctx.active_record_id,
             )
             await db.commit()
             await db.refresh(src)
@@ -896,9 +918,10 @@ class NoteUpload(BaseModel):
 @router.post("/note", status_code=status.HTTP_201_CREATED)
 async def upload_note(
     body: NoteUpload,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
+    user = ctx.user
     if not body.body.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty note")
 
@@ -913,6 +936,7 @@ async def upload_note(
     src = SourceDocument(
         id=src_id,
         owner_user_id=user.id,
+        person_record_id=ctx.active_record_id,
         source_type="note",
         original_filename=(body.title + ".txt") if body.title else None,
         storage_uri=blob.storage_uri,
@@ -930,6 +954,7 @@ async def upload_note(
 
     anchor = EvidenceAnchor(
         source_document_id=src.id,
+        person_record_id=ctx.active_record_id,
         anchor_type="note_full",
         text_excerpt=body.body[:2000],
     )
@@ -938,6 +963,7 @@ async def upload_note(
 
     fact = ExtractedFact(
         fact_type="life_context_event",
+        person_record_id=ctx.active_record_id,
         label=body.title or body.body[:120],
         description=body.body,
         date_start=body.occurred_at,
@@ -971,7 +997,7 @@ async def upload_note(
 async def upload_auto_export(
     file: UploadFile = File(...),
     source_label: str | None = Form(default=None),
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
     """Ingest a Health Auto Export payload (JSON for V1).
@@ -986,6 +1012,7 @@ async def upload_auto_export(
     Lab-shaped HealthKit quantities are intentionally skipped — labs
     belong in the clinical lane (FHIR/CCDA), not the wearable lane.
     """
+    user = ctx.user
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file")
@@ -1020,6 +1047,7 @@ async def upload_auto_export(
     src = SourceDocument(
         id=src_id,
         owner_user_id=user.id,
+        person_record_id=ctx.active_record_id,
         source_type="auto_export",
         original_filename=file.filename,
         storage_uri=blob.storage_uri,
@@ -1048,6 +1076,7 @@ async def upload_auto_export(
     for f in parsed.facts:
         anchor = EvidenceAnchor(
             source_document_id=src.id,
+            person_record_id=ctx.active_record_id,
             anchor_type="auto_export_metric",
             section_path=";".join(
                 f"{k}={','.join(v)}" for k, v in (f.coded_concepts or {}).items()
@@ -1059,6 +1088,7 @@ async def upload_auto_export(
         db.add(
             ExtractedFact(
                 fact_type=f.fact_type,
+                person_record_id=ctx.active_record_id,
                 label=f.label,
                 description=f.description,
                 date_start=f.date_start,
@@ -1137,7 +1167,7 @@ class PatchSourceBody(BaseModel):
 async def patch_source(
     source_id: uuid.UUID,
     body: PatchSourceBody,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SourceDetail:
     """Mutate user-supplied fields on a SourceDocument.
@@ -1151,8 +1181,12 @@ async def patch_source(
     the "Same window in your record" panel populates with whatever
     major facts lived in the now-known window.
     """
+    user = ctx.user
     src = await db.get(SourceDocument, source_id)
-    if src is None or src.owner_user_id != user.id:
+    # M02 perimeter: record-scope the lookup. 404 (not 403) on
+    # cross-record so we don't disclose existence of someone else's
+    # source.
+    if src is None or src.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     touched = False
     if body.event_date is not None:
@@ -1187,7 +1221,7 @@ async def patch_source(
 async def trigger_photo_analyze(
     source_id: uuid.UUID,
     force: bool = False,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     """Explicit "Analyze these" trigger for a personal photo upload.
@@ -1205,7 +1239,9 @@ async def trigger_photo_analyze(
     older photos need to be re-extracted to pick up the new fields.
     """
     src = await db.get(SourceDocument, source_id)
-    if src is None or src.owner_user_id != user.id:
+    # M02 perimeter: 404 on cross-record so we don't disclose
+    # existence of someone else's source.
+    if src is None or src.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if src.source_type != "photo":
         raise HTTPException(
@@ -1228,7 +1264,7 @@ async def trigger_photo_analyze(
 async def extract_facts_from_source(
     source_id: uuid.UUID,
     body: ExtractFactsRequest = ExtractFactsRequest(),
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> ExtractionJobReadout:
     """Enqueue a background vision-extraction job and return immediately.
@@ -1239,9 +1275,12 @@ async def extract_facts_from_source(
     DB index prevents two concurrent jobs against the same source, so
     a re-click while one is running returns the existing job.
     """
+    user = ctx.user
     require_phi_consent(user)
     src = await db.get(SourceDocument, source_id)
-    if src is None:
+    # M02 perimeter: 404 on cross-record. Without this, a caregiver
+    # could enqueue work against another record's source.
+    if src is None or src.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if src.source_type not in {"pdf", "fax_pdf"}:
         raise HTTPException(
