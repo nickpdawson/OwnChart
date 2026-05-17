@@ -40,6 +40,13 @@ OwnChart is a **patient app**. Pick that category. If it's labeled differently (
 
 ### 3. Register the app — at minimum, this metadata
 
+> **Single-origin.** OwnChart serves the API and the web UI from the
+> **same host**. The redirect URI you register with every vendor is
+> `https://your-instance.example.com/api/connectors/callback` — never
+> a separate `api.your-instance.example.com` subdomain. If you register
+> a different hostname here than the one your iOS app and browser hit,
+> every callback will fail.
+
 | Field | What you typically enter |
 |---|---|
 | App name | `OwnChart` (or whatever your fork is called) |

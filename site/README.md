@@ -7,40 +7,59 @@ Static landing page for `www.ownchart.me`. No build step; pure HTML + CSS.
 ```
 site/
 ├── index.html      Landing page
+├── screenshots.html Screenshots tour (web + iOS)
+├── privacy.html    Privacy page (mirrored from PRIVACY.md)
 ├── styles.css      All styling
+├── legal.css       Additional styles for /privacy and /screenshots
 ├── favicon.svg     Browser tab icon (four-node mark)
 ├── og-image.svg    Social preview (1200×630)
-├── _headers        Cloudflare Pages security headers
+├── _headers        Edge security headers (same syntax as Cloudflare Pages)
 ├── _redirects      Short-link redirects to GitHub doc paths
 ├── robots.txt
-└── sitemap.xml
+├── sitemap.xml
+└── screenshots/    Web + iOS shots used by index.html and screenshots.html
 ```
 
-## Deploying via Cloudflare Pages (one-time setup)
+## Deploying via Cloudflare Workers Static Assets
 
-1. Cloudflare dashboard → **Workers & Pages** → **Create application** → **Pages** → **Connect to Git**.
-2. Authorize Cloudflare to access `nickpdawson/OwnChart`.
-3. Build settings:
-   - **Production branch:** `main`
-   - **Framework preset:** None
-   - **Build command:** *(leave empty)*
-   - **Build output directory:** `site`
-   - **Root directory:** *(leave empty)*
-4. Deploy. First build takes ~30 seconds.
-5. Once it's live, **Custom domains** → add `www.ownchart.me` and `ownchart.me`. Cloudflare auto-configures DNS if the domain is on the same account.
+The site is deployed as a Cloudflare **Worker** (not Pages), using
+`wrangler.jsonc` at the repo root. Authentication uses your local
+wrangler OAuth token cached at `~/Library/Preferences/.wrangler/`.
+
+From the repo root:
+
+```sh
+npx wrangler deploy
+```
+
+That uploads everything under `site/` to the `ownchart` Worker. New
+content is uploaded; unchanged files are deduped by content hash
+(wrangler will say "No updated asset files to upload" in that case —
+the manifest still gets refreshed, so the deploy is live).
+
+After deploy, verify:
+
+```sh
+curl -sI https://www.ownchart.me/             # should be 200 with a fresh etag
+curl -sI https://ownchart.nd-1cb.workers.dev/ # should match
+```
+
+The custom domain (`www.ownchart.me`, `ownchart.me`) is wired in the
+Cloudflare dashboard. The apex-to-www redirect is a zone-level
+Redirect Rule, not a `_redirects` entry (the Static Assets
+`_redirects` format can't match by hostname).
 
 ## Iterating
 
-Every push to `main` that touches `site/` triggers a fresh deploy. Preview deployments are generated for non-main branches automatically.
+`site/` lives on the `dev` branch like the rest of the repo. Push to
+`dev` for source-of-truth; **deploys are explicit** (`npx wrangler
+deploy`) and gated by PM approval per project doctrine. Do not
+auto-deploy on push.
 
 ## OG image (one open item)
 
-The current `og-image.svg` is a vector. Most platforms (Slack, Discord, LinkedIn, X) handle SVG OG images fine, but some older crawlers prefer PNG. If a clean PNG is preferred, render the SVG once at 1200×630 and drop it in as `og-image.png`, then update the two `<meta>` tags in `index.html` to point at the PNG. The HTML already references `og-image.png`; if no PNG exists, browsers will fall back to the SVG via `og:image` extension fallback.
-
-## When the demo goes live
-
-The `Try the demo` / `Open the demo` buttons link to `https://demo.ownchart.me/` and carry a small `coming soon` chip. To flip live:
-
-1. Confirm `demo.ownchart.me` is responding.
-2. In `index.html`, delete both `<span class="chip">coming soon</span>` occurrences.
-3. Push to `main`. Cloudflare rebuilds in ~30s.
+The current `og-image.svg` is a vector. Most platforms (Slack,
+Discord, LinkedIn, X) handle SVG OG images fine, but some older
+crawlers prefer PNG. If a clean PNG is preferred, render the SVG once
+at 1200×630 and drop it in as `og-image.png`, then update the two
+`<meta>` tags in `index.html` to point at the PNG.

@@ -1,5 +1,6 @@
-# Cloudflare Pages _headers
-# https://developers.cloudflare.com/pages/configuration/headers/
+# Edge security + cache headers for the Cloudflare Workers Static Assets
+# deploy. Same _headers file syntax as Cloudflare Pages.
+# https://developers.cloudflare.com/workers/static-assets/headers/
 
 /*
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload

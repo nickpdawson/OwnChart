@@ -179,6 +179,10 @@ Full privacy commitment: [PRIVACY.md](./PRIVACY.md) (or <https://www.ownchart.me
 
 ## Current alpha capabilities
 
+_As of OwnChart 0.1 alpha (2026-05-16). For the canonical
+shipped-vs-roadmap split, see
+[user-docs/SHIPPED_VS_ROADMAP.md](./user-docs/SHIPPED_VS_ROADMAP.md)._
+
 OwnChart is early, but already includes:
 
 - FHIR ingestion
@@ -266,21 +270,19 @@ It helps you understand your own evidence, ask better questions, and maintain au
 
 ## Quick start
 
-OwnChart is intended to run on your own server.
+OwnChart is intended to run on your own server. The full install path — including the three secrets you must generate in `infra/.env` before the stack will start (`POSTGRES_PASSWORD`, `SESSION_SECRET`, `OWNCHART_TOKEN_DEK`) — is in [`user-docs/INSTALL.md`](./user-docs/INSTALL.md).
+
+Sketch (do not copy-paste without reading INSTALL.md first):
 
 ```sh
 git clone https://github.com/nickpdawson/OwnChart.git
 cd OwnChart
-
-cp infra/.env.example infra/.env
+cp infra/.env.example infra/.env       # then generate the three secrets
 cp infra/config.example.yaml infra/config.yaml
-
-docker compose -f infra/docker-compose.yml up --build
+docker compose -f infra/docker-compose.yml --env-file infra/.env up -d --build
 ```
 
-Then open the instance URL configured for your deployment.
-
-More complete setup docs live in [`user-docs/`](./user-docs/).
+The compose file refuses to start until the placeholder secrets are replaced. See INSTALL.md for the generation commands and for reverse-proxy, network-exposure, and first-admin steps.
 
 ---
 
@@ -292,11 +294,18 @@ Documentation is organized into a few layers. Some of these are works in progres
 
 - [User Guide](./user-docs/USER_GUIDE.md) — how to use Ask, Events, Dossiers, Review Inbox, conversations. _coming soon_
 - [iOS companion app](./user-docs/IOS_PARITY.md) — pairing TestFlight build with your self-hosted server.
-- [Demo walkthrough](./user-docs/DEMO.md) — what you can see at <https://demo.ownchart.me> without installing anything. _coming soon_
+- [Demo walkthrough](./user-docs/DEMO.md) — what you can see at <https://demo.ownchart.me> without installing anything.
+- [Risk, privacy, legal — plain English](./user-docs/RISK.md) — read this before pointing OwnChart at your own record.
+- [What's shipped vs roadmap](./user-docs/SHIPPED_VS_ROADMAP.md) — the honesty contract for the alpha.
 
 ### Installing and operating
 
-- [Install guide](./user-docs/INSTALL.md) — Docker Compose deploy, env vars, reverse proxy, first-run setup. _coming soon_
+- [Install guide](./user-docs/INSTALL.md) — Docker Compose deploy, env vars, reverse proxy, first-run setup.
+- [Reverse proxy + SSL](./user-docs/REVERSE_PROXY.md) — TLS termination, body-size limits, NPM / nginx / Caddy, Cloudflare caps.
+- [Network access](./user-docs/NETWORK_ACCESS.md) — HTTPS / VPN / Tunnel exposure choices; what EHR callbacks actually need.
+- [LLM prompts and AI configuration](./user-docs/PROMPTS.md) — where versioned prompts live, how to review and edit them, the `ModelRun` audit trail.
+- [Upload contract](./user-docs/UPLOAD_CONTRACT.md) — how uploads flow from iOS through the api with batch correlation.
+- [Alpha release notes](./user-docs/RELEASE_NOTES_ALPHA.md) — what landed in 0.1, what's been hardened, what's deferred to beta.
 - [Operations runbook](./user-docs/OPERATIONS.md) — backups, upgrades, log rotation, common failure modes. _coming soon_
 - [Configuration reference](./user-docs/CONFIG.md) — every `infra/config.yaml` and `infra/.env` key. _coming soon_
 
@@ -420,7 +429,7 @@ OwnChart treats records, prompts, logs, model inputs, model outputs, embeddings,
 
 ## License
 
-MIT. See [LICENSE](./LICENSE).
+OwnChart 0.1 is **source-available for personal, noncommercial self-hosting** under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/). See [LICENSE](./LICENSE) for the full terms. Commercial use, hosted services, and enterprise deployments require written permission.
 
 ---
 

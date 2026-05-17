@@ -67,7 +67,7 @@ This is the one surface where the project maintainer operates a service that tou
 
 ## What the marketing site does
 
-A static site served from Cloudflare Pages. To make it work:
+A static site served from Cloudflare's edge via Cloudflare Workers (Static Assets). To make it work:
 
 - Cloudflare's edge may set short-lived essential cookies (`__cf_bm`, `cf_clearance`) for bot protection. These are first-party, short-lived, required to defend the site from automated abuse, and do not identify you across other sites. We do not read them.
 - Cloudflare retains technical edge logs for its own bot-management purposes per its [privacy policy](https://www.cloudflare.com/privacypolicy/).

@@ -33,7 +33,7 @@ Stated explicitly so you don't assume coverage that isn't there:
 
 ## 3. The consent gate is the egress checkpoint
 
-This is the load-bearing security control. All LLM calls in OwnChart — Anthropic, OpenAI, Gemini, **and local models** — pass through one function. Routing local-model calls through the same gate keeps the audit trail complete even though those payloads don't leave the host. Before the function assembles a payload, it checks:
+This is the load-bearing security control. All LLM calls in OwnChart pass through one function so a single audit + consent layer governs every byte that might leave the host. Anthropic is the only provider wired end-to-end in 0.1 alpha; the gate is designed to be provider-agnostic so additional providers route through it identically when they ship. Before the function assembles a payload, it checks:
 
 1. **Global LLM consent flag** — set by the user in Settings. Default off.
 2. **Per-source override** — any source can be flagged "never send to LLM", "source-only context", "exclude from Discover", or "exclude from Ask". Schema and enforcement land in v0.1b; the full UI for managing per-source flags is in scope for the v0.1b final.
@@ -88,7 +88,7 @@ Role model (schema present in v0.1b; full UI maturing through 0.1b → 0.2):
 | **Viewer** | Read-only access to demo or explicitly-shared records |
 | **Demo User** | Read-only sample data; safe for App Store review or public demo |
 
-**Person vs. user:** the schema separates the *user account* (authentication) from the *person whose record this is*. One user can have a record of their own *and* delegated caregiver access to a parent's or child's record. Each person has independent consent state — including independent LLM consent, per-source overrides, and provider preferences.
+**Person vs. user:** the schema separates the *user account* (authentication) from the *person whose record this is*. One user can have a record of their own *and* delegated caregiver access to a parent's or child's record. Each person has independent consent state — independent LLM consent and per-source overrides today; per-record provider preferences land when multi-provider routing ships.
 
 Bootstrap behavior is configurable: by default the first user to create an account on a fresh instance becomes Owner; self-registration can then be closed.
 
@@ -99,28 +99,53 @@ Roadmap:
 
 ## 6. Secrets
 
-All secrets live in `infra/.env`. The file is gitignored and the deploy script refuses to start if any of the marked secrets are unset or still equal to the placeholder.
+All secrets live in `infra/.env`. The file is gitignored. The compose stack refuses to start if any of the marked secrets are unset or still equal to the placeholder values shipped in `infra/.env.example`.
 
 Variables you must set before running anything against your real record:
 
 | Variable | Purpose |
 |---|---|
-| `POSTGRES_PASSWORD` | Postgres user password |
-| `SESSION_SECRET` | Random 48+ byte URL-safe token, generated locally |
-| `OWNCHART_LLM_PROVIDER` | Default provider (`anthropic`, `openai`, `google`, `local`) |
-| At least one provider key | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, or a `LOCAL_LLM_ENDPOINT` URL — whichever matches your default provider |
+| `POSTGRES_PASSWORD` | Postgres user password. Tied to the Postgres data volume; rotating it requires a Postgres `ALTER USER`. |
+| `SESSION_SECRET` | Random 48+ byte URL-safe token, generated locally. Rotating invalidates all existing sessions. |
+| `OWNCHART_TOKEN_DEK` | 32-byte key (base64-encoded) that encrypts stored OAuth refresh tokens at rest. **Losing this invalidates every connected EHR** — preserve across deploys and back up offline. |
 
-Provider credentials can be admin-provided (set once in `.env`, available to all users on the instance), user-provided (each user enters their own key in Settings), or come from a provider OAuth login when supported. Mixed deployments are supported — the instance can offer a default model and let individual users override with their own key.
+### LLM provider contract (0.1 alpha)
 
-Never:
+The shipped LLM path is **Anthropic only**. There are exactly two ways for a call to find a credential:
+
+1. **Server default** — set `ANTHROPIC_API_KEY` in `infra/.env`. Every user on the instance falls back to this key when they have no per-user credential.
+2. **Per-user BYOK** — each user pastes their own Anthropic API key in `/settings/providers`. The key is encrypted at rest (using `OWNCHART_TOKEN_DEK`) and billed to that user's Anthropic console. `ModelRun.usage.billed_to` records `user_byok` vs `deployment_default` for cost attribution.
+
+A deployment may use server-default only, BYOK only (leave `ANTHROPIC_API_KEY` blank), or a mixed posture (server default fills in for users who haven't enrolled their own key). Provider tuning lives in:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | empty | Server-default Anthropic key. Optional in BYOK-only deployments. |
+| `ANTHROPIC_DEFAULT_MODEL` | `claude-opus-4-7` | Default model for non-vision jobs. |
+| `ANTHROPIC_VISION_MODEL` | `claude-opus-4-7` | Default model for vision/OCR jobs. |
+
+Other providers are not user-facing in 0.1 alpha. The codebase contains a provider registry with an OpenAI client that the architecture is built around, but Ask / Event Intelligence / vision extraction do not yet route to non-Anthropic providers end-to-end. Treat OpenAI / Gemini / local-model paths as roadmap, not shipped.
+
+### Connector and iOS-companion bearers
+
+| Variable | Required? | Purpose |
+|---|---|---|
+| `OWNCHART_PUBLIC_BASE_URL` | strongly recommended | Public HTTPS origin used to compose OAuth `redirect_uri`s registered with each EHR vendor. Must match what you registered, byte-for-byte. |
+| `OWNCHART_AUTO_EXPORT_TOKEN` | optional | Bearer token the Health Auto Export iOS app sends to `/api/auto-export/push`. When unset, the endpoint returns 503. |
+| `OWNCHART_EPIC_CLIENT_ID` / `_SANDBOX` | per-vendor | Set after registering an Epic patient app. Public client ID (PKCE), not secret. |
+| `OWNCHART_ATHENA_CLIENT_ID` | per-vendor | Set after registering an athenahealth patient app. |
+| `OWNCHART_MODMED_CLIENT_ID` | per-vendor | Set after registering a ModMed patient app. |
+
+### Never
 
 - Commit `.env` to git. The gitignore is aggressive on `.env`, `.env.*`, `*key.txt`, `*secret*` — but operator vigilance is still the control of last resort.
 - Bake secrets into Docker images.
 - Put secrets in `infra/config.yaml`. That file is intended to be diffable in code review.
 
-Rotation:
+### Rotation
 
 - `SESSION_SECRET` rotation invalidates all existing sessions. Run on suspected compromise.
+- `OWNCHART_TOKEN_DEK` rotation is destructive — it invalidates every stored EHR OAuth refresh token, forcing every user to re-authorize every connected provider. Avoid unless you suspect the DEK itself is compromised. Back it up offline alongside Postgres dumps.
 - `ANTHROPIC_API_KEY` rotation: revoke at console.anthropic.com, replace in `.env`, restart the API container.
 - Database password rotation: standard Postgres `ALTER USER`, update `.env`, restart.
 

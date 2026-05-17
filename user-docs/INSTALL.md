@@ -24,7 +24,7 @@ Network exposure choices are in [NETWORK_ACCESS.md](./NETWORK_ACCESS.md).
 
 ## Services
 
-`infra/docker-compose.yml` defines four services:
+`infra/docker-compose.yml` defines five services:
 
 | Service | Image | Public? | Purpose |
 |---|---|---|---|
@@ -190,6 +190,13 @@ docker compose -f infra/docker-compose.yml --env-file infra/.env up -d --build
 Alembic runs again on api start; migrations are idempotent. Read
 `user-docs/RELEASE_NOTES_ALPHA.md` (or the next release's notes) for
 anything operator-affecting before upgrading.
+
+> **Don't destroy `infra/.env`.** It's gitignored and survives `git
+> pull` — that's the correct behavior. Never run `git clean -fdx` in
+> this tree; losing `OWNCHART_TOKEN_DEK` invalidates every connected
+> EHR's stored OAuth refresh tokens (you'd have to re-authorize every
+> provider connection). Back up `infra/.env` offline along with your
+> Postgres dumps.
 
 ## Troubleshooting startup
 
