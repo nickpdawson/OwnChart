@@ -62,8 +62,15 @@ server-side so re-syncs are safe and incremental. See
   mature paths; ModMed is newly wired; NextGen and Oracle Health /
   Cerner are documented or in progress. See [CONNECTORS.md](./CONNECTORS.md).
 - **CCDA / XML** continuity-of-care documents.
-- **PDF + clinical-note extraction** runs automatically on FHIR sync;
-  facts appear within ~30 seconds of the sync response.
+- **FHIR clinical notes and CCDA attachments auto-extract at sync
+  time** — every `clinical_note` or `ccda_xml` attachment with
+  ≥40 chars of plaintext is sent to the extractor immediately after
+  the connector sync, and structured facts appear within ~30 seconds
+  of the sync response. PDF document ingestion is supported via
+  upload; PDF text extraction is the same vision path that handles
+  scanned documents. Pre-existing rows ingested before the
+  auto-extract hook landed are not backfilled automatically — run
+  `scripts/backfill_clinical_notes.py` if you want history extracted.
 - **Single-host contract:** `/api/*` lives on the same hostname as
   the UI. No `api.*` subdomain.
 

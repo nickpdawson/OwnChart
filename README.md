@@ -188,7 +188,7 @@ OwnChart is early, but already includes:
 - FHIR ingestion
 - CCDA / XML ingestion
 - PDF and document ingestion
-- clinical-note extraction
+- FHIR clinical-note and CCDA attachment auto-extraction at sync time
 - HealthKit / Apple Health data paths
 - saved conversations
 - cited AI answers

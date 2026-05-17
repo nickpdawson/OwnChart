@@ -56,8 +56,10 @@ together are your defense.
 callback URL.
 
 **Cons:** anyone on the internet can attempt to authenticate. Lock
-auth down: `auth.allow_self_registration: false` (the default), strong
-password, audit `model_runs` for unexpected calls.
+auth down: in 0.1 alpha, only the first signup creates the owner
+account; all subsequent calls to `/api/auth/register` return 403, so
+the public registration surface closes itself after first-run. Use a
+strong owner password and audit `model_runs` for unexpected calls.
 
 ### B. VPN / tailnet (private)
 

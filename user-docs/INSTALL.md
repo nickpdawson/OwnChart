@@ -101,25 +101,33 @@ Optional but useful:
 | `OWNCHART_MODMED_CLIENT_ID` | See [MODMED_SETUP.md](./MODMED_SETUP.md). |
 | `OWNCHART_DEBUG_PAYLOADS=true` | Logs raw request/response bodies. PHI risk. Off by default. |
 
-### 3. Edit `infra/config.yaml`
+### 3. Set the public base URL
 
-Non-secret declarative settings. The important one to set:
+The instance's public URL is the load-bearing setting for OAuth
+redirects. Set it in `infra/.env`:
 
-```yaml
-instance:
-  public_base_url: https://your-instance.example.com
+```sh
+OWNCHART_PUBLIC_BASE_URL=https://your-instance.example.com
 ```
 
-This is the URL you point your reverse proxy at. It is used to compose
-the OAuth `redirect_uri` you register with each EHR vendor:
+This is the URL you point your reverse proxy at. It composes the
+OAuth `redirect_uri` you register with each EHR vendor:
 `https://your-instance.example.com/api/connectors/callback`. There is
 **no `api.*` subdomain** — OwnChart serves API and UI from the same
-host. (See `user-docs/IOS_PARITY.md` for the single-origin contract.)
+host. (See [IOS_PARITY.md](./IOS_PARITY.md) for the single-origin
+contract.)
 
-The full template (`infra/config.example.yaml`) covers `auth.session_max_age_days`,
+> **Env wins.** `infra/config.yaml` has an `instance.public_base_url`
+> field that's parsed at startup but **not consulted by any route in
+> 0.1 alpha** — only the `OWNCHART_PUBLIC_BASE_URL` env var is read.
+> Setting both is fine (the env var wins); setting only the YAML
+> leaves the live setting unset. This may change in a future release;
+> for alpha, treat the env var as the live setting.
+
+The rest of `infra/config.example.yaml` covers `auth.session_max_age_days`,
 `llm.default_model`, `ingest.max_attachment_bytes`, `ingest.max_pdf_pages`,
-`ingest.vision_extraction_enabled`, `privacy.debug_payloads_default`,
-and others. All values have defaults; the file is optional.
+`ingest.vision_extraction_enabled`, and `privacy.debug_payloads_default`.
+All values have defaults; the file is optional.
 
 ### 4. Start the stack
 
@@ -139,14 +147,24 @@ curl -sf http://localhost:8800/healthz && echo OK
 
 ### 5. First user / admin
 
-OwnChart's V1 default is single-tenant: `auth.allow_self_registration: false`.
-On a fresh DB the **first** account you create through `/signup`
-becomes Owner. After that, registration is closed unless you flip the
-flag in `config.yaml` and restart.
+OwnChart is single-tenant in 0.1 alpha. The account-creation gate is
+**"is there any user yet?"**:
 
-Visit `https://your-instance.example.com/` (or `http://localhost:8800/`
+- On a fresh DB, the **first** call to `POST /api/auth/register`
+  succeeds and creates the owner.
+- Once any user exists, subsequent calls to `/api/auth/register`
+  return **403**. There is no toggle to reopen registration in
+  alpha. The `auth.allow_self_registration` field in
+  `config.example.yaml` is parsed but is **not read by any route**
+  today — leave it at its default.
+- Multi-user / caregiver / household support lands in Beta 1; see
+  [SHIPPED_VS_ROADMAP.md](./SHIPPED_VS_ROADMAP.md).
+
+To create the owner account, visit
+`https://your-instance.example.com/` (or `http://localhost:8800/`
 for a no-proxy local trial — set `OWNCHART_ENV=dev` in `.env` so the
-session cookie isn't `Secure`-required) and create the owner account.
+session cookie isn't `Secure`-required) and click **First time?
+Create the owner account.** on the login page.
 
 ## Backups
 
@@ -205,7 +223,7 @@ anything operator-affecting before upgrading.
 | `set in infra/.env` error on compose up | `POSTGRES_PASSWORD`, `SESSION_SECRET`, or `OWNCHART_TOKEN_DEK` unset or still placeholder | Edit `infra/.env`, generate the missing value, redo `up -d`. |
 | `api` container restarts in a loop with `permission denied: '/data'` | Host `data/` not owned by UID 1000 | `sudo chown -R 1000:1000 data/`. |
 | Logins succeed in the UI but every subsequent request redirects to `/login` | Cookies marked `Secure` while you're testing over HTTP | Set `OWNCHART_ENV=dev` in `.env` and restart `api`. Flip back to `prod` once HTTPS is in front. |
-| OAuth callbacks 4xx from the EHR | `OWNCHART_PUBLIC_BASE_URL` (or `config.yaml`'s `instance.public_base_url`) doesn't match what you registered with the vendor | Update one or both so they match exactly. The redirect URI must be byte-identical. |
+| OAuth callbacks 4xx from the EHR | `OWNCHART_PUBLIC_BASE_URL` doesn't match what you registered with the vendor (the YAML `instance.public_base_url` is parsed but not consulted — only the env var is live in alpha) | Update `OWNCHART_PUBLIC_BASE_URL` in `infra/.env` so it matches the vendor registration byte-for-byte and restart the api container. |
 | Photos / PDFs upload and 413 at the proxy | Reverse proxy body-size cap too low | See [REVERSE_PROXY.md](./REVERSE_PROXY.md): `client_max_body_size 200m;`. |
 | EI runs forever, browser shows "thinking…" with no result | LLM call rate-limited or credit-balance exhausted | Check `model_runs` table for the latest row's error column; rotate `ANTHROPIC_API_KEY` or top up credits. |
 | `arq` worker idle while extractions are stuck | Worker didn't start | `docker compose -f infra/docker-compose.yml --env-file infra/.env logs worker`; check redis connectivity. |
