@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.config import get_settings
 from ..core.db import get_session
 from ..core.demo_session import demo_session_matches, get_demo_session_id
@@ -32,8 +33,6 @@ from ..llm.episode_intelligence import run_episode_intelligence
 from ..models.audit_event import AuditEvent
 from ..models.episode import Episode, EpisodeMember
 from ..models.sensemaking_candidate import SensemakingCandidate
-from ..models.user import User
-from .auth import get_current_user
 
 router = APIRouter()
 log = get_logger("ownchart.routes.episodes")
@@ -85,9 +84,10 @@ class IntelligenceResponse(BaseModel):
              status_code=status.HTTP_201_CREATED)
 async def run_intelligence_route(
     body: IntelligenceRequest,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> IntelligenceResponse:
+    user = ctx.user
     if not (body.fact_id or body.episode_id or body.natural_language):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -100,6 +100,7 @@ async def run_intelligence_route(
             episode_id=body.episode_id,
             natural_language=body.natural_language,
             question=body.question,
+            person_record_id=ctx.active_record_id,
         )
     except Exception as e:  # noqa: BLE001
         # Log loudly with traceback so the underlying cause is
@@ -197,7 +198,7 @@ async def list_episodes_route(
     date_from: str | None = Query(default=None, description="ISO date — only include events on/after this date."),
     date_to: str | None = Query(default=None, description="ISO date — only include events on/before this date."),
     limit: int = Query(default=100, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[EpisodeSummary]:
     """List Events, optionally filtered for an attach-picker UI.
@@ -207,9 +208,14 @@ async def list_episodes_route(
     `date_to` filter on `date_start` and accept ISO `YYYY-MM-DD`.
     Merged events stay hidden.
     """
+    user = ctx.user
+    # M02 perimeter: scope by both user_id (actor) AND
+    # person_record_id (target record). Demo-mode filter layers
+    # underneath this.
     stmt = (
         select(Episode)
         .where(Episode.user_id == user.id)
+        .where(Episode.person_record_id == ctx.active_record_id)
         .where(Episode.merged_into_id.is_(None))
         .order_by(Episode.date_start.desc().nullslast(), Episode.created_at.desc())
         .limit(limit)
@@ -274,13 +280,15 @@ async def list_episodes_route(
 async def list_recent_episodes_route(
     request: Request,
     limit: int = 6,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[EpisodeSummary]:
     """Newest canonical episodes — feeds Home + Timeline surfaces."""
+    user = ctx.user
     stmt = (
         select(Episode)
         .where(Episode.user_id == user.id)
+        .where(Episode.person_record_id == ctx.active_record_id)
         .where(Episode.merged_into_id.is_(None))   # hide merged duplicates
         .order_by(Episode.date_start.desc().nullslast(), Episode.created_at.desc())
         .limit(max(1, min(limit, 50)))
@@ -326,7 +334,7 @@ async def patch_episode_route(
     episode_id: uuid.UUID,
     body: EpisodePatchRequest,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
     """Rename, retag (kind), or mark significance on an Episode.
@@ -340,8 +348,13 @@ async def patch_episode_route(
     from ..canonical.significance import RANK
     from ..models.extracted_fact import ExtractedFact
 
+    user = ctx.user
     ep = await db.get(Episode, episode_id)
-    if ep is None or ep.user_id != user.id:
+    if (
+        ep is None
+        or ep.user_id != user.id
+        or ep.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not _episode_visible_in_demo(ep, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -393,6 +406,7 @@ async def patch_episode_route(
     ep.updated_at = now
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         event_type="episode_patched",
         subject_type="episode",
         subject_id=str(ep.id),
@@ -404,7 +418,7 @@ async def patch_episode_route(
         user_agent=request.headers.get("user-agent"),
     ))
     await db.commit()
-    return await get_episode_route(ep.id, user, db)
+    return await get_episode_route(ep.id, ctx, db)
 
 
 @router.post("/{episode_id}/aliases", response_model=EpisodeDetail)
@@ -412,12 +426,17 @@ async def add_episode_alias_route(
     episode_id: uuid.UUID,
     body: EpisodeAliasRequest,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
     """Add an alias to an Event. Idempotent on case-insensitive match."""
+    user = ctx.user
     ep = await db.get(Episode, episode_id)
-    if ep is None or ep.user_id != user.id:
+    if (
+        ep is None
+        or ep.user_id != user.id
+        or ep.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not _episode_visible_in_demo(ep, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -428,7 +447,7 @@ async def add_episode_alias_route(
         )
     existing = list(ep.aliases or [])
     if any(a.lower() == new_alias.lower() for a in existing):
-        return await get_episode_route(ep.id, user, db)
+        return await get_episode_route(ep.id, ctx, db)
     if len(existing) >= 16:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -439,6 +458,7 @@ async def add_episode_alias_route(
     ep.updated_at = datetime.now(timezone.utc)
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         event_type="episode_alias_added",
         subject_type="episode",
         subject_id=str(ep.id),
@@ -447,7 +467,7 @@ async def add_episode_alias_route(
         user_agent=request.headers.get("user-agent"),
     ))
     await db.commit()
-    return await get_episode_route(ep.id, user, db)
+    return await get_episode_route(ep.id, ctx, db)
 
 
 @router.delete("/{episode_id}/aliases/{alias}", response_model=EpisodeDetail)
@@ -455,12 +475,17 @@ async def remove_episode_alias_route(
     episode_id: uuid.UUID,
     alias: str,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
     """Remove an alias (case-insensitive). Idempotent."""
+    user = ctx.user
     ep = await db.get(Episode, episode_id)
-    if ep is None or ep.user_id != user.id:
+    if (
+        ep is None
+        or ep.user_id != user.id
+        or ep.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not _episode_visible_in_demo(ep, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
@@ -474,6 +499,7 @@ async def remove_episode_alias_route(
         ep.updated_at = datetime.now(timezone.utc)
         db.add(AuditEvent(
             user_id=user.id,
+            person_record_id=ctx.active_record_id,
             event_type="episode_alias_removed",
             subject_type="episode",
             subject_id=str(ep.id),
@@ -482,20 +508,26 @@ async def remove_episode_alias_route(
             user_agent=request.headers.get("user-agent"),
         ))
         await db.commit()
-    return await get_episode_route(ep.id, user, db)
+    return await get_episode_route(ep.id, ctx, db)
 
 
 @router.get("/{episode_id}", response_model=EpisodeDetail)
 async def get_episode_route(
     episode_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
     request: Request = None,  # type: ignore[assignment]
 ) -> EpisodeDetail:
     from ..models.conversation import Conversation
 
+    user = ctx.user
     ep = await db.get(Episode, episode_id)
-    if ep is None or ep.user_id != user.id:
+    # M02 perimeter: 404 on cross-record so existence isn't disclosed.
+    if (
+        ep is None
+        or ep.user_id != user.id
+        or ep.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     # request is None when called internally after a verified mutation
     # (alias add/remove etc.); HTTP entry always supplies the request.
@@ -508,11 +540,16 @@ async def get_episode_route(
     )).scalars().all())
 
     # Conversations explicitly attached via episode_members.
+    # M02 perimeter: scope by active record so a stale cross-record
+    # episode_member subject_id (pre-migration) can't dredge up a
+    # conversation from a sibling record.
     member_conv_ids = [m.subject_id for m in members if m.member_type == "conversation"]
     related_by_member: list[Conversation] = []
     if member_conv_ids:
         related_by_member = list((await db.execute(
-            select(Conversation).where(Conversation.id.in_(member_conv_ids))
+            select(Conversation)
+            .where(Conversation.id.in_(member_conv_ids))
+            .where(Conversation.person_record_id == ctx.active_record_id)
         )).scalars().all())
 
     # Conversations linked implicitly via scope.anchor_fact_id matching
@@ -522,6 +559,7 @@ async def get_episode_route(
         related_by_anchor = list((await db.execute(
             select(Conversation)
             .where(Conversation.user_id == user.id)
+            .where(Conversation.person_record_id == ctx.active_record_id)
             .where(Conversation.archived.is_(False))
             .where(text("conversations.scope->>'anchor_fact_id' = :afid")
                    .bindparams(afid=str(ep.primary_fact_id)))
@@ -580,7 +618,7 @@ class PromoteCandidateRequest(BaseModel):
 async def promote_candidate_route(
     candidate_id: uuid.UUID,
     body: PromoteCandidateRequest | None = None,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
     """Promote a SensemakingCandidate(candidate_type='episode') to a
@@ -591,8 +629,13 @@ async def promote_candidate_route(
     Optional body sets `display_title` + `aliases` at save time so
     the user can immediately reference the Event by their chosen
     name without a follow-up PATCH."""
+    user = ctx.user
     cand = await db.get(SensemakingCandidate, candidate_id)
-    if cand is None or cand.user_id != user.id:
+    if (
+        cand is None
+        or cand.user_id != user.id
+        or cand.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if cand.candidate_type != "episode":
         raise HTTPException(
@@ -637,6 +680,7 @@ async def promote_candidate_route(
 
     ep = Episode(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         title=cand.title or "Episode",
         display_title=display_title,
         aliases=aliases_clean,
@@ -723,6 +767,7 @@ async def promote_candidate_route(
 
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         event_type="episode_promoted",
         subject_type="episode",
         subject_id=str(ep.id),
@@ -731,7 +776,7 @@ async def promote_candidate_route(
     ))
     await db.commit()
 
-    return await get_episode_route(ep.id, user, db)
+    return await get_episode_route(ep.id, ctx, db)
 
 
 @router.post(
@@ -742,7 +787,7 @@ async def attach_candidate_to_episode_route(
     episode_id: uuid.UUID,
     candidate_id: uuid.UUID,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
     """Attach a SensemakingCandidate's facts/sources to an existing
@@ -750,13 +795,22 @@ async def attach_candidate_to_episode_route(
     or overwrite the existing title — just merges members and marks
     the candidate accepted.
     """
+    user = ctx.user
     ep = await db.get(Episode, episode_id)
-    if ep is None or ep.user_id != user.id:
+    if (
+        ep is None
+        or ep.user_id != user.id
+        or ep.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Event not found")
     if not _episode_visible_in_demo(ep, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Event not found")
     cand = await db.get(SensemakingCandidate, candidate_id)
-    if cand is None or cand.user_id != user.id:
+    if (
+        cand is None
+        or cand.user_id != user.id
+        or cand.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Candidate not found")
     if cand.candidate_type != "episode":
         raise HTTPException(
@@ -822,6 +876,7 @@ async def attach_candidate_to_episode_route(
 
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         event_type="episode_candidate_attached",
         subject_type="episode",
         subject_id=str(ep.id),
@@ -831,7 +886,7 @@ async def attach_candidate_to_episode_route(
         },
     ))
     await db.commit()
-    return await get_episode_route(ep.id, user, db)
+    return await get_episode_route(ep.id, ctx, db)
 
 
 # ---------------------------------------------------------------------------
@@ -861,7 +916,7 @@ async def save_conversation_as_event_route(
     conv_id: uuid.UUID,
     body: SaveAsEventRequest,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SaveAsEventResponse:
     """Create a new Event whose first member is this Conversation.
@@ -872,8 +927,13 @@ async def save_conversation_as_event_route(
     """
     from ..models.conversation import Conversation
 
+    user = ctx.user
     conv = await db.get(Conversation, conv_id)
-    if conv is None or conv.user_id != user.id:
+    if (
+        conv is None
+        or conv.user_id != user.id
+        or conv.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     if not demo_session_matches(conv.scope, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
@@ -917,6 +977,7 @@ async def save_conversation_as_event_route(
             payload["demo_session_id"] = sid
     ep = Episode(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         title=title[:512],
         display_title=(body.display_title or "").strip()[:512] or None,
         aliases=aliases_clean,
@@ -944,6 +1005,7 @@ async def save_conversation_as_event_route(
 
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         event_type="episode_saved_from_conversation",
         subject_type="episode",
         subject_id=str(ep.id),
@@ -962,7 +1024,7 @@ async def attach_conversation_to_episode_route(
     episode_id: uuid.UUID,
     body: AttachConversationRequest,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
     """Add an existing Conversation as a member of an Event.
@@ -975,8 +1037,13 @@ async def attach_conversation_to_episode_route(
     """
     from ..models.conversation import Conversation
 
+    user = ctx.user
     ep = await db.get(Episode, episode_id)
-    if ep is None or ep.user_id != user.id:
+    if (
+        ep is None
+        or ep.user_id != user.id
+        or ep.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Event not found")
     if not _episode_visible_in_demo(ep, request):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Event not found")
@@ -986,7 +1053,15 @@ async def attach_conversation_to_episode_route(
             detail="Event is merged into another; attach to the canonical one",
         )
     conv = await db.get(Conversation, body.conversation_id)
-    if conv is None or conv.user_id != user.id:
+    # M02 perimeter: can only attach a conversation from the same
+    # active record. Cross-record attach would create a backdoor for
+    # a caregiver to surface a sibling-record's conversation under a
+    # parent's Event.
+    if (
+        conv is None
+        or conv.user_id != user.id
+        or conv.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
     existing = (await db.execute(
@@ -1007,6 +1082,7 @@ async def attach_conversation_to_episode_route(
         ))
         db.add(AuditEvent(
             user_id=user.id,
+            person_record_id=ctx.active_record_id,
             event_type="episode_conversation_attached",
             subject_type="episode",
             subject_id=str(ep.id),
@@ -1014,7 +1090,7 @@ async def attach_conversation_to_episode_route(
         ))
         ep.updated_at = now
     await db.commit()
-    return await get_episode_route(ep.id, user, db)
+    return await get_episode_route(ep.id, ctx, db)
 
 
 # ---------------------------------------------------------------------------
@@ -1027,7 +1103,7 @@ async def attach_conversation_to_episode_route(
 async def merge_episodes_route(
     source_episode_id: uuid.UUID,
     target_episode_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
     """Mark `source_episode` as a duplicate of `target_episode`,
@@ -1035,6 +1111,7 @@ async def merge_episodes_route(
     stays in the DB (audit trail, link survivability) but is
     excluded from Home / list / search via merged_into_id.
     """
+    user = ctx.user
     if source_episode_id == target_episode_id:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -1042,9 +1119,19 @@ async def merge_episodes_route(
         )
     src = await db.get(Episode, source_episode_id)
     tgt = await db.get(Episode, target_episode_id)
-    if src is None or src.user_id != user.id:
+    # Both events must live on the same active record. A cross-record
+    # merge would silently move members across records.
+    if (
+        src is None
+        or src.user_id != user.id
+        or src.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="source not found")
-    if tgt is None or tgt.user_id != user.id:
+    if (
+        tgt is None
+        or tgt.user_id != user.id
+        or tgt.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="target not found")
     if tgt.merged_into_id is not None:
         raise HTTPException(
@@ -1100,6 +1187,7 @@ async def merge_episodes_route(
 
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         event_type="episode_merged",
         subject_type="episode",
         subject_id=str(tgt.id),
@@ -1110,7 +1198,7 @@ async def merge_episodes_route(
         },
     ))
     await db.commit()
-    return await get_episode_route(tgt.id, user, db)
+    return await get_episode_route(tgt.id, ctx, db)
 
 
 # ---------------------------------------------------------------------------
@@ -1125,7 +1213,7 @@ async def merge_episodes_route(
 async def refresh_episode_intelligence_route(
     episode_id: uuid.UUID,
     background_tasks: BackgroundTasks,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> EpisodeDetail:
     """Schedule a re-run of Episode Intelligence on this Event.
@@ -1134,8 +1222,13 @@ async def refresh_episode_intelligence_route(
     POST /api/conversations — background-task, ~60s to land.
     Clears intelligence_stale_after when it completes.
     """
+    user = ctx.user
     ep = await db.get(Episode, episode_id)
-    if ep is None or ep.user_id != user.id:
+    if (
+        ep is None
+        or ep.user_id != user.id
+        or ep.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if ep.merged_into_id is not None:
         raise HTTPException(
@@ -1159,10 +1252,12 @@ async def refresh_episode_intelligence_route(
             conversation_id=uuid.uuid4(),  # NB: see comment in helper
             user_id=user.id,
             natural_language=ep.display_title or ep.title,
+            person_record_id=ctx.active_record_id,
         )
 
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         event_type="episode_refresh_requested",
         subject_type="episode",
         subject_id=str(ep.id),
@@ -1171,4 +1266,4 @@ async def refresh_episode_intelligence_route(
     ep.intelligence_stale_after = None
     ep.updated_at = datetime.now(timezone.utc)
     await db.commit()
-    return await get_episode_route(ep.id, user, db)
+    return await get_episode_route(ep.id, ctx, db)

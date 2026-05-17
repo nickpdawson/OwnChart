@@ -32,6 +32,12 @@ class BriefMessage(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )
+    # M02 perimeter (Batch 6): denormalize from parent Topic so
+    # thread queries can filter by record without a join. Migration
+    # 0029 added the column; 0031 flips it NOT NULL.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
 
     # 'user' | 'assistant'
     role: Mapped[str] = mapped_column(String(16), nullable=False)
