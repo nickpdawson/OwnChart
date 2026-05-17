@@ -14,6 +14,7 @@ Cost guardrails (per Nick, 2026-05-10):
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -92,18 +93,30 @@ async def relabel_pending(
     *,
     limit: int,
     fact_types: Iterable[str] | None = None,
+    person_record_id: uuid.UUID | None = None,
 ) -> dict:
     """Backfill candidate display_labels for up to `limit` facts that
     don't have one yet. Idempotent on re-run (skips rows where
     display_label IS NOT NULL).
 
+    M02 perimeter (Batch 3): when `person_record_id` is supplied,
+    scope the SELECT to that record so a caregiver triggering
+    relabel against record A does not pay tokens for record B's
+    rows. Argument is keyword-only and defaults to None so any
+    legacy in-process caller (worker, script) keeps working.
+
     Returns a summary dict: `{checked, relabeled, declined, errored}`.
     """
     target_types = tuple(fact_types) if fact_types else _RELABEL_FACT_TYPES
-    rows = list((await db.execute(
+    base = (
         select(ExtractedFact)
         .where(ExtractedFact.display_label.is_(None))
         .where(ExtractedFact.fact_type.in_(target_types))
+    )
+    if person_record_id is not None:
+        base = base.where(ExtractedFact.person_record_id == person_record_id)
+    rows = list((await db.execute(
+        base
         # Skip rows that already look patient-readable (no caps-only
         # ALL-CAPS jargon, no FHIR resource-id fallback). A label
         # with at least one lower-case run of 4+ chars is probably
@@ -124,10 +137,17 @@ async def relabel_pending(
     # catch ALL-CAPS rows the filter rejected; pull a second tranche
     # if the first came up short.
     if len(rows) < limit:
-        extra = list((await db.execute(
+        extra_base = (
             select(ExtractedFact)
             .where(ExtractedFact.display_label.is_(None))
             .where(ExtractedFact.fact_type.in_(target_types))
+        )
+        if person_record_id is not None:
+            extra_base = extra_base.where(
+                ExtractedFact.person_record_id == person_record_id,
+            )
+        extra = list((await db.execute(
+            extra_base
             .where(ExtractedFact.label.op("~")(r"^[A-Z0-9 /,\.\-]{8,}$"))
             .where(~ExtractedFact.label.op("~")(
                 r"^(Encounter|MedicationRequest|MedicationDispense|MedicationStatement|"

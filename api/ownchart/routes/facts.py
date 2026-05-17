@@ -10,13 +10,12 @@ from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.db import get_session
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
-from ..models.user import User
 from ..models.user_assertion import UserAssertion
-from .auth import get_current_user
 
 router = APIRouter()
 
@@ -182,10 +181,18 @@ async def list_facts(
         description="when false (default), facts with significance='source_only' are hidden",
     ),
     limit: int = Query(default=100, le=500),
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[FactDetail]:
-    stmt = select(ExtractedFact).order_by(ExtractedFact.created_at.desc()).limit(limit)
+    # M02 perimeter (Batch 3): scope every list query to the
+    # active person record. Caregivers switching between records
+    # see only that record's facts.
+    stmt = (
+        select(ExtractedFact)
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
+        .order_by(ExtractedFact.created_at.desc())
+        .limit(limit)
+    )
     if review_state:
         stmt = stmt.where(ExtractedFact.review_state == review_state)
     if fact_type:
@@ -226,11 +233,13 @@ async def list_facts(
 @router.get("/{fact_id}")
 async def get_fact(
     fact_id: uuid.UUID,
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> FactDetail:
     c = await db.get(ExtractedFact, fact_id)
-    if c is None:
+    # M02 perimeter: 404 on cross-record so we don't disclose
+    # existence of another record's fact.
+    if c is None or c.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     ua = await _latest_assertion(db, c.id)
     sources = await _resolve_source_for_facts(db, [c])
@@ -389,10 +398,14 @@ async def _related_facts(
     related: list[FactContextRelated] = []
     episode: FactContextEpisode | None = None
 
-    # Shared equivalence_key path.
+    # Shared equivalence_key path. M02 perimeter (Batch 3):
+    # defense-in-depth — scope to the parent fact's record so an
+    # equivalence_key collision across records can never surface
+    # another patient's fact in this list.
     if c.equivalence_key:
         rows = (await db.execute(
             select(ExtractedFact)
+            .where(ExtractedFact.person_record_id == c.person_record_id)
             .where(ExtractedFact.equivalence_key == c.equivalence_key)
             .where(ExtractedFact.id != c.id)
             .where(ExtractedFact.significance != "source_only")
@@ -442,6 +455,8 @@ async def _related_facts(
         return related, episode
     rows = (await db.execute(
         select(ExtractedFact)
+        # M02 perimeter (Batch 3): defense-in-depth record scope.
+        .where(ExtractedFact.person_record_id == c.person_record_id)
         .where(ExtractedFact.id != c.id)
         .where(ExtractedFact.evidence_anchor_ids.op("&&")(same_source_anchor_ids))
         .where(ExtractedFact.date_start >= day_start)
@@ -535,7 +550,7 @@ def _ask_question_for_fact(c: ExtractedFact) -> str:
 @router.get("/{fact_id}/context")
 async def get_fact_context(
     fact_id: uuid.UUID,
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> FactContext:
     """Patient-meaningful fact-context view (docs/07 R3).
@@ -547,7 +562,12 @@ async def get_fact_context(
     do next.
     """
     c = await db.get(ExtractedFact, fact_id)
-    if c is None:
+    # M02 perimeter: 404 on cross-record. Note _related_facts /
+    # the dossier-matching block below all derive scope from `c`
+    # which is now provably in-record, so no further filter is
+    # load-bearing — but we add explicit person_record_id filters
+    # there as defense-in-depth.
+    if c is None or c.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     sources = await _resolve_source_for_facts(db, [c])
@@ -556,11 +576,13 @@ async def get_fact_context(
 
     # "Also recorded by" siblings (Q7) — only when equivalence_key is
     # set. Resolves each peer's first-anchor source so the UI can show
-    # "KP HealthSummary" etc.
+    # "KP HealthSummary" etc. M02 perimeter: scope peers to the active
+    # record so an equivalence_key collision cannot leak peers.
     also_recorded_by: list[AlsoRecordedBy] = []
     if c.equivalence_key:
         peers = list((await db.execute(
             select(ExtractedFact)
+            .where(ExtractedFact.person_record_id == ctx.active_record_id)
             .where(ExtractedFact.equivalence_key == c.equivalence_key)
             .where(ExtractedFact.id != c.id)
             .limit(8)
@@ -576,10 +598,14 @@ async def get_fact_context(
             ))
 
     # Dossier linkages — same predicate as elsewhere, scored against
-    # all topics. Bounded query — most installs have <20 topics.
+    # the active record's topics. Bounded query — most installs have
+    # <20 topics per record. M02 perimeter: post-migration 0032
+    # Topics carry person_record_id; scope explicitly.
     from ..models.topic import Topic
     from ..retrieval.topics import topic_membership_clause
-    topics = list((await db.execute(select(Topic))).scalars().all())
+    topics = list((await db.execute(
+        select(Topic).where(Topic.person_record_id == ctx.active_record_id)
+    )).scalars().all())
     matching: list[FactContextDossier] = []
     for t in topics:
         clause = topic_membership_clause(t)
@@ -634,11 +660,14 @@ async def get_fact_context(
 async def correct_fact(
     fact_id: uuid.UUID,
     body: CorrectionRequest,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> FactDetail:
+    user = ctx.user
     c = await db.get(ExtractedFact, fact_id)
-    if c is None:
+    # M02 perimeter: 404 on cross-record so a caregiver cannot
+    # confirm/correct facts on a record they don't have access to.
+    if c is None or c.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     if body.assertion_type not in {"confirm", "correct", "reject", "annotate"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid assertion_type")
@@ -705,7 +734,7 @@ class RelabelBackfillResult(BaseModel):
 
 @router.post("/relabel-backfill")
 async def relabel_backfill(
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
     limit: int = Query(default=20, ge=1, le=200),
 ) -> RelabelBackfillResult:
@@ -718,11 +747,18 @@ async def relabel_backfill(
 
     PHI consent must be granted; the call sends fact labels +
     optional descriptions to Anthropic.
+
+    M02 perimeter: scope is the active record. Caregivers running
+    relabel against record A do not touch record B's facts even
+    while iterating the global table.
     """
     from ..core.consent import require_phi_consent
     from ..llm.relabel import relabel_pending
+    user = ctx.user
     require_phi_consent(user)
-    summary = await relabel_pending(db, user, limit=limit)
+    summary = await relabel_pending(
+        db, user, limit=limit, person_record_id=ctx.active_record_id,
+    )
     return RelabelBackfillResult(**summary)
 
 
@@ -734,7 +770,7 @@ class SignificanceBackfillResult(BaseModel):
 
 @router.post("/significance-backfill")
 async def significance_backfill(
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
     limit: int = Query(default=2000, ge=1, le=20000),
 ) -> SignificanceBackfillResult:
@@ -746,12 +782,16 @@ async def significance_backfill(
     'heuristic'` are recomputed when the heuristic is improved — to
     force a recompute pass `?force=true`. Plain re-runs only touch
     NULL or `default` rows.
+
+    M02 perimeter: scoped to the active person_record so a
+    caregiver's backfill only touches that record's rows.
     """
     from datetime import datetime, timezone as _tz
     from ..canonical.significance import compute as _compute
 
     rows = list((await db.execute(
         select(ExtractedFact)
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
         .where(or_(
             ExtractedFact.significance.is_(None),
             ExtractedFact.significance_source == "default",
@@ -792,7 +832,7 @@ class SignificanceResponse(BaseModel):
 async def set_fact_significance(
     fact_id: uuid.UUID,
     body: SignificanceRequest,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SignificanceResponse:
     """User override of a fact's significance. Always wins over the
@@ -802,13 +842,15 @@ async def set_fact_significance(
     from ..canonical.significance import RANK
     from ..models.audit_event import AuditEvent
 
+    user = ctx.user
     if body.significance not in RANK:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"significance must be one of {sorted(RANK.keys())}",
         )
     c = await db.get(ExtractedFact, fact_id)
-    if c is None:
+    # M02 perimeter: 404 on cross-record.
+    if c is None or c.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     prev = c.significance
@@ -838,7 +880,7 @@ async def set_fact_significance(
 @router.post("/bulk")
 async def bulk_correct_facts(
     body: BulkRequest,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> BulkResult:
     """Apply the same review action to many facts in one transaction.
@@ -847,6 +889,7 @@ async def bulk_correct_facts(
     source", "Reject selected", etc. Every fact gets its own
     UserAssertion row so the audit trail records each disposition.
     """
+    user = ctx.user
     if body.assertion_type not in {"confirm", "correct", "reject", "annotate"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid assertion_type"
@@ -862,8 +905,15 @@ async def bulk_correct_facts(
     }
     target_state = body.new_review_state or state_map.get(body.assertion_type)
 
+    # M02 perimeter: scope the SELECT to the active record so a
+    # mixed list of in-record + cross-record ids only mutates the
+    # in-record subset. Cross-record ids land in `not_found` —
+    # indistinguishable from "id doesn't exist," which is correct
+    # behavior (don't disclose existence outside the record).
     rows = (await db.execute(
-        select(ExtractedFact).where(ExtractedFact.id.in_(body.fact_ids))
+        select(ExtractedFact)
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
+        .where(ExtractedFact.id.in_(body.fact_ids))
     )).scalars().all()
     found_ids = {r.id for r in rows}
     not_found = [str(fid) for fid in body.fact_ids if fid not in found_ids]
