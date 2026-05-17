@@ -244,11 +244,14 @@ OwnChart can collect audiology reports, ENT notes, procedures, hearing tests, he
 
 ## What OwnChart is not
 
-OwnChart is not medical advice.
+A few things to be clear about:
 
-It does not tell you to start, stop, or change medication. It does not replace a clinician, trainer, dietitian, therapist, or emergency service.
+- **OwnChart is not medical advice** and is not a medical device. AI outputs are research-partner summaries and hypotheses, not diagnoses or treatment recommendations. OwnChart does not replace a clinician, trainer, dietitian, therapist, or emergency service, and it never tells you to start, stop, or change medication.
+- **OwnChart is not HIPAA-protected by default.** A self-hosted instance processing PHI is not automatically a HIPAA-compliant deployment. Operating OwnChart in a regulated context requires the operator's own BAAs, controls, auditing, and compliance program.
+- **OwnChart is provided without warranty.** It may have bugs. It may extract or summarize something incorrectly. You are responsible for verifying evidence and operating your own instance safely.
+- **Source-available for personal, noncommercial self-hosting** under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/). Commercial use, hosted services, and enterprise deployments require written permission.
 
-It helps you understand your own evidence, ask better questions, and maintain authority over your own health story.
+OwnChart helps you understand your own evidence, ask better questions, and maintain authority over your own health story. See [user-docs/RISK.md](./user-docs/RISK.md) for the longer plain-English version.
 
 ---
 

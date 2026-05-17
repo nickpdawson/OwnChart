@@ -885,6 +885,45 @@ footer {
 }
 
 /* ============================================================
+   RISK STRIP — load-bearing disclosures above the brand footer
+   ============================================================ */
+
+.risk-strip {
+  padding: 40px var(--pad-x) 48px;
+  background: var(--ivory-100);
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.risk-strip-inner {
+  max-width: var(--max-w);
+  margin: 0 auto;
+}
+
+.risk-strip-lead {
+  font-size: 18px;
+  margin: 0 0 16px;
+  color: var(--ink);
+  letter-spacing: 0.005em;
+}
+
+.risk-strip-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 14px;
+  font-size: 15px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.risk-strip-list li strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ============================================================
    RESPONSIVE
    ============================================================ */
 
@@ -901,6 +940,9 @@ footer {
   .example-questions li { font-size: 18px; }
 
   .trust-strip { font-size: 13px; padding: 12px var(--pad-x); }
+
+  .risk-strip { padding: 32px var(--pad-x) 40px; }
+  .risk-strip-list { font-size: 14px; }
 
   .shots-grid { gap: 22px; }
 
