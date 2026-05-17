@@ -1283,7 +1283,7 @@ async def extract_facts_from_source(
 @router.get("/{source_id}/extraction-status")
 async def get_extraction_status(
     source_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> ExtractionJobReadout | None:
     """Latest extraction job for this source, or null if none yet.
@@ -1291,7 +1291,9 @@ async def get_extraction_status(
     Polled by the UI every few seconds while a job is running.
     """
     src = await db.get(SourceDocument, source_id)
-    if src is None:
+    if src is None or src.person_record_id != ctx.active_record_id:
+        # 404 (not 403) on cross-record so we don't disclose
+        # existence of someone else's source.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     job = (await db.execute(
         select(ExtractionJob)
@@ -1315,7 +1317,7 @@ class AnchorReadout(BaseModel):
 @router.get("/{source_id}/anchors")
 async def list_anchors(
     source_id: uuid.UUID,
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[AnchorReadout]:
     """Return every evidence anchor on this source.
@@ -1326,7 +1328,7 @@ async def list_anchors(
     extracted fact, not just the page image).
     """
     src = await db.get(SourceDocument, source_id)
-    if src is None:
+    if src is None or src.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     rows = (await db.execute(
         select(EvidenceAnchor)
@@ -1352,11 +1354,11 @@ async def list_anchors(
 async def get_page_image(
     source_id: uuid.UUID,
     page_number: int,
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> FileResponse:
     src = await db.get(SourceDocument, source_id)
-    if src is None:
+    if src is None or src.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     page_renders = (src.raw_metadata or {}).get("page_renders", []) or []
     match = next((p for p in page_renders if int(p.get("page", 0)) == page_number), None)
@@ -1372,13 +1374,13 @@ async def get_page_image(
 async def get_thumbnail(
     source_id: uuid.UUID,
     size: str,
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> FileResponse:
     if size not in images.THUMB_SIZES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid size")
     src = await db.get(SourceDocument, source_id)
-    if src is None:
+    if src is None or src.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     thumbs = (src.raw_metadata or {}).get("thumbnails", {})
     path_str = thumbs.get(size)
@@ -1539,14 +1541,14 @@ def _build_source_narrative(
 @router.get("/{source_id}/contribution-summary")
 async def get_source_contribution_summary(
     source_id: uuid.UUID,
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> SourceContributionSummary:
     """Patient-meaningful narrative + structured contribution data
     for a single source. Powers the source detail page lead (R2 of
     the 2026-05-10 product reframe)."""
     src = await db.get(SourceDocument, source_id)
-    if src is None:
+    if src is None or src.person_record_id != ctx.active_record_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
     # Resolve all anchors for this source, then all facts.
@@ -1702,13 +1704,19 @@ _RESOLVED_STATES = ("rejected", "deferred", "source_only", "corrected")
 @router.get("/{source_id}/review-summary")
 async def get_source_review_summary(
     source_id: uuid.UUID,
-    _user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> SourceReviewSummary:
     """One-shot summary of this source's review backlog. Powers the
     Source detail page's review callout — "412 extracted facts, 37
     timeline-relevant, 9 may duplicate, 344 are provider/contact
     details" (docs/07 §458-464)."""
+    # M02 perimeter: confirm the source belongs to the active record
+    # before doing any work. 404 (not 403) on cross-record so we
+    # don't disclose existence.
+    src = await db.get(SourceDocument, source_id)
+    if src is None or src.person_record_id != ctx.active_record_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     # Resolve anchors for the source so we can find its facts.
     anchor_ids = list((await db.execute(
         select(EvidenceAnchor.id).where(EvidenceAnchor.source_document_id == source_id)

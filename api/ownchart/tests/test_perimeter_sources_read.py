@@ -148,9 +148,31 @@ def test_list_sources_handler_signature_includes_auth_context():
     from typing import get_type_hints
 
     from ownchart.core.auth_context import AuthContext
-    from ownchart.routes.sources import list_sources, get_source
+    from ownchart.routes.sources import (
+        get_extraction_status,
+        get_page_image,
+        get_source,
+        get_source_contribution_summary,
+        get_source_review_summary,
+        get_thumbnail,
+        list_anchors,
+        list_sources,
+    )
 
-    for fn in (list_sources, get_source):
+    # Every record-scoped sources GET handler must depend on
+    # AuthContext. The list is exhaustive — adding a new sources GET
+    # without wiring AuthContext will fail this test once added here.
+    handlers = (
+        list_sources,
+        get_source,
+        get_extraction_status,
+        list_anchors,
+        get_page_image,
+        get_thumbnail,
+        get_source_contribution_summary,
+        get_source_review_summary,
+    )
+    for fn in handlers:
         hints = get_type_hints(fn)
         ctx_params = [
             name for name, hint in hints.items()
@@ -160,3 +182,45 @@ def test_list_sources_handler_signature_includes_auth_context():
             f"{fn.__name__} must declare exactly one "
             f"`AuthContext` parameter; got {ctx_params}."
         )
+
+
+# ---------------------------------------------------------------------------
+# Derived GETs propagate denial
+
+
+@pytest.mark.parametrize("path_factory,code", [
+    (lambda sid: f"/api/sources/{sid}/extraction-status", "record_access_revoked"),
+    (lambda sid: f"/api/sources/{sid}/anchors", "record_access_revoked"),
+    (lambda sid: f"/api/sources/{sid}/contribution-summary", "no_memberships"),
+    (lambda sid: f"/api/sources/{sid}/review-summary", "record_access_revoked"),
+])
+def test_derived_source_gets_403_on_denial(app_fixture, path_factory, code):
+    """Every derived sources GET (status, anchors, contribution-summary,
+    review-summary) must propagate the 403 from AuthContext. Page +
+    thumb return FileResponse so they're tested separately."""
+    c = denied_client(app_fixture, code=code)
+    sid = str(uuid.uuid4())
+    r = c.get(path_factory(sid))
+    assert r.status_code == 403, (
+        f"{path_factory(sid)} returned {r.status_code} {r.text}"
+    )
+    assert r.json()["detail"]["code"] == code
+
+
+def test_page_image_403_on_denial(app_fixture):
+    """File-response endpoints (page, thumb) also propagate the
+    AuthContext error as a 403 JSON. FastAPI handles the
+    HTTPException -> JSONResponse conversion via our catch-all."""
+    c = denied_client(app_fixture, code="record_access_revoked")
+    sid = str(uuid.uuid4())
+    r = c.get(f"/api/sources/{sid}/page/1")
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "record_access_revoked"
+
+
+def test_thumb_403_on_denial(app_fixture):
+    c = denied_client(app_fixture, code="record_access_revoked")
+    sid = str(uuid.uuid4())
+    r = c.get(f"/api/sources/{sid}/thumb/md")
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "record_access_revoked"
