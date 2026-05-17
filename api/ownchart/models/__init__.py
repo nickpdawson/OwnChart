@@ -10,8 +10,10 @@ from .extracted_fact import ExtractedFact
 from .extraction_job import ExtractionJob
 from .health_event import HealthEvent
 from .llm_provider_credential import LlmProviderCredential
+from .membership import MEMBERSHIP_ROLES, Membership, role_rank
 from .model_run import ModelRun
 from .oauth_session import OAuthSession
+from .person_record import PersonRecord
 from .provider_connection import ProviderConnection
 from .provider_connector import ProviderConnector
 from .sensemaking_candidate import SensemakingCandidate
@@ -39,8 +41,11 @@ __all__ = [
     "ExtractionJob",
     "HealthEvent",
     "LlmProviderCredential",
+    "MEMBERSHIP_ROLES",
+    "Membership",
     "ModelRun",
     "OAuthSession",
+    "PersonRecord",
     "ProviderConnection",
     "ProviderConnector",
     "SensemakingCandidate",
@@ -51,4 +56,5 @@ __all__ = [
     "User",
     "UserAssertion",
     "UserSetting",
+    "role_rank",
 ]

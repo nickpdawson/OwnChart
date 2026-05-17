@@ -22,6 +22,14 @@ class TopicBrief(Base):
     __tablename__ = "topic_briefs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    # Denormalized from topic. NOT NULL as of migration 0032 — every
+    # brief belongs to exactly one person_record, inherited from its
+    # parent topic.
+    person_record_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("person_records.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     topic_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("topics.id", ondelete="CASCADE"),
