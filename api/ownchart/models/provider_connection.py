@@ -22,6 +22,18 @@ class ProviderConnection(Base, TimestampMixin):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # M02 perimeter (Batch 8): which person record this OAuth grant
+    # fills data INTO. The binding is set at OAuth-start time (via
+    # the signed state param) and persisted here so future syncs
+    # write to the SAME record even if the actor switches active
+    # records between start and sync. BE-1 default kept ProviderConnection
+    # user-scoped; PM Batch 8 directive added this column as a
+    # required binding for "callback binds to signed value, not
+    # current active record". Migration to follow when Slice 1
+    # lands; nullable here so pre-migration rows still load.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
     connector_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("provider_connectors.id", ondelete="RESTRICT"), nullable=False, index=True
     )

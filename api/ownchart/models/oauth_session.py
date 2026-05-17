@@ -22,6 +22,15 @@ class OAuthSession(Base, TimestampMixin):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # M02 perimeter (Batch 8): which person record this OAuth flow
+    # is intended to fill. Captured at start_connect time from the
+    # active record + signed into the OAuth state param. The
+    # callback decodes the state, verifies user, and binds the
+    # resulting ProviderConnection to this value — NOT to whatever
+    # active record the user has switched to mid-flow.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
     connector_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("provider_connectors.id", ondelete="CASCADE"), nullable=False
     )

@@ -34,6 +34,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..canonical.equivalence import daily_metric_key
+from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.config import get_settings
 from ..core.db import get_session
 from ..core.device_auth import get_user_from_device_token_or_session
@@ -149,9 +150,18 @@ async def _upsert_source_for_day(
     device_token_id: uuid.UUID | None,
     day: datetime,
     mode: str,
+    *,
+    person_record_id: uuid.UUID,
 ) -> SourceDocument:
-    """One SourceDocument per (user, device_token, day) — facts hang off
-    it via evidence anchors. Matches the auto_export pattern.
+    """One SourceDocument per (user, person_record, device_token, day) —
+    facts hang off it via evidence anchors. Matches the auto_export
+    pattern.
+
+    M02 perimeter (Batch 8): the source is record-scoped, so the
+    SELECT-existing query MUST filter by person_record_id too — a
+    caregiver who pairs both Mom's and Dad's iPhone must NOT
+    collapse their day-sources into a single row. The dedupe lane
+    is `(person_record, user, source_type, source_label)`.
 
     Race-safe: iOS uploads multiple identifiers in parallel via URLSession
     with no client-side serialization, so two pages may both see "no row"
@@ -174,6 +184,7 @@ async def _upsert_source_for_day(
         return (
             select(SourceDocument)
             .where(SourceDocument.owner_user_id == user.id)
+            .where(SourceDocument.person_record_id == person_record_id)
             .where(SourceDocument.source_type == "native_healthkit")
             .where(SourceDocument.source_label == label)
             .order_by(SourceDocument.id.asc())
@@ -190,6 +201,7 @@ async def _upsert_source_for_day(
             src = SourceDocument(
                 id=uuid.uuid4(),
                 owner_user_id=user.id,
+                person_record_id=person_record_id,
                 source_type="native_healthkit",
                 original_filename=f"{label}.batch",
                 storage_uri="memory://native-healthkit",
@@ -218,12 +230,21 @@ async def _upsert_source_for_day(
 async def sync_healthkit(
     body: SyncRequest,
     request: Request,
-    user: User = Depends(get_user_from_device_token_or_session),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SyncResponse:
-    """Ingest one HK-identifier batch."""
+    """Ingest one HK-identifier batch.
+
+    M02 perimeter (Batch 8): HealthKit sync writes records that are
+    record-shaping (Source + Facts on a person_record). The iOS app
+    sends `X-OwnChart-Person-Record` to pin which record the device
+    is currently paired with; `get_auth_context` (inside
+    `require_role`) resolves it. Caregiver+ required since this is
+    a write that creates new sources/facts.
+    """
+    user = ctx.user
     try:
-        return await _sync_healthkit_inner(body, request, user, db)
+        return await _sync_healthkit_inner(body, request, user, ctx, db)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -234,6 +255,7 @@ async def sync_healthkit(
         log.warning(
             "healthkit_sync_failed",
             user_id=str(user.id),
+            person_record_id=str(ctx.active_record_id),
             identifier=body.identifier,
             strategy=body.strategy,
             sample_count=len(body.samples),
@@ -256,6 +278,7 @@ async def _sync_healthkit_inner(
     body: SyncRequest,
     request: Request,
     user: User,
+    ctx: AuthContext,
     db: AsyncSession,
 ) -> SyncResponse:
     if body.identifier not in HK_REGISTRY:
@@ -352,7 +375,8 @@ async def _sync_healthkit_inner(
         # All samples in this day share one SourceDocument.
         first = day_samples[0]
         src = await _upsert_source_for_day(
-            db, user, device_token_id, first.start_at, effective_mode
+            db, user, device_token_id, first.start_at, effective_mode,
+            person_record_id=ctx.active_record_id,
         )
         source_doc_by_day[day_key] = src
 
@@ -391,9 +415,12 @@ async def _sync_healthkit_inner(
 
             # Idempotent insert via the partial unique index on
             # client_sample_key. ON CONFLICT DO NOTHING — replays
-            # naturally dedupe.
+            # naturally dedupe. M02 perimeter: stamp the active
+            # record id so retrieval scopes the wearable lane to
+            # the right person.
             stmt = pg_insert(ExtractedFact.__table__).values(
                 fact_type=_fact_type_for(spec),
+                person_record_id=ctx.active_record_id,
                 label=label[:512],
                 description=None,
                 date_start=s.start_at,
@@ -420,6 +447,7 @@ async def _sync_healthkit_inner(
                 # meaningful to quote.
                 anchor = EvidenceAnchor(
                     source_document_id=src.id,
+                    person_record_id=ctx.active_record_id,
                     anchor_type="healthkit_sample",
                     text_excerpt=label[:280],
                 )

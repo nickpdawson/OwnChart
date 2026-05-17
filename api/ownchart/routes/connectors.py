@@ -23,10 +23,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.config import get_settings
 from ..core.crypto import decrypt_str, encrypt
 from ..core.db import get_session
+from ..core.device_auth import get_user_from_device_token_or_session
 from ..core.logger import get_logger
+from ..core.oauth_state import (
+    OAuthStateError,
+    decode_oauth_state,
+    sign_oauth_state,
+)
 import os
 import re
 
@@ -40,7 +47,6 @@ from ..models.provider_connection import ProviderConnection
 from ..models.provider_connector import ProviderConnector
 from ..models.source_document import SourceDocument
 from ..models.user import User
-from .auth import get_current_user
 
 router = APIRouter()
 log = get_logger("ownchart.routes.connectors")
@@ -181,14 +187,34 @@ def _default_scopes_for(ehr_vendor: str | None) -> str:
 
 @router.get("")
 async def list_connectors(
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[ConnectorSummary]:
+    """List connectors and the user's connections.
+
+    M02 perimeter (Batch 8): connection rows are filtered by user
+    AND active person_record. A caregiver switching between Mom's
+    and Dad's records sees a different "is connected" badge per
+    record — because the OAuth grant is bound to the record it was
+    set up to fill. Pre-migration connections (NULL
+    person_record_id) are surfaced under any record so legacy
+    users don't see all their connections vanish.
+    """
+    user = ctx.user
     cs = (await db.execute(
         select(ProviderConnector).order_by(ProviderConnector.name)
     )).scalars().all()
+    # OR-style filter: rows on the active record OR pre-migration
+    # rows with no record binding. Once 0034 backfills, the second
+    # clause becomes dead code; safe to keep for now.
+    from sqlalchemy import or_
     conns = (await db.execute(
-        select(ProviderConnection).where(ProviderConnection.user_id == user.id)
+        select(ProviderConnection)
+        .where(ProviderConnection.user_id == user.id)
+        .where(or_(
+            ProviderConnection.person_record_id == ctx.active_record_id,
+            ProviderConnection.person_record_id.is_(None),
+        ))
     )).scalars().all()
     by_connector: dict[uuid.UUID, ProviderConnection] = {c.connector_id: c for c in conns}
 
@@ -231,7 +257,7 @@ async def directory_search(
     q: str = Query(default="", description="Substring/keyword query (e.g. 'stanford')"),
     vendor: str = Query(default="epic"),
     limit: int = Query(default=25, le=100),
-    _user: User = Depends(get_current_user),
+    _ctx: AuthContext = Depends(get_auth_context),
 ) -> list[DirectoryEntryReadout]:
     """Search a vendor's published FHIR endpoint directory.
 
@@ -262,7 +288,7 @@ async def directory_search(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_connector(
     body: CreateConnectorRequest,
-    _user: User = Depends(get_current_user),
+    _ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> ConnectorSummary:
     """Materialize a directory hit (or a manually-typed entry) into a
@@ -311,7 +337,7 @@ async def create_connector(
 @router.delete("/{conn_id_or_slug}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_connector(
     conn_id_or_slug: str,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> None:
     """Delete a connector if no user has an active connection on it.
@@ -343,15 +369,27 @@ async def delete_connector(
         )
     await db.delete(target)
     await db.commit()
-    log.info("connector_deleted", slug=target.slug, user_id=str(user.id))
+    log.info("connector_deleted", slug=target.slug, user_id=str(ctx.user.id))
 
 
 @router.post("/{slug}/connect")
 async def start_connect(
     slug: str,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> ConnectStartResponse:
+    """Start an OAuth flow against an EHR connector.
+
+    M02 perimeter (Batch 8): the state param is a SIGNED token (not
+    a raw OAuthSession.id) carrying user_id + person_record_id +
+    csrf_nonce + oauth_session_id. The callback decodes the state
+    and binds the resulting ProviderConnection to the SIGNED
+    person_record_id — never to whatever active record the user
+    has switched to mid-flow. This prevents a caregiver from
+    starting OAuth on Mom's record, switching to Dad's tab, and
+    accidentally landing the EHR data on Dad's record.
+    """
+    user = ctx.user
     c = (await db.execute(
         select(ProviderConnector).where(ProviderConnector.slug == slug)
     )).scalar_one_or_none()
@@ -394,6 +432,7 @@ async def start_connect(
     verifier, challenge = fhir_ingest.generate_pkce_pair()
     sess = OAuthSession(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         connector_id=c.id,
         pkce_verifier=verifier,
         redirect_back_to="/connectors",
@@ -403,17 +442,35 @@ async def start_connect(
     await db.commit()
     await db.refresh(sess)
 
+    # M02 perimeter: SIGNED state param carrying user, record, and
+    # session id. The callback re-decodes and verifies — never
+    # trusts the active record from the callback's own request.
+    signed_state = sign_oauth_state(
+        user_id=user.id,
+        person_record_id=ctx.active_record_id,
+        oauth_session_id=sess.id,
+    )
+
     authorize_url = fhir_ingest.build_authorize_url(
         authorize_endpoint=c.authorize_endpoint,
         client_id=c.client_id,
         redirect_uri=_redirect_uri(),
         scope=c.scopes,
-        state=str(sess.id),
+        state=signed_state,
         pkce_challenge=challenge,
         aud=c.fhir_base,
     )
-    log.info("connector_oauth_start", connector=slug, user_id=str(user.id))
-    return ConnectStartResponse(authorize_url=authorize_url, state=str(sess.id), connector=slug)
+    log.info(
+        "connector_oauth_start",
+        connector=slug,
+        user_id=str(user.id),
+        person_record_id=str(ctx.active_record_id),
+    )
+    return ConnectStartResponse(
+        authorize_url=authorize_url,
+        state=signed_state,
+        connector=slug,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +485,14 @@ async def oauth_callback(
     state: str | None = Query(default=None),
     error: str | None = Query(default=None),
     error_description: str | None = Query(default=None),
-    user: User = Depends(get_current_user),
+    # M02 perimeter (Batch 8): NB the callback depends on the bare
+    # device/session auth dep (NOT get_auth_context). The callback
+    # must NOT depend on a current active record — the record id
+    # comes from the signed state, decoded below. If we used
+    # AuthContext here, a user mid-flow who switched records would
+    # have the new active record bound to the OAuth grant by the
+    # implicit fallback, exactly the bug PM A-3 prevents.
+    user: User = Depends(get_user_from_device_token_or_session),
     db: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     redirect_to = "/connectors"
@@ -441,17 +505,48 @@ async def oauth_callback(
     if not code or not state:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing code or state")
 
+    # PM A-3: state is a signed token, not a raw UUID. Decode and
+    # verify before touching the DB. Catches: expired flow, tampered
+    # state, replayed state from another user.
     try:
-        state_uuid = uuid.UUID(state)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bad state") from e
+        payload = decode_oauth_state(state)
+    except OAuthStateError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Bad state: {e}",
+        ) from e
 
-    sess = await db.get(OAuthSession, state_uuid)
+    # The session user must match the user the state was signed for.
+    # Mid-flow account switch (or someone hijacking the callback URL)
+    # falls here.
+    if payload.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="State does not match session user",
+        )
+
+    # Look up the OAuthSession row by the signed session id.
+    if payload.oauth_session_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="State missing oauth_session_id",
+        )
+    sess = await db.get(OAuthSession, payload.oauth_session_id)
     if sess is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown state")
     if sess.user_id != user.id:
-        # Someone else's state. Refuse.
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="State does not match session user")
+    # Defense-in-depth: the DB row's person_record_id must match
+    # what was signed. If they differ, someone tampered with the DB
+    # or replayed an old state — refuse.
+    if (
+        sess.person_record_id is not None
+        and sess.person_record_id != payload.person_record_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="State record binding does not match session",
+        )
     if sess.expires_at < datetime.now(timezone.utc):
         await db.delete(sess)
         await db.commit()
@@ -460,6 +555,10 @@ async def oauth_callback(
     connector = await db.get(ProviderConnector, sess.connector_id)
     if connector is None or not connector.token_endpoint or not connector.client_id:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Connector misconfigured")
+
+    # The destination record for the new ProviderConnection. Comes
+    # from the SIGNED state, not the request.
+    bound_person_record_id = payload.person_record_id
 
     try:
         tok = await fhir_ingest.exchange_code_for_token(
@@ -484,17 +583,35 @@ async def oauth_callback(
         else None
     )
 
-    # Upsert the connection. One per (user, connector); refresh tokens on
-    # re-connect.
+    # Upsert the connection. One per (user, connector, person_record);
+    # refresh tokens on re-connect. M02 perimeter: the connection
+    # binds to the record from the SIGNED state, so a caregiver who
+    # connects the same EHR to both Mom's and Dad's records gets
+    # two distinct rows. Without this, the second connect would
+    # overwrite the first's tokens AND silently re-bind which
+    # record the data flowed into.
     existing = (await db.execute(
         select(ProviderConnection).where(
             ProviderConnection.user_id == user.id,
             ProviderConnection.connector_id == connector.id,
+            ProviderConnection.person_record_id == bound_person_record_id,
         )
     )).scalar_one_or_none()
     if existing is None:
-        existing = ProviderConnection(user_id=user.id, connector_id=connector.id)
+        existing = ProviderConnection(
+            user_id=user.id,
+            person_record_id=bound_person_record_id,
+            connector_id=connector.id,
+        )
         db.add(existing)
+    else:
+        # Defense-in-depth: never let an existing row drift to a
+        # different record. If we found a row, its person_record_id
+        # MUST already equal bound_person_record_id (the WHERE
+        # filter guarantees it for new schemas; for pre-migration
+        # NULL rows we set it now).
+        if existing.person_record_id is None:
+            existing.person_record_id = bound_person_record_id
 
     existing.access_token_enc = encrypt(tok.access_token)
     existing.refresh_token_enc = encrypt(tok.refresh_token) if tok.refresh_token else None
@@ -512,6 +629,7 @@ async def oauth_callback(
         "connector_oauth_complete",
         connector=connector.slug,
         user_id=str(user.id),
+        person_record_id=str(bound_person_record_id),
         has_refresh=bool(tok.refresh_token),
         patient=tok.patient,
     )
@@ -759,12 +877,34 @@ def _date_for_with_fallback(
 async def sync_connection(
     conn_id: uuid.UUID,
     background_tasks: BackgroundTasks,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> SyncResponse:
+    """Pull a fresh FHIR snapshot and persist as one SourceDocument.
+
+    M02 perimeter (Batch 8): the destination record comes from
+    `conn.person_record_id` — the binding set at OAuth callback
+    time from the SIGNED state. The caller's `ctx.active_record_id`
+    is verified to MATCH the connection's bound record so a
+    caregiver can't trigger a sync on a connection that belongs
+    to a different record. Cross-record sync attempts 404.
+    """
+    user = ctx.user
     conn = await db.get(ProviderConnection, conn_id)
     if conn is None or conn.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    # Cross-record sync attempt: 404 so existence isn't disclosed.
+    # Pre-migration NULL bindings are allowed (legacy connections
+    # without a record stamp); the source insert below will adopt
+    # the active record id in that case.
+    if (
+        conn.person_record_id is not None
+        and conn.person_record_id != ctx.active_record_id
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    # Resolve the destination record. Prefer the bound value; fall
+    # back to active for pre-migration connections.
+    dest_record_id = conn.person_record_id or ctx.active_record_id
     connector = await db.get(ProviderConnector, conn.connector_id)
     if connector is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Connector missing")
@@ -823,6 +963,7 @@ async def sync_connection(
 
     src = SourceDocument(
         owner_user_id=user.id,
+        person_record_id=dest_record_id,
         source_type="fhir_bundle",
         original_filename=f"{connector.slug}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json",
         storage_uri=blob.storage_uri,
@@ -856,6 +997,7 @@ async def sync_connection(
         for res in resources:
             anchor = EvidenceAnchor(
                 source_document_id=src.id,
+                person_record_id=dest_record_id,
                 anchor_type="fhir_resource",
                 section_path=f"{rt}/{res.get('id', '?')}",
                 text_excerpt=None,
@@ -870,6 +1012,7 @@ async def sync_connection(
             db.add(
                 ExtractedFact(
                     fact_type=fact_type,
+                    person_record_id=dest_record_id,
                     label=label,
                     description=None,
                     date_start=ds,
@@ -907,6 +1050,7 @@ async def sync_connection(
             meta["plaintext_excerpt"] = att.plaintext[:2000]
         att_src = SourceDocument(
             owner_user_id=user.id,
+            person_record_id=dest_record_id,
             source_type=fhir_attachments.derive_source_type(att.mime),
             original_filename=(att.ref.title or f"{att.ref.source_resource_type}-{att.ref.source_resource_id}-{att.ref.content_index}")[:512],
             storage_uri=att_blob.storage_uri,
@@ -955,6 +1099,7 @@ async def sync_connection(
         # Anchor on the FHIR snapshot pointing back to the attachment SourceDocument.
         anchor = EvidenceAnchor(
             source_document_id=src.id,
+            person_record_id=dest_record_id,
             anchor_type="fhir_attachment",
             section_path=f"{att.ref.source_resource_type}/{att.ref.source_resource_id}/content/{att.ref.content_index} → SourceDocument/{att_src.id}",
             text_excerpt=(att.plaintext or "")[:2000] or None,
@@ -993,11 +1138,20 @@ async def sync_connection(
 @router.post("/{conn_id}/disconnect", status_code=status.HTTP_204_NO_CONTENT)
 async def disconnect(
     conn_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> None:
+    user = ctx.user
     conn = await db.get(ProviderConnection, conn_id)
     if conn is None or conn.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    # M02 perimeter: cross-record disconnect 404s — caregivers can
+    # only revoke a grant for the record they're acting on. Legacy
+    # NULL bindings are allowed through.
+    if (
+        conn.person_record_id is not None
+        and conn.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     # Wipe tokens but keep the row for audit (status=revoked).
     conn.access_token_enc = None
