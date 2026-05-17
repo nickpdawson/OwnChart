@@ -301,6 +301,7 @@ async def search_facts(
     limit: int = 40,
     include_archived: bool = False,
     user_id: uuid.UUID | None = None,
+    person_record_id: uuid.UUID | None = None,
 ) -> list[ExtractedFact]:
     """Free-text retrieval across fact labels + descriptions.
 
@@ -333,6 +334,17 @@ async def search_facts(
     home insight referenced a recent Celebrex prescription and the
     follow-up chat couldn't find it; this lifts that gap.
 
+    **M02 perimeter (Batch 4, 2026-05-18 PM):** when
+    ``person_record_id`` is supplied, EVERY retrieval pass — category,
+    substring, AND source-name expansion — is scoped to that record.
+    This is load-bearing: ask.py, conversations.py, and topic
+    rendering all feed the LLM context block from this function, so a
+    missing filter here would put another patient's facts into a
+    caregiver's prompt. Argument is keyword-only and defaults to None
+    so legacy callers (admin scripts, no-record retrieval) keep
+    working; the route layer is responsible for passing it on every
+    user-facing path.
+
     Over-retrieval is fine — the LLM caller filters facts further by
     relevance; under-retrieval is fatal because no fact's label
     matches a full natural-language question.
@@ -352,6 +364,13 @@ async def search_facts(
         if user_id is None:
             return base
         return or_(base, ExtractedFact.id.in_(_pattern_managed_fact_ids_subq(user_id)))
+
+    def _apply_record_scope(stmt):
+        """M02 perimeter: scope SELECT to active person record.
+        No-op when person_record_id is None (legacy callers)."""
+        if person_record_id is None:
+            return stmt
+        return stmt.where(ExtractedFact.person_record_id == person_record_id)
 
     # --- Category representatives -----------------------------------------
     matched_types = _detect_category_fact_types(tokens, query)
@@ -374,6 +393,7 @@ async def search_facts(
             .distinct(ExtractedFact.fact_type, func.lower(ExtractedFact.label))
             .limit(limit)
         )
+        cat_stmt = _apply_record_scope(cat_stmt)
         sf = _state_filter()
         if sf is not None:
             cat_stmt = cat_stmt.where(sf)
@@ -402,6 +422,7 @@ async def search_facts(
             )
             .limit(limit)
         )
+        sub_stmt = _apply_record_scope(sub_stmt)
         sf = _state_filter()
         if sf is not None:
             sub_stmt = sub_stmt.where(sf)
@@ -421,12 +442,19 @@ async def search_facts(
         from ..models.evidence_anchor import EvidenceAnchor
         from ..models.source_document import SourceDocument
         # Pull all distinct source_labels — small set (one row per
-        # connected practice / upload origin) so this is cheap.
-        label_rows = list((await db.execute(
+        # connected practice / upload origin) so this is cheap. M02
+        # perimeter: when scoped, list only this record's sources so
+        # we never match "Mom's Stanford notes" while serving a child.
+        source_label_stmt = (
             select(SourceDocument.id, SourceDocument.source_label)
             .where(SourceDocument.source_label.isnot(None))
             .distinct()
-        )).all())
+        )
+        if person_record_id is not None:
+            source_label_stmt = source_label_stmt.where(
+                SourceDocument.person_record_id == person_record_id,
+            )
+        label_rows = list((await db.execute(source_label_stmt)).all())
         # Match labels against the raw question. Strip whitespace +
         # case-fold; also try a no-whitespace form so "Ortho Virginia"
         # in the question hits "OrthoVirginia" in the data and vice
@@ -462,6 +490,7 @@ async def search_facts(
                     )
                     .limit(limit)
                 )
+                fact_stmt = _apply_record_scope(fact_stmt)
                 sf = _state_filter()
                 if sf is not None:
                     fact_stmt = fact_stmt.where(sf)

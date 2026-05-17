@@ -22,6 +22,15 @@ class Conversation(Base, TimestampMixin):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
+    # M02 perimeter (Batch 4): which person record this conversation
+    # is *about*. Distinct from user_id, which is the *actor*: a
+    # caregiver writes to a parent's record, so user_id=caregiver,
+    # person_record_id=parent. Listing + retrieval scope on this
+    # column. Nullable in 0029 to enable backfill; migration 0031
+    # flips it NOT NULL.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
     title: Mapped[str | None] = mapped_column(String(512))
     # ask | make_sense | episode_intelligence | dossier_followup |
     # source_followup | review_triage
@@ -47,6 +56,12 @@ class ConversationMessage(Base):
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    # M02 perimeter (Batch 4): denormalized from parent Conversation
+    # so retrieval / list queries on messages can filter without a
+    # join. Mirrors the EvidenceAnchor pattern.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
     )
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(String, nullable=False)

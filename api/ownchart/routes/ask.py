@@ -20,14 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import datetime, timezone
 
+from ..core.auth_context import AuthContext, get_auth_context
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
 from ..llm import call_with_tool, get_registry
 from ..models.conversation import Conversation, ConversationMessage
 from ..models.extracted_fact import ExtractedFact
-from ..models.user import User
 from ..retrieval.topics import search_facts
-from .auth import get_current_user
 
 router = APIRouter()
 
@@ -95,7 +94,7 @@ def _format_context(facts: list[ExtractedFact]) -> str:
 @router.post("")
 async def ask(
     body: AskRequest,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> AskResponse:
     if _is_self_harm(body.question):
@@ -112,6 +111,7 @@ async def ask(
             error=None,
         )
 
+    user = ctx.user
     require_phi_consent(user)
 
     # 40 was the original search_facts default; ask.py used to override
@@ -121,7 +121,19 @@ async def ask(
     # and reduces "I don't see X in your record" misses where X is real.
     # user_id makes search_facts pattern-aware (re-include facts
     # suppressed via accepted medication/provider pattern compression).
-    facts = await search_facts(db, body.question, limit=40, user_id=user.id)
+    #
+    # M02 perimeter (Batch 4): person_record_id scopes every retrieval
+    # pass (category, substring, source-name expansion) to the active
+    # record. This is the load-bearing line for "Ask cannot leak
+    # another record's facts into the prompt." Without it, a caregiver
+    # asking about a parent's record could surface facts from their
+    # own record (or vice versa).
+    facts = await search_facts(
+        db, body.question, limit=40,
+        user_id=user.id,
+        person_record_id=ctx.active_record_id,
+    )
+    retrieved_ids: set[str] = {str(f.id) for f in facts}
     prompt = get_registry().get("ask_query")
     result = await call_with_tool(
         db, user, prompt,
@@ -142,6 +154,22 @@ async def ask(
     out = result.tool_input or {}
     answer_text = out.get("answer")
 
+    # M02 perimeter (Batch 4): citations the LLM emits must be a
+    # SUBSET of the retrieved fact set. The LLM occasionally
+    # hallucinates an id that resembles a tokenized UUID; that has
+    # always been benign, but now the perimeter forces it to be
+    # defensive too — a hallucinated id can never reference a
+    # cross-record fact, because the retrieved set is already
+    # record-scoped and we drop anything outside it.
+    citations_in: list[dict] = list(out.get("citations", []) or [])
+    citations_filtered: list[Citation] = []
+    for c in citations_in:
+        if not isinstance(c, dict):
+            continue
+        fid = c.get("fact_id")
+        if isinstance(fid, str) and fid in retrieved_ids:
+            citations_filtered.append(Citation(**c))
+
     # Persist the Q+A as a Conversation so the user can Save-as-Dossier
     # or continue the thread in /chat. Skipped when the model refused
     # or gave us nothing to save. Kind='ask' is the existing default —
@@ -153,6 +181,11 @@ async def ask(
         title = (body.question.strip().splitlines()[0] or "Ask")[:200]
         conv = Conversation(
             user_id=user.id,
+            # M02 perimeter: which record this thread is *about*.
+            # The Conversation list page filters on this so a
+            # caregiver only sees threads pinned to the active
+            # record they've switched to.
+            person_record_id=ctx.active_record_id,
             title=title,
             kind="ask",
             scope={"type": "whole_record"},
@@ -163,12 +196,14 @@ async def ask(
         db.add(ConversationMessage(
             conversation_id=conv.id,
             user_id=user.id,
+            person_record_id=ctx.active_record_id,
             role="user",
             content=body.question,
         ))
         db.add(ConversationMessage(
             conversation_id=conv.id,
             user_id=user.id,
+            person_record_id=ctx.active_record_id,
             role="assistant",
             content=answer_text,
             model_run_id=result.model_run_id,
@@ -182,7 +217,7 @@ async def ask(
         well_supported=out.get("well_supported", []),
         uncertain=out.get("uncertain", []),
         suggested_next_steps=out.get("suggested_next_steps", []),
-        citations=[Citation(**c) for c in out.get("citations", [])],
+        citations=citations_filtered,
         retrieved_fact_count=len(facts),
         model_run_id=str(result.model_run_id),
         safety_response=out.get("safety_response"),
