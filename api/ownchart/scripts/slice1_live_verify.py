@@ -373,32 +373,30 @@ async def probe_auth_me(
             else f"active_record.id={b.get('active_record', {}).get('id')} != B={rec_b}"
         ),
     )
-    # `/api/auth/me` is bootstrap-safe by design: a bogus
-    # X-OwnChart-Person-Record header is NOT a 403. get_auth_context's
-    # 4-step resolution (header → session → default → first) silently
-    # falls through and returns null on miss; for /me specifically, it
-    # returns null active_record (or, when the user has a default, the
-    # default record) and still 200. Probing for 403 here was a
-    # misread of the perimeter — 403 is reserved for *record-scoped*
-    # endpoints (sources, facts, conversations, etc.) where a bogus
-    # record header fails membership check inside require_role().
+    # `/api/auth/me` is bootstrap-safe by design. When the user
+    # *explicitly* requests a record via header (or session) but the
+    # record is not in their memberships, resolve_active_record_id()
+    # returns None with reason="denied". The /me handler intentionally
+    # does NOT 403 on denied; it returns 200 with active_record=null
+    # so the client can show a "pick a different record" UI
+    # (routes/auth.py:284-286). The 4-step fallback (header → session
+    # → default → first) only fires when the user did NOT explicitly
+    # request a record — i.e., no header AND no session pin. A bogus
+    # header counts as an explicit request, so no fallback to default.
     bogus = str(uuid.uuid4())
     await run_probe(
         sess, report,
-        name="auth_me/bogus_header_falls_back_to_default",
+        name="auth_me/bogus_header_active_record_null",
         method="GET", path="/api/auth/me",
         record_id=bogus, record_label="N/A",
         expected_status=200,
         response_assertion=lambda b: (
             None
-            if (b.get("active_record") or {}).get("id")
-                == b.get("default_person_record_id")
+            if b.get("active_record") is None
             else (
-                f"active_record.id="
-                f"{(b.get('active_record') or {}).get('id')!r} "
-                f"!= default_person_record_id="
-                f"{b.get('default_person_record_id')!r} "
-                "(bogus header should fall through to user default)"
+                f"active_record={b.get('active_record')!r} "
+                "(expected null when an explicitly requested record "
+                "is not in the user's memberships — no fallback)"
             )
         ),
     )
@@ -717,14 +715,28 @@ async def probe_aggregations(
 # Cleanup
 
 
-async def cleanup(sess: Session, report: RunReport) -> None:
+async def cleanup(
+    sess: Session, report: RunReport, rec_a: str, rec_b: str,
+) -> None:
     """Hit DELETE for everything we can; collect the rest as orphans
-    for the operator to hand-clean via the rendered psql script."""
+    for the operator to hand-clean via the rendered psql script.
+
+    Every DELETE is sent with the resource's owning record id in the
+    X-OwnChart-Person-Record header. Without this, the api routes
+    DELETE via the user's default record (record A here), and
+    anything created under record B gets a 404 from its own cleanup
+    call — leaving B-record rows behind even though the cleanup
+    reported "passed=true" (since 404 is treated as no-op).
+    """
+    record_id_by_label = {"A": rec_a, "B": rec_b}
     for resource in reversed(report.created):
         if resource.delete_url is None:
             report.orphans.append(resource)
             continue
-        r = await sess.request("DELETE", resource.delete_url)
+        record_id = record_id_by_label.get(resource.record)
+        r = await sess.request(
+            "DELETE", resource.delete_url, record_id=record_id,
+        )
         cleanup_passed = r.status_code in (200, 204, 404)
         report.cleanup_results.append({
             "kind": resource.kind,
@@ -794,7 +806,7 @@ def planned_probes() -> list[str]:
     return [
         "auth_me/header_record_a",
         "auth_me/header_record_b",
-        "auth_me/bogus_header_falls_back_to_default",
+        "auth_me/bogus_header_active_record_null",
         "sources/list_a",
         "sources/list_b",
         "sources/write_note_a",
@@ -877,7 +889,7 @@ async def amain(args: argparse.Namespace) -> int:
         await probe_episodes(sess, report, rec_a, rec_b)
         await probe_aggregations(sess, report, rec_a, rec_b)
 
-        await cleanup(sess, report)
+        await cleanup(sess, report, rec_a, rec_b)
 
         report.finished_at = datetime.now(timezone.utc).isoformat()
         report.overall_passed = all(p.passed for p in report.probes)
