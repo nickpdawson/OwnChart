@@ -50,6 +50,16 @@ class ExtractedFact(Base, TimestampMixin):
 
     coded_concepts: Mapped[dict | None] = mapped_column(JSONB)     # {snomed:[...], icd10:[...], rxnorm:[...]}
 
+    # Sample-level numeric / structured payload that does not belong
+    # in coded_concepts. Added by migration 0035 (Slice 2). First
+    # callsite: HealthKit workout path (BE-3 contract) writing
+    # raw_metadata.healthkit = {duration_s, distance_m, energy_kcal,
+    # source, device, sync_mode, sample_metadata}. Future ingest
+    # paths (body/sleep, Auto Export numeric, EventKit timing) will
+    # reuse the same column for the same reason: coded_concepts stays
+    # the retrieval-keyed bag; raw_metadata stays observational.
+    raw_metadata: Mapped[dict | None] = mapped_column(JSONB)
+
     confidence: Mapped[int | None] = mapped_column(Integer)        # 0-100 internal
     review_state: Mapped[str] = mapped_column(
         String(16), default="needs_review", nullable=False, index=True
