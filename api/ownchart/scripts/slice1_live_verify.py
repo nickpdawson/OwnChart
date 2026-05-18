@@ -69,6 +69,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -134,21 +135,30 @@ class Session:
     pytest fixture — this is real HTTP against a deployed instance.
     """
 
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, *, strip_secure_on_login: bool = False):
         self.client = httpx.AsyncClient(
             base_url=base_url,
             timeout=30.0,
             follow_redirects=False,
         )
+        self._strip_secure_on_login = strip_secure_on_login
 
     async def aclose(self) -> None:
         await self.client.aclose()
 
     async def login(self, email: str, password: str) -> httpx.Response:
-        return await self.client.post(
+        r = await self.client.post(
             "/api/auth/login",
             json={"email": email, "password": password},
         )
+        # Test-harness only: when the api sets Secure cookies in prod
+        # env, httpx stores them but won't send on subsequent http://
+        # requests. Re-set on the jar without Secure so the session is
+        # honored when this script runs against http://localhost.
+        if self._strip_secure_on_login and r.status_code == 200:
+            for name, value in r.cookies.items():
+                self.client.cookies.set(name, value)
+        return r
 
     async def request(
         self,
@@ -794,7 +804,10 @@ def planned_probes() -> list[str]:
 
 
 async def amain(args: argparse.Namespace) -> int:
-    sess = Session(args.base_url)
+    sess = Session(
+        args.base_url,
+        strip_secure_on_login=args.allow_insecure_localhost_cookie,
+    )
     try:
         if args.dry_run:
             sys.stderr.write(
@@ -882,12 +895,48 @@ def main() -> int:
                         help="e.g. https://ownchart.dzsec.net")
     parser.add_argument("--admin-email", required=True,
                         help="Instance admin email for login.")
-    parser.add_argument("--admin-password", required=True,
-                        help="Instance admin password.")
+    pw_group = parser.add_mutually_exclusive_group(required=True)
+    pw_group.add_argument("--admin-password",
+                          help="Instance admin password (visible in argv — "
+                               "prefer --admin-password-file).")
+    pw_group.add_argument("--admin-password-file",
+                          help="Path to a single-line file containing the "
+                               "password. chmod 600 recommended. Keeps the "
+                               "password out of process argv.")
+    parser.add_argument("--allow-insecure-localhost-cookie", action="store_true",
+                        help="Test-harness only: after login, re-set cookies "
+                             "on the client jar without the Secure flag so "
+                             "they ride subsequent http:// calls. Only "
+                             "allowed when base_url host is "
+                             "localhost/127.0.0.1/::1.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Pre-flight + planned-probe enumeration only. "
                              "No HTTP writes. Use to preview before approval.")
     args = parser.parse_args()
+
+    if args.admin_password_file:
+        pwd_path = Path(args.admin_password_file).expanduser()
+        try:
+            args.admin_password = pwd_path.read_text().strip()
+        except OSError as e:
+            sys.exit(
+                f"REFUSE: cannot read --admin-password-file "
+                f"{pwd_path}: {e}"
+            )
+        if not args.admin_password:
+            sys.exit(
+                f"REFUSE: --admin-password-file {pwd_path} is empty."
+            )
+
+    if args.allow_insecure_localhost_cookie:
+        host = (urlparse(args.base_url).hostname or "").lower()
+        if host not in ("localhost", "127.0.0.1", "::1"):
+            sys.exit(
+                f"REFUSE: --allow-insecure-localhost-cookie requires "
+                f"base_url host in (localhost, 127.0.0.1, ::1); got "
+                f"{host!r}."
+            )
+
     try:
         return asyncio.run(amain(args))
     except KeyboardInterrupt:
