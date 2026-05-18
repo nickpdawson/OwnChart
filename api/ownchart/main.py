@@ -23,6 +23,7 @@ from .routes import (
     auth,
     auth_device,
     auto_export,
+    calendar,
     connectors,
     consent,
     conversations,
@@ -228,6 +229,7 @@ app.include_router(auto_export.router, prefix="/api/auto-export", tags=["auto-ex
 app.include_router(timeline.router, prefix="/api/timeline", tags=["timeline"])
 app.include_router(discover.router, prefix="/api/discover", tags=["discover"])
 app.include_router(healthkit_sync.router, prefix="/api/healthkit", tags=["healthkit"])
+app.include_router(calendar.router, prefix="/api/calendar", tags=["calendar"])
 app.include_router(settings_routes.router, prefix="/api/settings", tags=["settings"])
 app.include_router(sensemaking.router, prefix="/api", tags=["sensemaking"])
 app.include_router(conversations.router, prefix="/api/conversations", tags=["conversations"])
