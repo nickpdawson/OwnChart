@@ -28,10 +28,11 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
 
 from ..canonical.equivalence import daily_metric_key
 from ..core.auth_context import AuthContext, get_auth_context, require_role
@@ -46,6 +47,13 @@ from ..ingest.healthkit import (
     format_aggregate_label,
     format_raw_label,
     registry_for_capabilities,
+)
+from ..ingest.healthkit_workout import (
+    HKDevice,
+    HKSource,
+    HKWorkoutSample,
+    SyncMode,
+    workout_sample_to_fact_shape,
 )
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
@@ -104,6 +112,23 @@ class SyncSample(BaseModel):
     # coded_concepts.hk_uuid; not the dedupe key.
     hk_uuid: str | None = None
 
+    # ── HKWorkoutType fields (M02 Slice 2, BE-3 contract) ──
+    # iOS populates these only when identifier == "HKWorkoutType".
+    # For other identifiers they stay None. Validation of the
+    # workout-required subset happens inside the workout branch of
+    # _sync_healthkit_inner; an HKWorkoutType sample missing any
+    # required workout field surfaces as a 422 from
+    # _build_workout_fact_payload via HKWorkoutSample's own
+    # pydantic checks.
+    workout_activity_type: str | None = Field(default=None, max_length=64)
+    workout_activity_type_raw: int | None = None
+    duration_s: float | None = Field(default=None, ge=0)
+    distance_m: float | None = Field(default=None, ge=0)
+    energy_kcal: float | None = Field(default=None, ge=0)
+    source: HKSource | None = None  # nested source for workout samples
+    device: HKDevice | None = None  # optional device (Apple Watch, etc.)
+    metadata: dict[str, Any] | None = None  # sample-level metadata
+
 
 class SyncRequest(BaseModel):
     device_id: str
@@ -114,6 +139,14 @@ class SyncRequest(BaseModel):
     # request time — clients no longer need to mirror an instance flag.
     # Left in the schema so old iOS builds don't 422 on an unknown field.
     mode: Literal["demo", "full"] = "full"
+    # M02 Slice 2: iOS sends "backfill" while iterating historical
+    # samples on initial discovery, "incremental" once anchored on
+    # the watch's current cutoff. Recorded as observational metadata
+    # on workout facts via raw_metadata.healthkit.sync_mode; the
+    # BE-3 invariant is that storage is otherwise IDENTICAL across
+    # the two modes. Default "incremental" keeps pre-Slice-2 iOS
+    # builds working without sending the new field.
+    sync_mode: SyncMode = "incremental"
     samples: list[SyncSample]
     anchor_blob: str | None = None  # base64-encoded HKQueryAnchor.archivedData
 
@@ -274,6 +307,102 @@ async def sync_healthkit(
         )
 
 
+def _format_workout_label(
+    coded: dict[str, Any], raw_meta: dict[str, Any],
+) -> str:
+    """Human-readable label for a workout fact.
+
+    Format: "<Activity> — <duration> min[, <distance> km][, <energy> kcal]".
+    Examples:
+      - "Running — 36 min, 8.0 km, 615 kcal"
+      - "Strength training — 25 min"
+
+    Used by both the live route and the test harness. Pure function:
+    same (coded, raw_meta) → same label.
+    """
+    activity_raw = coded.get("workout_activity_type") or "workout"
+    activity = activity_raw.replace("_", " ")
+    activity = activity[:1].upper() + activity[1:]
+    parts: list[str] = []
+    duration_s = raw_meta.get("duration_s")
+    if duration_s is not None and duration_s > 0:
+        parts.append(f"{round(duration_s / 60)} min")
+    distance_m = raw_meta.get("distance_m")
+    if distance_m:
+        parts.append(f"{distance_m / 1000:.1f} km")
+    energy_kcal = raw_meta.get("energy_kcal")
+    if energy_kcal:
+        parts.append(f"{round(energy_kcal)} kcal")
+    if not parts:
+        return activity
+    return f"{activity} — " + ", ".join(parts)
+
+
+def _build_workout_fact_payload(
+    sample: SyncSample, *, sync_mode: SyncMode,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Map an HKWorkoutType ``SyncSample`` to fact-insert parameters.
+
+    Returns ``(label, coded_concepts, raw_metadata_healthkit)``. The
+    last value is the dict to store under ``raw_metadata.healthkit``
+    (the route wraps it in ``{"healthkit": ...}`` before persisting).
+
+    Validates the workout-required subset of fields explicitly and
+    raises ``HTTPException(422)`` if any are missing, with a message
+    naming the bad ``client_sample_key`` so the iOS side can find the
+    offending sample in its outbox. Then delegates to the BE-3
+    contract's ``workout_sample_to_fact_shape`` so the storage shape
+    stays a single source of truth (commit ``077a10a``).
+
+    Pure: same input → same output. ``sync_mode`` lands ONLY in
+    ``raw_metadata_healthkit['sync_mode']``; everything else is
+    identical between ``"backfill"`` and ``"incremental"`` calls —
+    BE-3's mode-agnostic invariant carried into the live ingest path.
+    """
+    missing: list[str] = []
+    if not sample.workout_activity_type:
+        missing.append("workout_activity_type")
+    if sample.duration_s is None:
+        missing.append("duration_s")
+    if sample.source is None or not sample.source.name:
+        missing.append("source.name")
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "HKWorkoutType sample "
+                f"{sample.client_sample_key!r} is missing required "
+                f"workout fields: {', '.join(missing)}"
+            ),
+        )
+    try:
+        hk = HKWorkoutSample(
+            client_sample_key=sample.client_sample_key,
+            start_at=sample.start_at.isoformat(),
+            end_at=sample.end_at.isoformat(),
+            workout_activity_type=sample.workout_activity_type,  # type: ignore[arg-type]
+            workout_activity_type_raw=sample.workout_activity_type_raw,
+            duration_s=sample.duration_s,  # type: ignore[arg-type]
+            distance_m=sample.distance_m,
+            energy_kcal=sample.energy_kcal,
+            source=sample.source,  # type: ignore[arg-type]
+            device=sample.device,
+            metadata=sample.metadata,
+        )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "HKWorkoutType sample "
+                f"{sample.client_sample_key!r} failed BE-3 validation: "
+                f"{e.errors()[0].get('msg', str(e))}"
+            ),
+        )
+    coded, raw_meta = workout_sample_to_fact_shape(hk, sync_mode=sync_mode)
+    label = _format_workout_label(coded, raw_meta)
+    return label, coded, raw_meta
+
+
 async def _sync_healthkit_inner(
     body: SyncRequest,
     request: Request,
@@ -381,37 +510,60 @@ async def _sync_healthkit_inner(
         source_doc_by_day[day_key] = src
 
         for s in day_samples:
-            label = (
-                format_aggregate_label(spec, s.value, body.unit)
-                if body.strategy == "daily_aggregate" and s.value is not None
-                else format_raw_label(spec, s.value, body.unit, s.display_text)
-            )
+            # M02 Slice 2: HKWorkoutType samples have their own
+            # storage shape (BE-3 contract). Everything else goes
+            # through the alpha-era path unchanged.
+            if body.identifier == "HKWorkoutType":
+                wlabel, wcoded, wraw = _build_workout_fact_payload(
+                    s, sync_mode=body.sync_mode,
+                )
+                label = wlabel
+                coded = wcoded
+                method = "native_healthkit"
+                equiv_key = None
+                raw_metadata_value: dict | None = {"healthkit": wraw}
+                date_precision_value: str | None = None
+                fact_type_value = "observation"
+                anchor_type_value = "healthkit_workout"
+            else:
+                label = (
+                    format_aggregate_label(spec, s.value, body.unit)
+                    if body.strategy == "daily_aggregate" and s.value is not None
+                    else format_raw_label(spec, s.value, body.unit, s.display_text)
+                )
 
-            coded = {"hkquantitytype": [body.identifier]}
-            if s.source_bundle_id:
-                coded["source_bundle_id"] = [s.source_bundle_id]
-            if s.hk_uuid:
-                coded["hk_uuid"] = [s.hk_uuid]
+                coded = {"hkquantitytype": [body.identifier]}
+                if s.source_bundle_id:
+                    coded["source_bundle_id"] = [s.source_bundle_id]
+                if s.hk_uuid:
+                    coded["hk_uuid"] = [s.hk_uuid]
 
-            # Per-scope extraction_method routing:
-            #   - clinical   → fhir_resource (Apple Health Records;
-            #                  semantically the same shape as a FHIR
-            #                  bundle import — lands in clinical lane)
-            #   - medications / symptoms → patient_self_report (matches
-            #                  Auto Export medication path; clinical lane)
-            #   - everything else → native_healthkit (wearable lane)
-            method = _extraction_method_for(spec)
+                # Per-scope extraction_method routing:
+                #   - clinical   → fhir_resource (Apple Health Records;
+                #                  semantically the same shape as a FHIR
+                #                  bundle import — lands in clinical lane)
+                #   - medications / symptoms → patient_self_report (matches
+                #                  Auto Export medication path; clinical lane)
+                #   - everything else → native_healthkit (wearable lane)
+                method = _extraction_method_for(spec)
 
-            # Cross-source equivalence (docs/07 §487-545). For daily
-            # aggregates we set a source-neutral key; same metric on
-            # the same UTC date posted by Auto Export and native HK
-            # collapses to one canonical event. NULL for raw samples
-            # (workouts, sleep, body) — fuzzier dedupe rules in Phase 2.
-            equiv_key = (
-                daily_metric_key(body.identifier, s.start_at)
-                if body.strategy == "daily_aggregate"
-                else None
-            )
+                # Cross-source equivalence (docs/07 §487-545). For daily
+                # aggregates we set a source-neutral key; same metric on
+                # the same UTC date posted by Auto Export and native HK
+                # collapses to one canonical event. NULL for raw samples
+                # (workouts, sleep, body) — fuzzier dedupe rules in Phase 2.
+                equiv_key = (
+                    daily_metric_key(body.identifier, s.start_at)
+                    if body.strategy == "daily_aggregate"
+                    else None
+                )
+
+                raw_metadata_value = None
+                date_precision_value = (
+                    "day" if body.strategy == "daily_aggregate" else None
+                )
+                fact_type_value = _fact_type_for(spec)
+                anchor_type_value = "healthkit_sample"
 
             # Idempotent insert via the partial unique index on
             # client_sample_key. ON CONFLICT DO NOTHING — replays
@@ -419,14 +571,15 @@ async def _sync_healthkit_inner(
             # record id so retrieval scopes the wearable lane to
             # the right person.
             stmt = pg_insert(ExtractedFact.__table__).values(
-                fact_type=_fact_type_for(spec),
+                fact_type=fact_type_value,
                 person_record_id=ctx.active_record_id,
                 label=label[:512],
                 description=None,
                 date_start=s.start_at,
                 date_end=s.end_at,
-                date_precision="day" if body.strategy == "daily_aggregate" else None,
+                date_precision=date_precision_value,
                 coded_concepts=coded,
+                raw_metadata=raw_metadata_value,
                 confidence=95,
                 review_state="confirmed",
                 evidence_anchor_ids=[],
@@ -448,7 +601,7 @@ async def _sync_healthkit_inner(
                 anchor = EvidenceAnchor(
                     source_document_id=src.id,
                     person_record_id=ctx.active_record_id,
-                    anchor_type="healthkit_sample",
+                    anchor_type=anchor_type_value,
                     text_excerpt=label[:280],
                 )
                 db.add(anchor)
