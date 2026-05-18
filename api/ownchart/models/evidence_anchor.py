@@ -19,6 +19,14 @@ class EvidenceAnchor(Base, TimestampMixin):
         nullable=False,
         index=True,
     )
+    # M02 perimeter: denormalized record scope from parent
+    # SourceDocument so retrieval can filter without a join. Added
+    # by migration 0029 (NOT NULL via 0031 after backfill).
+    # Registered as part of Batch 9 backfill after the cross-batch
+    # model-column gap was discovered.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
 
     # "pdf_page", "ccda_section", "fhir_path", "csv_row", "image_bbox", "transcript_range"
     anchor_type: Mapped[str] = mapped_column(String(64), nullable=False)

@@ -16,6 +16,7 @@ unchanged.
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -63,6 +64,7 @@ async def triage_provider_patterns(
     *,
     min_group_size: int = 3,
     limit_rows: int = 5000,
+    person_record_id: uuid.UUID | None = None,
 ) -> SensemakingJob:
     """Walk provider_relationship facts in review_state ∈
     {needs_review, confirmed} and emit pattern candidates for any
@@ -72,10 +74,16 @@ async def triage_provider_patterns(
     triage default (5) — provider name noise repeats less than
     medication dosing, but 3+ shared names from different sources
     still benefits from one decision instead of three.
+
+    M02 perimeter (Batch 9): `person_record_id` scopes the fact
+    walk + stamps every persisted row (job, candidates, audit event)
+    so triage results live on the active record only. Defaults to
+    None for legacy in-process callers.
     """
     now = datetime.now(timezone.utc)
     job = SensemakingJob(
         user_id=user.id,
+        person_record_id=person_record_id,
         job_type="provider_pattern_triage",
         status="running",
         privacy_mode="off",  # deterministic — no PHI off host
@@ -85,14 +93,19 @@ async def triage_provider_patterns(
     db.add(job)
     await db.flush()
 
-    rows = list((await db.execute(
+    fact_stmt = (
         select(ExtractedFact)
         .where(ExtractedFact.fact_type == "provider_relationship")
         .where(ExtractedFact.review_state.in_(("needs_review", "confirmed")))
         .where(ExtractedFact.significance != "source_only")
         .order_by(ExtractedFact.created_at.desc())
         .limit(limit_rows)
-    )).scalars().all())
+    )
+    if person_record_id is not None:
+        fact_stmt = fact_stmt.where(
+            ExtractedFact.person_record_id == person_record_id
+        )
+    rows = list((await db.execute(fact_stmt)).scalars().all())
 
     groups: dict[str, dict[str, Any]] = {}
     for f in rows:
@@ -136,6 +149,7 @@ async def triage_provider_patterns(
         summary = " · ".join(bits)
         candidate = SensemakingCandidate(
             user_id=user.id,
+            person_record_id=person_record_id,
             job_id=job.id,
             candidate_type="provider_pattern",
             title=title,
@@ -156,6 +170,7 @@ async def triage_provider_patterns(
     job.completed_at = datetime.now(timezone.utc)
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=person_record_id,
         event_type="provider_pattern_triage_completed",
         subject_type="sensemaking_job",
         subject_id=str(job.id),

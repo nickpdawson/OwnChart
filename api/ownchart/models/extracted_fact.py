@@ -22,6 +22,15 @@ class ExtractedFact(Base, TimestampMixin):
     __tablename__ = "extracted_facts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    # M02 perimeter: the person record this fact belongs to. Added
+    # by migration 0029 (NOT NULL via 0031 after backfill). Every
+    # record-scoped read and the M02-rollout perimeter SELECTs
+    # filter on this column; without the model declaration the
+    # SELECTs raise AttributeError at request time. Registered as
+    # part of Batch 9 backfill after the gap was discovered.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
 
     # condition | procedure | medication | symptom | finding | observation |
     # encounter | imaging_study | lab_result | provider_relationship |

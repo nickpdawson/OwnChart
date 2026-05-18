@@ -53,6 +53,7 @@ async def triage_medication_patterns(
     *,
     min_group_size: int = 5,
     limit_rows: int = 5000,
+    person_record_id: uuid.UUID | None = None,
 ) -> SensemakingJob:
     """Walk medication + symptom facts in `review_state ∈ {needs_review,
     confirmed}` and emit pattern candidates for any normalized-label
@@ -61,10 +62,17 @@ async def triage_medication_patterns(
     Idempotent: re-running creates a fresh job, but existing pending
     candidates with matching `pattern_key` payload are left in place
     (we only add new ones).
+
+    M02 perimeter (Batch 9): `person_record_id` scopes the fact
+    walk + stamps every persisted row (job, candidates, audit event)
+    so triage results live on the active record only. Defaults to
+    None for legacy in-process callers (workers, scripts); the route
+    layer always passes ctx.active_record_id.
     """
     now = datetime.now(timezone.utc)
     job = SensemakingJob(
         user_id=user.id,
+        person_record_id=person_record_id,
         job_type="medication_pattern_triage",
         status="running",
         privacy_mode="off",  # deterministic — no PHI leaves the host
@@ -77,14 +85,19 @@ async def triage_medication_patterns(
     # Only un-triaged facts feed new patterns. `pattern_managed` rows
     # are already "user accepted this pattern" — don't re-suggest the
     # same grouping at every triage run.
-    rows = list((await db.execute(
+    fact_stmt = (
         select(ExtractedFact)
         .where(ExtractedFact.fact_type.in_(("medication", "symptom")))
         .where(ExtractedFact.review_state.in_(("needs_review", "confirmed")))
         .where(ExtractedFact.significance != "source_only")
         .order_by(ExtractedFact.date_start.desc().nullslast(), ExtractedFact.created_at.desc())
         .limit(limit_rows)
-    )).scalars().all())
+    )
+    if person_record_id is not None:
+        fact_stmt = fact_stmt.where(
+            ExtractedFact.person_record_id == person_record_id
+        )
+    rows = list((await db.execute(fact_stmt)).scalars().all())
 
     groups: dict[str, dict[str, Any]] = {}
     for f in rows:
@@ -244,6 +257,7 @@ async def triage_medication_patterns(
 
         candidate = SensemakingCandidate(
             user_id=user.id,
+            person_record_id=person_record_id,
             job_id=job.id,
             candidate_type="medication_pattern",
             title=title,
@@ -279,6 +293,7 @@ async def triage_medication_patterns(
     job.completed_at = datetime.now(timezone.utc)
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=person_record_id,
         event_type="medication_pattern_triage_completed",
         subject_type="sensemaking_job",
         subject_id=str(job.id),

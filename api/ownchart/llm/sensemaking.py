@@ -90,6 +90,7 @@ async def summarize_source(
     *,
     sample_size: int = 60,
     excerpt_count: int = 8,
+    person_record_id: uuid.UUID | None = None,
 ) -> SensemakingJob:
     """Run a `source_summary` job. Returns the SensemakingJob row
     (with `model_run_id` and an attached SensemakingCandidate when
@@ -99,6 +100,11 @@ async def summarize_source(
       - `ai.privacy_mode` is `off`.
       - The source has no extracted facts.
     Refused jobs still get persisted so the UI can render the reason.
+
+    M02 perimeter (Batch 9): `person_record_id` scopes the fact
+    walk + stamps every persisted row (job, candidates, audit
+    events). Defaults to None for legacy in-process callers; the
+    route layer always passes ctx.active_record_id.
     """
     privacy_mode = await effective(db, user, "ai.privacy_mode")
     label_xlation = await effective(db, user, "ai.label_translation")
@@ -109,6 +115,7 @@ async def summarize_source(
 
     job = SensemakingJob(
         user_id=user.id,
+        person_record_id=person_record_id,
         job_type="source_summary",
         status="pending",
         privacy_mode=privacy_mode,
@@ -120,6 +127,7 @@ async def summarize_source(
 
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=person_record_id,
         event_type="sensemaking_started",
         subject_type="source",
         subject_id=str(source_id),
@@ -150,11 +158,16 @@ async def summarize_source(
         await db.commit()
         return job
 
-    facts = list((await db.execute(
-        select(ExtractedFact).where(
-            ExtractedFact.evidence_anchor_ids.op("&&")(anchor_ids)
-        ).order_by(ExtractedFact.date_start.desc().nullslast())
-    )).scalars().all())
+    fact_stmt = (
+        select(ExtractedFact)
+        .where(ExtractedFact.evidence_anchor_ids.op("&&")(anchor_ids))
+        .order_by(ExtractedFact.date_start.desc().nullslast())
+    )
+    if person_record_id is not None:
+        fact_stmt = fact_stmt.where(
+            ExtractedFact.person_record_id == person_record_id
+        )
+    facts = list((await db.execute(fact_stmt)).scalars().all())
 
     fact_type_counts: dict[str, int] = {}
     dated: list[ExtractedFact] = []
@@ -255,6 +268,7 @@ async def summarize_source(
         await db.commit()
         db.add(SensemakingCandidate(
             user_id=user.id,
+            person_record_id=person_record_id,
             job_id=job.id,
             candidate_type="safety_response",
             title=None,
@@ -266,6 +280,7 @@ async def summarize_source(
         ))
         db.add(AuditEvent(
             user_id=user.id,
+            person_record_id=person_record_id,
             event_type="sensemaking_completed",
             subject_type="source",
             subject_id=str(source_id),
@@ -280,6 +295,7 @@ async def summarize_source(
     summary_text = (payload.get("summary") or "").strip()
     cand = SensemakingCandidate(
         user_id=user.id,
+        person_record_id=person_record_id,
         job_id=job.id,
         candidate_type="source_summary",
         title=(src.source_label or src.original_filename or "Source summary"),
@@ -309,6 +325,7 @@ async def summarize_source(
                 continue
         db.add(SensemakingCandidate(
             user_id=user.id,
+            person_record_id=person_record_id,
             job_id=job.id,
             candidate_type="episode",
             title=title,
@@ -322,6 +339,7 @@ async def summarize_source(
 
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=person_record_id,
         event_type="sensemaking_completed",
         subject_type="source",
         subject_id=str(source_id),

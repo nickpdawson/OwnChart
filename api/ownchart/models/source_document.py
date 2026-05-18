@@ -15,6 +15,13 @@ class SourceDocument(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
     owner_user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    # M02 perimeter: the person record this document belongs to.
+    # Added by migration 0029 (NOT NULL via 0031 after backfill).
+    # Registered as part of Batch 9 backfill after the
+    # cross-batch model-column gap was discovered.
+    person_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("person_records.id", ondelete="CASCADE"),
+    )
 
     # When this document is a child of a parent archive/package (per
     # docs/03 lane 3: Epic IHE_XDM bundle, zip of CCDAs, etc.), point

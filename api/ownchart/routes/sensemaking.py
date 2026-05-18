@@ -22,14 +22,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.db import get_session
 from ..core.logger import get_logger
 from ..llm.sensemaking import SensemakingError, summarize_source
 from ..models.audit_event import AuditEvent
 from ..models.sensemaking_candidate import SensemakingCandidate
 from ..models.sensemaking_job import SensemakingJob
-from ..models.user import User
-from .auth import get_current_user
 
 router = APIRouter()
 log = get_logger("ownchart.routes.sensemaking")
@@ -103,7 +102,7 @@ def _job_to_out(job: SensemakingJob, candidates: list[SensemakingCandidate]) -> 
              status_code=status.HTTP_201_CREATED)
 async def run_medication_pattern_triage(
     min_group_size: int = 5,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> JobOut:
     """Group medication / symptom log entries into pattern candidates.
@@ -111,9 +110,11 @@ async def run_medication_pattern_triage(
     Deterministic, no LLM, no PHI leaves the host. Reads `?min_group_size=`
     (default 5) — groups with fewer entries are skipped.
     """
+    user = ctx.user
     from ..llm.medication_triage import triage_medication_patterns
     job = await triage_medication_patterns(
         db, user, min_group_size=min_group_size,
+        person_record_id=ctx.active_record_id,
     )
     candidates = list((await db.execute(
         select(SensemakingCandidate)
@@ -127,7 +128,7 @@ async def run_medication_pattern_triage(
              status_code=status.HTTP_201_CREATED)
 async def run_provider_pattern_triage(
     min_group_size: int = 3,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> JobOut:
     """Group provider/contact-name extractions into pattern candidates.
@@ -136,9 +137,11 @@ async def run_provider_pattern_triage(
     relationship'`. Same Accept (suppresses members) / Dismiss
     semantics via patch_candidate_disposition.
     """
+    user = ctx.user
     from ..llm.provider_triage import triage_provider_patterns
     job = await triage_provider_patterns(
         db, user, min_group_size=min_group_size,
+        person_record_id=ctx.active_record_id,
     )
     candidates = list((await db.execute(
         select(SensemakingCandidate)
@@ -156,7 +159,7 @@ class PatternSuppressionStats(BaseModel):
 
 @router.get("/review/pattern-stats", response_model=PatternSuppressionStats)
 async def pattern_suppression_stats(
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> PatternSuppressionStats:
     """Aggregate view of how much review burden patterns have absorbed.
@@ -167,6 +170,7 @@ async def pattern_suppression_stats(
     Surfaced on the Review Inbox header so the user can SEE that
     pattern compression is actually doing work.
     """
+    user = ctx.user
     from sqlalchemy import func as _func
     rows = (await db.execute(
         select(
@@ -180,6 +184,7 @@ async def pattern_suppression_stats(
             _func.max(SensemakingCandidate.disposition_at),
         )
         .where(SensemakingCandidate.user_id == user.id)
+        .where(SensemakingCandidate.person_record_id == ctx.active_record_id)
         .where(SensemakingCandidate.disposition == "accepted")
         .where(SensemakingCandidate.candidate_type.in_(
             ("medication_pattern", "provider_pattern"),
@@ -196,11 +201,15 @@ async def pattern_suppression_stats(
              status_code=status.HTTP_201_CREATED)
 async def run_source_sensemake(
     source_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> JobOut:
+    user = ctx.user
     try:
-        job = await summarize_source(db, user, source_id)
+        job = await summarize_source(
+            db, user, source_id,
+            person_record_id=ctx.active_record_id,
+        )
     except SensemakingError as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     except Exception as e:  # noqa: BLE001
@@ -220,11 +229,16 @@ async def run_source_sensemake(
 @router.get("/sensemaking/jobs/{job_id}", response_model=JobOut)
 async def get_sensemaking_job(
     job_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> JobOut:
+    user = ctx.user
     job = await db.get(SensemakingJob, job_id)
-    if job is None or job.user_id != user.id:
+    if (
+        job is None
+        or job.user_id != user.id
+        or job.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     candidates = list((await db.execute(
         select(SensemakingCandidate)
@@ -237,7 +251,7 @@ async def get_sensemaking_job(
 @router.get("/sources/{source_id}/candidates", response_model=list[CandidateOut])
 async def list_source_candidates(
     source_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[CandidateOut]:
     """Pending candidates whose `source_ids` array contains this source.
@@ -245,9 +259,11 @@ async def list_source_candidates(
     Returns most recent first so the source page renders the freshest
     sensemaking draft.
     """
+    user = ctx.user
     rows = list((await db.execute(
         select(SensemakingCandidate)
         .where(SensemakingCandidate.user_id == user.id)
+        .where(SensemakingCandidate.person_record_id == ctx.active_record_id)
         .where(SensemakingCandidate.source_ids.op("&&")([source_id]))
         .where(SensemakingCandidate.disposition.in_(("pending", "accepted", "edited")))
         .order_by(SensemakingCandidate.created_at.desc())
@@ -265,11 +281,16 @@ async def patch_candidate_disposition(
     candidate_id: uuid.UUID,
     body: DispositionRequest,
     request: Request,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> CandidateOut:
+    user = ctx.user
     cand = await db.get(SensemakingCandidate, candidate_id)
-    if cand is None or cand.user_id != user.id:
+    if (
+        cand is None
+        or cand.user_id != user.id
+        or cand.person_record_id != ctx.active_record_id
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if body.disposition not in {"accepted", "edited", "dismissed", "rejected"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="invalid disposition")
@@ -323,6 +344,7 @@ async def patch_candidate_disposition(
 
     db.add(AuditEvent(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         event_type="candidate_disposition",
         subject_type="sensemaking_candidate",
         subject_id=str(candidate_id),
@@ -339,6 +361,7 @@ async def patch_candidate_disposition(
     if suppressed_count:
         db.add(AuditEvent(
             user_id=user.id,
+            person_record_id=ctx.active_record_id,
             event_type="pattern_managed_suppression",
             subject_type="sensemaking_candidate",
             subject_id=str(candidate_id),
