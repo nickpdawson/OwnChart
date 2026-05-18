@@ -2,6 +2,8 @@ from .audit_event import AuditEvent
 from .auto_export_token import AutoExportToken
 from .base import Base
 from .brief_message import BriefMessage
+from .calendar_event import CalendarEvent
+from .calendar_source import ADAPTER_TYPES, PRIVACY_MODES, CalendarSource
 from .conversation import Conversation, ConversationCitation, ConversationMessage
 from .device_token import DeviceToken
 from .episode import Episode, EpisodeMember
@@ -27,14 +29,18 @@ from .user_assertion import UserAssertion
 from .user_setting import UserSetting
 
 __all__ = [
+    "ADAPTER_TYPES",
     "AuditEvent",
     "AutoExportToken",
     "Base",
     "BriefMessage",
+    "CalendarEvent",
+    "CalendarSource",
     "Conversation",
     "ConversationCitation",
     "ConversationMessage",
     "DeviceToken",
+    "PRIVACY_MODES",
     "Episode",
     "EpisodeMember",
     "EvidenceAnchor",
