@@ -23,7 +23,6 @@ Backfill logic per table:
     - sensemaking_candidates → from user_id
     - extraction_jobs       → from user_id
     - brief_messages        → from user_id
-    - healthkit_cursors     → from user_id
     - user_assertions       → from user_id
     - audit_events          → from user_id (nullable today; rows
                               with NULL user_id stay NULL → caught
@@ -63,7 +62,6 @@ def upgrade() -> None:
         ("sensemaking_candidates", "user_id"),
         ("extraction_jobs", "user_id"),
         ("brief_messages", "user_id"),
-        ("healthkit_cursors", "user_id"),
         ("user_assertions", "user_id"),
         ("source_documents", "owner_user_id"),
     ]
@@ -140,6 +138,16 @@ def upgrade() -> None:
     # nullable-user_id audit events must now have a person_record_id.
     # If anything is unbackfilled, the migration raises and 0031 won't
     # run. Operator must investigate (probably an orphan row).
+    #
+    # Offline (`alembic upgrade --sql`) mode short-circuits this check —
+    # there's no live connection to query and the SQL we'd emit (a bare
+    # SELECT COUNT) doesn't tell the operator anything useful in a
+    # script-only render. Operators applying online get the safety
+    # check; operators reviewing the rendered SQL see the upgrade
+    # statements without the runtime guard.
+    from alembic import context as _ctx
+    if _ctx.is_offline_mode():
+        return
     _required_filled = [
         "source_documents",
         "conversations",
@@ -149,7 +157,6 @@ def upgrade() -> None:
         "sensemaking_candidates",
         "extraction_jobs",
         "brief_messages",
-        "healthkit_cursors",
         "user_assertions",
         "evidence_anchors",
         "extracted_facts",
@@ -177,7 +184,7 @@ def downgrade() -> None:
     _all = [
         "source_documents", "conversations", "conversation_messages",
         "episodes", "sensemaking_jobs", "sensemaking_candidates",
-        "extraction_jobs", "brief_messages", "healthkit_cursors",
+        "extraction_jobs", "brief_messages",
         "user_assertions", "audit_events", "evidence_anchors",
         "extracted_facts", "health_events",
     ]

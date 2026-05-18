@@ -14,8 +14,8 @@ indexes the perimeter queries will use.
 Tables flipped to NOT NULL:
   source_documents, conversations, conversation_messages, episodes,
   sensemaking_jobs, sensemaking_candidates, extraction_jobs,
-  brief_messages, healthkit_cursors, user_assertions,
-  evidence_anchors, extracted_facts, health_events.
+  brief_messages, user_assertions, evidence_anchors,
+  extracted_facts, health_events.
 
 Tables that stay nullable:
   audit_events.person_record_id — system audit entries (e.g. a
@@ -57,7 +57,6 @@ _NOT_NULL_TABLES: tuple[str, ...] = (
     "sensemaking_candidates",
     "extraction_jobs",
     "brief_messages",
-    "healthkit_cursors",
     "user_assertions",
     "evidence_anchors",
     "extracted_facts",

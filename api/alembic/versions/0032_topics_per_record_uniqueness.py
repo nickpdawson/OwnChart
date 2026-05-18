@@ -87,17 +87,42 @@ def upgrade() -> None:
         """
     )
 
-    # 3. Sanity check.
-    result = op.get_bind().execute(
-        sa.text("SELECT COUNT(*) FROM topics WHERE person_record_id IS NULL")
-    ).scalar()
-    if result and result > 0:
-        raise RuntimeError(
-            f"0032 topics backfill: {result} rows still NULL. "
-            "Investigate: no instance-admin user found, or no "
-            "self-record exists for the admin. Check that "
-            "0028 ran successfully before this migration."
-        )
+    # 3. Fresh-install handling: if there's no instance admin yet
+    # (brand-new DB, never had a user signup), the seed topics from
+    # migrations 0003 + 0012 are orphans — no record to bind them to.
+    # Drop them rather than fail; the first user signup re-seeds
+    # per-record topic shells via the route's create-user hook. This
+    # path is taken on `alembic upgrade head` against an empty DB
+    # (the dry-run case) and on first-deploy operator runs.
+    #
+    # Online-only — `--sql` render mode has no live connection.
+    from alembic import context as _ctx
+    if not _ctx.is_offline_mode():
+        admin_record_count = op.get_bind().execute(
+            sa.text(
+                "SELECT COUNT(*) FROM person_records pr "
+                "JOIN users u ON u.id = pr.created_by_user_id "
+                "WHERE pr.is_self = true AND u.is_instance_admin = true"
+            )
+        ).scalar() or 0
+        if admin_record_count == 0:
+            op.execute(
+                "DELETE FROM topic_briefs WHERE topic_id IN "
+                "(SELECT id FROM topics WHERE person_record_id IS NULL)"
+            )
+            op.execute("DELETE FROM topics WHERE person_record_id IS NULL")
+        # After potential cleanup, every remaining row must have a
+        # record binding — otherwise the NOT NULL flip below blows up.
+        result = op.get_bind().execute(
+            sa.text("SELECT COUNT(*) FROM topics WHERE person_record_id IS NULL")
+        ).scalar()
+        if result and result > 0:
+            raise RuntimeError(
+                f"0032 topics backfill: {result} rows still NULL. "
+                "An instance-admin user exists but their self-record "
+                "is missing or `topics.created_by` references a user "
+                "without a self-record. Investigate before re-running."
+            )
 
     # 4. Drop global UNIQUE constraints on name + slug.
     #    Postgres auto-named them at table-create time. Names follow
@@ -144,14 +169,15 @@ def upgrade() -> None:
           AND tb.person_record_id IS NULL
         """
     )
-    result = op.get_bind().execute(
-        sa.text("SELECT COUNT(*) FROM topic_briefs WHERE person_record_id IS NULL")
-    ).scalar()
-    if result and result > 0:
-        raise RuntimeError(
-            f"0032 topic_briefs backfill: {result} rows still NULL. "
-            "Likely an orphan brief whose parent topic was lost."
-        )
+    if not _ctx.is_offline_mode():
+        result = op.get_bind().execute(
+            sa.text("SELECT COUNT(*) FROM topic_briefs WHERE person_record_id IS NULL")
+        ).scalar()
+        if result and result > 0:
+            raise RuntimeError(
+                f"0032 topic_briefs backfill: {result} rows still NULL. "
+                "Likely an orphan brief whose parent topic was lost."
+            )
     op.alter_column("topic_briefs", "person_record_id", nullable=False)
     op.execute(
         "CREATE INDEX ix_topic_briefs_record "

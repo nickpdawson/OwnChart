@@ -10,7 +10,7 @@ Adds `person_record_id UUID REFERENCES person_records(id)` (nullable
 for now) to every record-bearing table. NOT NULL + composite indexes
 land in 0031, after 0030 backfills every row.
 
-Scope (14 tables, per BE-2 audit):
+Scope (13 tables, per BE-2 audit; corrected during Slice 1 closeout):
 
   Direct-owned (today filters by user_id / owner_user_id):
     - source_documents
@@ -21,7 +21,6 @@ Scope (14 tables, per BE-2 audit):
     - sensemaking_candidates
     - extraction_jobs
     - brief_messages
-    - healthkit_cursors
     - user_assertions
     - audit_events
 
@@ -39,9 +38,22 @@ Tables NOT touched here:
                               uniqueness migration; topics need a
                               clone-per-record step, not a simple
                               backfill)
-  - device_tokens, oauth_sessions, provider_connections,
-    llm_provider_credentials, user_settings → stay user-scoped per
-    BE-1; user identity not record identity.
+  - device_tokens, llm_provider_credentials, user_settings → stay
+    user-scoped per BE-1; user identity not record identity.
+  - oauth_sessions, provider_connections → originally listed as
+    user-scoped per BE-1, but Batch 8 (PM A-3 directive) added
+    person_record_id to bind OAuth flows to the intended record.
+    Handled in migration 0034 (added during Slice 1 closeout) so
+    the original BE-1 doctrine stays explicit here.
+  - healthkit_sync_cursors → cursor is internal sync state keyed on
+    (user_id, device_token_id, identifier). A device pairs 1:1 with
+    one record at a time per device_token; cross-record scoping at
+    the cursor level adds no safety the source/fact stamping
+    doesn't already provide. The original migration listed it as
+    "healthkit_cursors" (typo for the real "healthkit_sync_cursors"
+    table); during Slice 1 closeout we removed it entirely rather
+    than fix the typo, because the route layer doesn't filter on
+    a record column even if one existed.
   - users, model_runs, provider_connectors → global vocabulary +
     audit catalogs; no scoping change.
 """
@@ -63,14 +75,14 @@ depends_on: Union[str, Sequence[str], None] = None
 # All tables that need person_record_id added in this phase.
 # Ordered by approximate row volume (smallest first) so a partial
 # failure leaves the largest tables either fully migrated or
-# untouched.
+# untouched. healthkit_sync_cursors intentionally excluded — see
+# module docstring for the rationale.
 _TABLES_TO_SCOPE: tuple[str, ...] = (
     "brief_messages",
     "user_assertions",
     "extraction_jobs",
     "sensemaking_jobs",
     "sensemaking_candidates",
-    "healthkit_cursors",
     "conversation_messages",
     "conversations",
     "episodes",

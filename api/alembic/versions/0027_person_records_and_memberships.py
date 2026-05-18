@@ -44,6 +44,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Slice 1 closeout (added after Batch 9): widen
+    # alembic_version.version_num because the Slice 1 revision IDs
+    # (e.g. "0027_person_records_and_memberships" = 35 chars) exceed
+    # Alembic's default VARCHAR(32). Without this the very first
+    # post-upgrade write of `version_num` fails with
+    # StringDataRightTruncationError and rolls back the migration.
+    #
+    # Safe to run on a fresh DB (no rows) and on the prod DB where
+    # the column holds a single ≤32-char value. Idempotent re-run is
+    # a no-op because Postgres ALTER COLUMN TYPE is idempotent when
+    # the column is already the requested type.
+    op.execute(
+        "ALTER TABLE alembic_version "
+        "ALTER COLUMN version_num TYPE VARCHAR(255)"
+    )
+
     # --- person_records --------------------------------------------------
     op.create_table(
         "person_records",
