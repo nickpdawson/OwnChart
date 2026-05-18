@@ -373,16 +373,33 @@ async def probe_auth_me(
             else f"active_record.id={b.get('active_record', {}).get('id')} != B={rec_b}"
         ),
     )
+    # `/api/auth/me` is bootstrap-safe by design: a bogus
+    # X-OwnChart-Person-Record header is NOT a 403. get_auth_context's
+    # 4-step resolution (header → session → default → first) silently
+    # falls through and returns null on miss; for /me specifically, it
+    # returns null active_record (or, when the user has a default, the
+    # default record) and still 200. Probing for 403 here was a
+    # misread of the perimeter — 403 is reserved for *record-scoped*
+    # endpoints (sources, facts, conversations, etc.) where a bogus
+    # record header fails membership check inside require_role().
     bogus = str(uuid.uuid4())
     await run_probe(
         sess, report,
-        name="auth_me/bogus_header_403",
+        name="auth_me/bogus_header_falls_back_to_default",
         method="GET", path="/api/auth/me",
         record_id=bogus, record_label="N/A",
-        expected_status=403,
+        expected_status=200,
         response_assertion=lambda b: (
-            None if (b.get("detail") or {}).get("code") == "record_access_revoked"
-            else f"detail.code={(b.get('detail') or {}).get('code')!r}"
+            None
+            if (b.get("active_record") or {}).get("id")
+                == b.get("default_person_record_id")
+            else (
+                f"active_record.id="
+                f"{(b.get('active_record') or {}).get('id')!r} "
+                f"!= default_person_record_id="
+                f"{b.get('default_person_record_id')!r} "
+                "(bogus header should fall through to user default)"
+            )
         ),
     )
 
@@ -550,11 +567,22 @@ async def probe_conversations(
         )
 
     if conv_a and conv_b:
+        # limit=200 (route's documented max via `Query(default=50, le=200)`).
+        # Default limit=50 + ORDER BY last_message_at DESC NULLS LAST hides
+        # newly-created conversations (last_message_at is NULL until a
+        # message is appended) behind any pre-existing chat history > 50.
+        # On a real instance with months of activity in record A, the
+        # newly-created test conversation sits past rank 50 and the
+        # probe would falsely fail "lists overlapped" when in fact the
+        # storage is correctly per-record scoped. limit=200 is enough
+        # for any instance up to 200 conversations per record; well
+        # past that, the probe should switch to a q=SLICE1-VERIFY
+        # search filter instead.
         list_a = await sess.request(
-            "GET", "/api/conversations", record_id=rec_a,
+            "GET", "/api/conversations?limit=200", record_id=rec_a,
         )
         list_b = await sess.request(
-            "GET", "/api/conversations", record_id=rec_b,
+            "GET", "/api/conversations?limit=200", record_id=rec_b,
         )
         if list_a.status_code == 200 and list_b.status_code == 200:
             ids_a = {c["id"] for c in list_a.json()}
@@ -766,7 +794,7 @@ def planned_probes() -> list[str]:
     return [
         "auth_me/header_record_a",
         "auth_me/header_record_b",
-        "auth_me/bogus_header_403",
+        "auth_me/bogus_header_falls_back_to_default",
         "sources/list_a",
         "sources/list_b",
         "sources/write_note_a",
