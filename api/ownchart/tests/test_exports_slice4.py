@@ -65,21 +65,28 @@ def _empty_snapshot(generated_at: datetime | None = None) -> ExportSnapshot:
 # Audit event types — five constants, exactly
 
 
-def test_export_audit_constants_are_the_five_pm_specified_types():
+def test_export_audit_has_six_event_types_after_slice4_hardening():
+    """Slice 4 hardening (PM 2026-05-19): the audit constants are
+    SIX, not five. EXPORT_EXPIRED was added so the TTL purge worker
+    can emit an audit BEFORE hard-deleting the row. EXPORT_FAILED
+    stays — real failures deserve audit too."""
+    from ownchart.exports import EXPORT_EXPIRED
     assert EXPORT_AUDIT_EVENT_TYPES == (
         "export_requested",
         "export_completed",
         "export_failed",
         "export_downloaded",
         "export_deleted",
+        "export_expired",
     )
     # And the individual constants are referenced by routes / runner
-    # without any value drift.
+    # / purge without any value drift.
     assert EXPORT_REQUESTED == "export_requested"
     assert EXPORT_COMPLETED == "export_completed"
     assert EXPORT_FAILED == "export_failed"
     assert EXPORT_DOWNLOADED == "export_downloaded"
     assert EXPORT_DELETED == "export_deleted"
+    assert EXPORT_EXPIRED == "export_expired"
 
 
 def test_export_subject_type_is_pinned():
@@ -88,17 +95,40 @@ def test_export_subject_type_is_pinned():
     assert EXPORT_SUBJECT_TYPE == "export_job"
 
 
-def test_routes_use_all_five_audit_event_types():
-    """Static check: the routes module references all five audit
-    event-type constants. A future refactor that accidentally drops
-    one (e.g. forgets to emit EXPORT_FAILED on the exception path)
-    would fail this test."""
+def test_routes_use_the_five_user_initiated_audit_event_types():
+    """Static check: the routes module references the FIVE
+    user-initiated audit event-type constants. EXPORT_EXPIRED is
+    intentionally NOT here — it's system-initiated and emitted by
+    the TTL purge worker (see test_purge_emits_export_expired_*
+    below)."""
     from ownchart.routes import exports as exports_routes
     src = inspect.getsource(exports_routes)
-    for t in EXPORT_AUDIT_EVENT_TYPES:
-        # Constants are imported by NAME; assertion via uppercase form.
-        const_name = t.upper()
-        assert const_name in src, f"routes module never references {const_name}"
+    user_initiated = (
+        "EXPORT_REQUESTED",
+        "EXPORT_COMPLETED",
+        "EXPORT_FAILED",
+        "EXPORT_DOWNLOADED",
+        "EXPORT_DELETED",
+    )
+    for const_name in user_initiated:
+        assert const_name in src, (
+            f"routes module never references {const_name}"
+        )
+    # And the system-attributed EXPORT_EXPIRED stays OUT of the
+    # routes module — purges run from the worker, not from a user
+    # request.
+    assert "EXPORT_EXPIRED" not in src, (
+        "EXPORT_EXPIRED appears in routes module — it should only be "
+        "emitted by the purge worker (purge_expired_exports)"
+    )
+
+
+def test_purge_module_references_export_expired_constant():
+    """The system-initiated audit event is emitted from the purge
+    worker; verify the constant is referenced there."""
+    from ownchart.exports.expiry import purge_expired_exports
+    src = inspect.getsource(purge_expired_exports)
+    assert "EXPORT_EXPIRED" in src
 
 
 # ---------------------------------------------------------------------------
@@ -394,20 +424,34 @@ def test_export_routes_403_on_no_memberships(app_fixture, method, path, body):
     "handler_name, required_role",
     [
         ("create_export", "caregiver"),
-        ("list_exports", "viewer"),
-        ("get_export", "viewer"),
-        ("download_export", "viewer"),
+        ("list_exports", "caregiver"),
+        ("get_export", "caregiver"),
+        ("download_export", "caregiver"),
         ("delete_export", "caregiver"),
     ],
 )
 def test_every_export_handler_uses_require_role(handler_name, required_role):
-    """Owner/caregiver only on writes; viewer+ can read. PM-revised
-    Group-C role split (mirrors Slice 3 calendar)."""
+    """Slice 4 hardening (PM 2026-05-19, review #2): ALL endpoints
+    are caregiver+. Reads were viewer+ before review; PM's "owner/
+    caregiver only" framing applies to reads AND writes. The export
+    is a privileged operation regardless of direction."""
     from ownchart.routes import exports as exports_routes
     handler = getattr(exports_routes, handler_name)
     src = inspect.getsource(handler)
     assert f'require_role("{required_role}")' in src, (
         f"{handler_name} doesn't declare require_role({required_role!r})"
+    )
+
+
+def test_no_export_handler_uses_viewer_role():
+    """Regression guard: a future refactor that re-opens reads to
+    viewers would loosen the privacy posture. The static check
+    above tests the positive side; this one tests the negative."""
+    from ownchart.routes import exports as exports_routes
+    src = inspect.getsource(exports_routes)
+    assert 'require_role("viewer")' not in src, (
+        "exports route module references viewer role — Slice 4 hardening "
+        "requires caregiver+ on every endpoint"
     )
 
 
@@ -558,3 +602,281 @@ def test_openapi_export_job_out_surfaces_lifecycle_fields():
         "expires_at", "error_message", "files",
     ):
         assert field in props, f"ExportJobOut missing field: {field}"
+
+
+# ---------------------------------------------------------------------------
+# Slice 4 hardening — review-finding regression tests (PM 2026-05-19)
+
+
+def test_download_rejects_expired_export_with_410():
+    """Finding #3: download_export must check expires_at < now()
+    and return 410 BEFORE serving bytes. The user-visible contract
+    is '72 hours then gone' regardless of whether the hourly purge
+    worker has run yet."""
+    from ownchart.routes.exports import download_export
+    src = inspect.getsource(download_export)
+    assert "job.expires_at" in src
+    assert "HTTP_410_GONE" in src
+    # Belt and suspenders — verify the comparison uses `<` not `>`,
+    # so a refactor that flips the operator fails this.
+    assert "job.expires_at < datetime.now" in src
+
+
+def test_purge_emits_export_expired_audit_per_row():
+    """Finding #5: the purge worker emits EXPORT_EXPIRED for every
+    expiring row BEFORE the hard delete, so the audit trail records
+    when the file became unreachable, not just when the user asked
+    for deletion."""
+    from ownchart.exports.expiry import purge_expired_exports
+    src = inspect.getsource(purge_expired_exports)
+    # AuditEvent insert with the right event_type
+    assert "EXPORT_EXPIRED" in src
+    assert "AuditEvent(" in src
+    # And user_id is NULL — system-attributed
+    assert "user_id=None" in src
+    # Audit insert happens BEFORE the row delete.
+    audit_pos = src.index("EXPORT_EXPIRED")
+    delete_pos = src.index("delete(ExportJob)")
+    assert audit_pos < delete_pos, (
+        "audit emission must precede delete — otherwise a row-delete "
+        "failure would leave the system silent about the attempt"
+    )
+
+
+def test_purge_removes_on_disk_files_before_row_delete():
+    """Finding #4: purge must call delete_job_files_on_disk before
+    deleting the DB row, otherwise rows go away but bytes stay
+    behind under <data_dir>/exports/<job_id>/."""
+    from ownchart.exports.expiry import purge_expired_exports
+    src = inspect.getsource(purge_expired_exports)
+    assert "delete_job_files_on_disk" in src
+    # FS call happens BEFORE the audit insert (which is itself before
+    # the row delete).
+    fs_pos = src.index("delete_job_files_on_disk")
+    audit_pos = src.index("EXPORT_EXPIRED")
+    assert fs_pos < audit_pos, (
+        "FS cleanup must precede audit insert so that 'audit + delete' "
+        "stays atomic in the DB transaction; a later FS failure can't "
+        "block the audit trail"
+    )
+
+
+def test_purge_accepts_data_dir_parameter():
+    """The purge needs a data_dir to know where the export files
+    live. None disables the FS sweep (for tests / dry-run)."""
+    sig = inspect.signature(purge_expired_exports)
+    assert "data_dir" in sig.parameters
+    assert sig.parameters["data_dir"].default is None
+
+
+def test_purge_is_per_row_loop_not_single_delete():
+    """The pre-hardening shape used a single delete().where() that
+    couldn't observe which rows died; the hardened shape SELECTs
+    expiring rows first, then loops. Static check: the source
+    contains a `select(ExportJob)` before the `delete(ExportJob)`."""
+    from ownchart.exports.expiry import purge_expired_exports
+    src = inspect.getsource(purge_expired_exports)
+    sel_pos = src.index("select(ExportJob)")
+    del_pos = src.index("delete(ExportJob)")
+    assert sel_pos < del_pos
+
+
+def test_txt_contains_patient_disclaimer_section():
+    """Finding #7: TXT mapper renders a 'Patient packet — please
+    read' section with the disclaimer text right after the header,
+    before any data sections.
+
+    The disclaimer text is line-wrapped at ~72 cols for printability,
+    so multi-word clauses may straddle line breaks. Whitespace-
+    flatten the payload before substring matching to make the test
+    robust to wrapping choices.
+    """
+    from ownchart.exports.mappers import EXPORT_DISCLAIMER
+    payload = human_readable_txt_mapper(_empty_snapshot()).decode("utf-8")
+    assert "Patient packet — please read" in payload
+    flattened = " ".join(payload.split())
+    # The four load-bearing "NOT" clauses must all appear (post-wrap).
+    assert "NOT a medical record" in flattened
+    assert "NOT a legal document" in flattened
+    assert "NOT a clinical care recommendation" in flattened
+    assert "NOT covered by HIPAA" in flattened
+    # And the disclaimer constant itself shows up.
+    fragment = EXPORT_DISCLAIMER.split(". ")[0]  # first sentence
+    assert fragment in flattened
+
+
+def test_txt_disclaimer_appears_before_record_section():
+    """The disclaimer is positioned before the Record section so
+    anyone glancing at the file sees framing first."""
+    payload = human_readable_txt_mapper(_empty_snapshot()).decode("utf-8")
+    disclaimer_pos = payload.index("Patient packet — please read")
+    record_pos = payload.index("Record — Me")
+    assert disclaimer_pos < record_pos
+
+
+def test_json_contains_top_level_disclaimer_key():
+    """Finding #7: JSON mapper surfaces the same disclaimer text
+    under a top-level 'disclaimer' key. A future re-import / tool
+    can preserve the framing."""
+    from ownchart.exports.mappers import EXPORT_DISCLAIMER
+    payload = canonical_ownchart_json_mapper(_empty_snapshot())
+    data = json.loads(payload.decode("utf-8"))
+    assert "disclaimer" in data
+    assert data["disclaimer"] == EXPORT_DISCLAIMER
+
+
+def test_disclaimer_text_contains_four_load_bearing_not_clauses():
+    """The disclaimer constant itself carries the four 'NOT'
+    clauses verbatim. A softening refactor that drops one would
+    fail this test."""
+    from ownchart.exports.mappers import EXPORT_DISCLAIMER
+    for clause in (
+        "NOT a medical record",
+        "NOT a legal document",
+        "NOT a clinical care recommendation",
+        "NOT covered by HIPAA",
+    ):
+        assert clause in EXPORT_DISCLAIMER, (
+            f"EXPORT_DISCLAIMER no longer contains: {clause!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Finding #6 — no-secrets regression test on both mapper outputs
+
+
+# Strings that MUST NOT appear in exported JSON or TXT bytes,
+# under any rendering. Lowercase for case-insensitive matching.
+_BANNED_SUBSTRINGS = (
+    "password",
+    "password_hash",
+    "token",          # catches access_token / refresh_token /
+                      # session_token / auto_export_token / device_token
+    "access_token",
+    "refresh_token",
+    "session_id",
+    "session_token",
+    "secret",
+    "session_secret",
+    "credential",
+    "credentials",
+    "anthropic_api_key",
+    "api_key",
+    "bearer",
+    "client_secret",
+    "private_key",
+)
+
+
+def _rich_snapshot_with_user_data() -> ExportSnapshot:
+    """A non-trivial snapshot that exercises every collection.
+    Useful for verifying mapper outputs against the banned-strings
+    list, since an empty snapshot couldn't possibly contain
+    credential surface."""
+    now = datetime(2026, 5, 19, 3, 0, tzinfo=timezone.utc)
+    return ExportSnapshot(
+        generated_at=now,
+        record={
+            "id": "rec-1",
+            "display_name": "Me",
+            "given_names": "Nick",
+            "family_name": "Dawson",
+            "is_self": True,
+        },
+        sources=[{
+            "id": "src-1",
+            "source_type": "native_healthkit",
+            "source_label": "Apple Watch — 2026-01-15",
+            "source_system": "HealthKit",
+            "original_filename": "native-healthkit-2026-01-15.batch",
+            "acquired_at": now,
+            "created_at": now,
+        }],
+        facts=[{
+            "id": "f-1",
+            "fact_type": "observation",
+            "label": "Running — 36 min, 8.0 km",
+            "description": "Workout",
+            "date_start": now,
+            "date_end": now,
+            "review_state": "confirmed",
+            "coded_concepts": {
+                "healthkit_identifier": "HKWorkoutType",
+                "workout_activity_type": "running",
+                "source_bundle_id": "com.apple.health.DE49D92E",
+            },
+            "confidence": 95,
+            "significance": "major_activity_lifestyle",
+            "significance_source": "heuristic",
+            "created_at": now,
+        }],
+        calendar_sources=[{
+            "id": "cs-1",
+            "adapter_type": "ios_eventkit",
+            "display_name": "Apps (Nick)",
+            "privacy_mode": "title_and_time",
+            "llm_full_details_consent": False,
+            "connected_at": now,
+        }],
+        calendar_events=[{
+            "id": "ce-1",
+            "calendar_source_id": "cs-1",
+            "title": "Dentist appointment",
+            "start_at": now,
+            "end_at": now,
+            "all_day": False,
+            "privacy_mode_applied": "title_and_time",
+        }],
+    )
+
+
+@pytest.mark.parametrize("banned", _BANNED_SUBSTRINGS)
+def test_json_export_does_not_leak_banned_substring(banned: str):
+    """Finding #6 — regression guard: the canonical JSON output
+    must never contain any string that suggests credentials /
+    sessions / tokens / secrets are leaking through the snapshot
+    builder.
+
+    A future field addition to ExportSnapshot that accidentally
+    surfaces (say) ``user.password_hash`` or
+    ``auto_export_tokens.token_hash`` will fail this test."""
+    payload = canonical_ownchart_json_mapper(
+        _rich_snapshot_with_user_data()
+    )
+    text = payload.decode("utf-8").lower()
+    assert banned not in text, (
+        f"JSON export contains banned substring {banned!r} — possible "
+        f"credential / token / session leak"
+    )
+
+
+@pytest.mark.parametrize("banned", _BANNED_SUBSTRINGS)
+def test_txt_export_does_not_leak_banned_substring(banned: str):
+    """Same regression guard on the human-readable TXT output."""
+    payload = human_readable_txt_mapper(_rich_snapshot_with_user_data())
+    text = payload.decode("utf-8").lower()
+    assert banned not in text, (
+        f"TXT export contains banned substring {banned!r} — possible "
+        f"credential / token / session leak"
+    )
+
+
+def test_snapshot_model_does_not_import_credential_models():
+    """Defense in depth: the snapshot module imports only the data
+    models a user can see. A future refactor that drags in User /
+    DeviceToken / AutoExportToken / OAuthSession etc. would risk
+    accidental serialization of secrets. Verify by reading the
+    module source — banned imports never appear."""
+    import ownchart.exports.snapshot as snap_mod
+    src = inspect.getsource(snap_mod)
+    for banned_model in (
+        "from ..models.device_token",
+        "from ..models.auto_export_token",
+        "from ..models.llm_provider_credential",
+        "from ..models.oauth_session",
+        "from ..models.provider_connection",
+    ):
+        assert banned_model not in src, (
+            f"snapshot module imports {banned_model} — credential models "
+            "must stay out of the export shape"
+        )
