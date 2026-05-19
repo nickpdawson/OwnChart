@@ -8,6 +8,8 @@ from .conversation import Conversation, ConversationCitation, ConversationMessag
 from .device_token import DeviceToken
 from .episode import Episode, EpisodeMember
 from .evidence_anchor import EvidenceAnchor
+from .export_file import FILE_TYPES, ExportFile
+from .export_job import JOB_STATUSES, REQUESTED_FORMATS, ExportJob
 from .healthkit_cursor import HealthKitCursor
 from .extracted_fact import ExtractedFact
 from .extraction_job import ExtractionJob
@@ -44,6 +46,11 @@ __all__ = [
     "Episode",
     "EpisodeMember",
     "EvidenceAnchor",
+    "ExportFile",
+    "ExportJob",
+    "FILE_TYPES",
+    "JOB_STATUSES",
+    "REQUESTED_FORMATS",
     "HealthKitCursor",
     "ExtractedFact",
     "ExtractionJob",
