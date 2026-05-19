@@ -842,3 +842,307 @@ def test_iosevent_ical_uid_and_time_zone_default_to_none():
     })
     assert ev.ical_uid is None
     assert ev.time_zone is None
+
+
+# ---------------------------------------------------------------------------
+# Secondary acceptance — perimeter denial coverage (no iOS needed)
+#
+# Every calendar route propagates Slice 1 perimeter HTTPExceptions
+# (403 record_access_revoked / 403 no_memberships / 401 from missing
+# session). conftest.py's `denied_client` raises the 403 at
+# `get_auth_context`, so every record-scoped handler must return 403
+# rather than silently 200ing.
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("POST", "/api/calendar/sources",
+         {"adapter_type": "ios_eventkit",
+          "external_id": "ek-cal-X", "display_name": "X"}),
+        ("GET",  "/api/calendar/sources", None),
+        ("PATCH", "/api/calendar/sources/00000000-0000-0000-0000-000000000000",
+         {"privacy_mode": "busy_only"}),
+        ("DELETE", "/api/calendar/sources/00000000-0000-0000-0000-000000000000",
+         None),
+        ("POST", "/api/calendar/ingest",
+         {"calendar_source_id": "00000000-0000-0000-0000-000000000000",
+          "events": []}),
+        ("GET",  "/api/calendar/events"
+                "?start_at=2026-01-01T00:00:00Z"
+                "&end_at=2026-12-31T23:59:59Z",
+         None),
+    ],
+)
+def test_calendar_routes_403_on_record_access_revoked(
+    app_fixture, method, path, body,
+):
+    """Every record-scoped calendar route returns 403 when AuthContext
+    raises ``record_access_revoked`` — the Slice 1 perimeter contract."""
+    from ownchart.tests.conftest import denied_client
+    c = denied_client(app_fixture, code="record_access_revoked")
+    r = c.request(method, path, json=body)
+    assert r.status_code == 403, (
+        f"{method} {path} should propagate 403 record_access_revoked; "
+        f"got {r.status_code}"
+    )
+
+
+@pytest.mark.parametrize(
+    "method, path, body",
+    [
+        ("POST", "/api/calendar/sources",
+         {"adapter_type": "ios_eventkit",
+          "external_id": "ek-cal-X", "display_name": "X"}),
+        ("GET",  "/api/calendar/sources", None),
+        ("POST", "/api/calendar/ingest",
+         {"calendar_source_id": "00000000-0000-0000-0000-000000000000",
+          "events": []}),
+        ("GET",  "/api/calendar/events"
+                "?start_at=2026-01-01T00:00:00Z"
+                "&end_at=2026-12-31T23:59:59Z",
+         None),
+    ],
+)
+def test_calendar_routes_403_on_no_memberships(app_fixture, method, path, body):
+    """User with zero non-revoked memberships → 403 no_memberships
+    (NOT 401, NOT a silent 200) on every calendar route."""
+    from ownchart.tests.conftest import denied_client
+    c = denied_client(app_fixture, code="no_memberships")
+    r = c.request(method, path, json=body)
+    assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Secondary acceptance — cascade tombstone path
+# (DB-level integration deferred to when a real DB fixture lands;
+#  static-source inspection pins the contract.)
+
+
+def test_disconnect_sets_disconnected_at_on_source_row():
+    """Soft-disconnect must set disconnected_at on the source row
+    itself (not just tombstone the events)."""
+    from ownchart.routes.calendar import disconnect_source
+    src = inspect.getsource(disconnect_source)
+    assert "src.disconnected_at = now" in src
+
+
+def test_disconnect_cascade_skips_already_tombstoned_events():
+    """The cascade UPDATE filters by tombstoned_at IS NULL so it
+    doesn't bump the timestamp on events that were tombstoned earlier
+    (e.g. by an iOS-side delete). Important: the 30d purge worker
+    keys off tombstoned_at age, and we shouldn't reset that clock
+    just because the source was disconnected later."""
+    from ownchart.routes.calendar import disconnect_source
+    src = inspect.getsource(disconnect_source)
+    # The UPDATE statement filters by IS NULL before setting tombstoned_at.
+    assert "CalendarEvent.calendar_source_id == src.id" in src
+    assert "CalendarEvent.tombstoned_at.is_(None)" in src
+    assert "values(tombstoned_at=now" in src
+
+
+def test_disconnect_returns_204_no_content():
+    """REST contract — soft-disconnect is a status change, returns 204.
+    The handler returns None; FastAPI's status_code=204 decorator
+    turns that into an empty body."""
+    from ownchart.routes.calendar import disconnect_source
+    sig = inspect.signature(disconnect_source, eval_str=True)
+    assert sig.return_annotation is None
+    # And the route decorator pins 204.
+    src = inspect.getsource(disconnect_source)
+    assert "HTTP_204_NO_CONTENT" in src or "status_code=204" in src
+
+
+# ---------------------------------------------------------------------------
+# Secondary acceptance — resurrection (re-bind a disconnected source)
+
+
+def test_create_source_resurrects_on_conflict():
+    """Re-creating a source by the same (user, record, adapter,
+    external_id) tuple must REUSE the existing row (idempotent
+    upsert) AND clear disconnected_at so the source goes back to
+    active. The user-visible promise: 'I unpicked this calendar
+    last week, now I want it back' — the UUID stays stable, the
+    historical events are still there, the source just goes back
+    on."""
+    from ownchart.routes.calendar import create_source
+    src = inspect.getsource(create_source)
+    # The UPSERT uses the unique constraint as the conflict target.
+    assert "calendar_sources_user_record_adapter_external_uq" in src
+    # And on conflict, disconnected_at is reset to None.
+    assert '"disconnected_at": None' in src
+    # connected_at is bumped to now so the source's "active since"
+    # timestamp reflects the resurrection.
+    assert '"connected_at": now' in src
+
+
+def test_create_source_does_not_use_orm_get_or_create():
+    """Static guard against a refactor that uses SELECT-then-INSERT
+    (race-vulnerable) instead of the atomic pg_insert.on_conflict_do_update
+    that handles concurrent re-binds correctly."""
+    from ownchart.routes.calendar import create_source
+    src = inspect.getsource(create_source)
+    assert "pg_insert" in src
+    assert "on_conflict_do_update" in src
+
+
+def test_create_source_stamps_user_id_and_record_id_at_creation():
+    """A resurrection must NOT change the original user_id /
+    person_record_id — those are part of the UNIQUE key so the
+    UPSERT only matches a row that already had the same pair; but
+    the VALUES still set them explicitly so a fresh INSERT path
+    also stamps correctly."""
+    from ownchart.routes.calendar import create_source
+    src = inspect.getsource(create_source)
+    assert "user_id=ctx.user.id" in src
+    assert "person_record_id=ctx.active_record_id" in src
+
+
+# ---------------------------------------------------------------------------
+# Secondary acceptance — privacy tightening sweep
+# (Full SQL-execution test deferred to DB-fixture; static source
+#  inspection pins the SQL shape.)
+
+
+def test_tightening_to_busy_only_zeros_all_four_visible_columns():
+    """The route's redaction sweep on privacy_mode → busy_only must
+    NULL out all four user-visible columns in one UPDATE."""
+    from ownchart.routes.calendar import _redact_events_for_tightening
+    src = inspect.getsource(_redact_events_for_tightening)
+    # Find the busy_only branch and confirm it sets all four to None.
+    busy_branch = src.split('new_mode == "busy_only"')[1].split("elif")[0]
+    for col in ("title=None", "location=None", "notes=None",
+                "attendees_count=None"):
+        assert col in busy_branch, f"busy_only branch missing {col}"
+    assert 'privacy_mode_applied="busy_only"' in busy_branch
+
+
+def test_tightening_to_title_and_time_strips_only_location_notes_attendees():
+    """The title_and_time branch strips location/notes/attendees from
+    full_details rows but leaves title alone. AND it only touches
+    rows where privacy_mode_applied == 'full_details' — busy_only
+    rows are already stricter and must NOT be loosened."""
+    from ownchart.routes.calendar import _redact_events_for_tightening
+    src = inspect.getsource(_redact_events_for_tightening)
+    tat_branch = src.split('new_mode == "title_and_time"')[1]
+    # Stripped columns:
+    for col in ("location=None", "notes=None", "attendees_count=None"):
+        assert col in tat_branch, f"title_and_time branch missing {col}"
+    # Title is preserved (NOT set to None in this branch).
+    assert "title=None" not in tat_branch.split("# full_details")[0]
+    # And the WHERE clause guards against accidentally loosening
+    # busy_only rows.
+    assert "privacy_mode_applied == \"full_details\"" in tat_branch
+
+
+def test_tightening_sweep_skips_tombstoned_events():
+    """Tombstoned events are on the path to the 30d purge; we don't
+    re-touch them with a privacy sweep. Both privacy branches must
+    filter tombstoned_at IS NULL."""
+    from ownchart.routes.calendar import _redact_events_for_tightening
+    src = inspect.getsource(_redact_events_for_tightening)
+    # Count the IS_NULL filter occurrences — one per privacy branch.
+    assert src.count("tombstoned_at.is_(None)") >= 2
+
+
+def test_patch_only_invokes_sweep_when_rank_decreases():
+    """A LOOSENING (e.g. busy_only → title_and_time, or
+    title_and_time → full_details) must NOT call the sweep —
+    loosening doesn't conjure data that wasn't stored, and we
+    don't want to touch rows for no reason."""
+    from ownchart.routes.calendar import patch_source
+    src = inspect.getsource(patch_source)
+    # The comparison is "rank[new] < rank[old]" — strictness rank
+    # increases with looseness, so a tightening drops the rank.
+    assert "_PRIVACY_RANK[body.privacy_mode] < _PRIVACY_RANK[src.privacy_mode]" in src
+    # And the sweep is only called when the comparison sets the
+    # tightening flag, not on every PATCH.
+    assert "if tightening_to is not None:" in src
+
+
+def test_privacy_rank_pins_strictness_order():
+    """Confirm the rank: busy_only is strictest (rank 0),
+    title_and_time middle (1), full_details loosest (2). A future
+    refactor that swaps these would silently invert the tightening
+    detection."""
+    from ownchart.routes.calendar import _PRIVACY_RANK
+    assert _PRIVACY_RANK == {"busy_only": 0,
+                             "title_and_time": 1,
+                             "full_details": 2}
+
+
+# ---------------------------------------------------------------------------
+# Secondary acceptance — elevated LLM exposure (consent flip)
+
+
+def test_llm_projector_consent_flip_changes_visibility_in_place():
+    """Same row, same stored fields, different consent → different
+    projection. This is the property the consent UI promises: the
+    user can toggle the LLM-visibility bit without re-syncing /
+    re-storing anything."""
+    common = dict(
+        start_at=datetime(2026, 1, 15, 10, tzinfo=timezone.utc),
+        end_at=datetime(2026, 1, 15, 11, tzinfo=timezone.utc),
+        all_day=False,
+        title="Dr. Patel",
+        location="Bozeman Health",
+        notes="Bring labs",
+        attendees_count=2,
+        privacy_mode_applied="full_details",
+    )
+    out_off = project_event_for_llm(**common, source_consent=False)
+    out_on = project_event_for_llm(**common, source_consent=True)
+    # Toggling consent expanded the keyset by exactly the stored
+    # fields the privacy_mode allowed.
+    added = set(out_on.keys()) - set(out_off.keys())
+    assert added == {"title", "location", "notes", "attendees_count"}
+
+
+@pytest.mark.parametrize("storage_mode", PRIVACY_MODES_TUPLE)
+def test_llm_consent_off_is_invariant_to_storage_mode(storage_mode):
+    """Regardless of how the data was stored, consent=False projects
+    the busy-only-equivalent set. This is the floor."""
+    out = project_event_for_llm(
+        start_at=datetime(2026, 1, 15, 10, tzinfo=timezone.utc),
+        end_at=datetime(2026, 1, 15, 11, tzinfo=timezone.utc),
+        all_day=False,
+        title="T", location="L", notes="N", attendees_count=1,
+        privacy_mode_applied=storage_mode,
+        source_consent=False,
+    )
+    assert set(out.keys()) == {"start_at", "end_at", "all_day"}
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI shape — verify the new fields appear in the schema
+
+
+def test_openapi_calendar_ingest_request_advertises_sync_mode():
+    """A client reading the OpenAPI spec must see that
+    /api/calendar/ingest accepts sync_mode (with allowed values)."""
+    from ownchart.routes.calendar import CalendarIngestRequest
+    schema = CalendarIngestRequest.model_json_schema()
+    props = schema["properties"]
+    assert "sync_mode" in props
+    # And the new audit-window fields.
+    assert "window_start_at" in props
+    assert "window_end_at" in props
+
+
+def test_openapi_calendar_source_create_advertises_consent_flag():
+    """The CalendarSourceCreateRequest must surface
+    llm_full_details_consent so the UI can render the two-elevation
+    toggle. Default false."""
+    from ownchart.routes.calendar import CalendarSourceCreateRequest
+    schema = CalendarSourceCreateRequest.model_json_schema()
+    props = schema["properties"]
+    assert "llm_full_details_consent" in props
+    assert props["llm_full_details_consent"].get("default") is False
+
+
+def test_openapi_calendar_source_out_returns_consent_flag():
+    """Reads must echo the consent flag back so the UI knows its
+    current state."""
+    from ownchart.routes.calendar import CalendarSourceOut
+    schema = CalendarSourceOut.model_json_schema()
+    assert "llm_full_details_consent" in schema["properties"]
