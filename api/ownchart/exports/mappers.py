@@ -31,6 +31,30 @@ from datetime import date, datetime
 from .snapshot import ExportSnapshot
 
 
+# Patient/operator disclaimer baked into both mapper outputs.
+# Slice 4 hardening (PM 2026-05-19, review finding #7).
+#
+# The TXT mapper renders this in a sectioned block right after the
+# document header so anyone receiving the file in email / print
+# sees it before reading content. The JSON mapper surfaces the
+# same text under a top-level "disclaimer" key so the canonical
+# format also carries the framing — a future re-import or tooling
+# can preserve it.
+#
+# The four "NOT" lines are load-bearing per OwnChart doctrine
+# ("No medical advice. No HIPAA protection by default. Not a
+# medical device.") and the source-available license posture.
+# Don't soften.
+EXPORT_DISCLAIMER = (
+    "This is a patient-readable summary of the data the owner of "
+    "this OwnChart record has chosen to organize. It is NOT a "
+    "medical record, NOT a legal document, NOT a clinical care "
+    "recommendation, and is NOT covered by HIPAA absent a separate "
+    "Business Associate Agreement with the operator of this "
+    "OwnChart instance."
+)
+
+
 # ---------------------------------------------------------------------------
 # JSON mapper
 
@@ -52,9 +76,15 @@ def canonical_ownchart_json_mapper(snapshot: ExportSnapshot) -> bytes:
     Suitable for diffing two snapshots, content-addressed storage,
     or re-import into a future OwnChart instance.
 
+    Slice 4 hardening (PM 2026-05-19): the output carries a
+    top-level ``disclaimer`` key with the same patient/non-medical
+    framing the TXT mapper prints. A future re-import or tooling
+    preserves the framing alongside the data.
+
     Pure function — same input always produces byte-identical output.
     """
     data = snapshot.model_dump(mode="json")
+    data["disclaimer"] = EXPORT_DISCLAIMER
     return json.dumps(
         data,
         indent=2,
@@ -81,6 +111,26 @@ def _section_header(title: str) -> list[str]:
     return [bar, f"  {title}", bar]
 
 
+def _wrap_for_txt(
+    text: str, *, indent: str = "", width: int = 72,
+) -> list[str]:
+    """Wrap a paragraph to ``width`` columns, prefixing each line
+    with ``indent``. Used by the disclaimer block — keeps the TXT
+    legible printed or pasted into an email."""
+    words = text.split()
+    out: list[str] = []
+    current = indent
+    for w in words:
+        if len(current) + len(w) + 1 > width and current.strip():
+            out.append(current.rstrip())
+            current = indent + w
+        else:
+            current = (current + " " + w) if current.strip() else (current + w)
+    if current.strip():
+        out.append(current.rstrip())
+    return out
+
+
 def human_readable_txt_mapper(snapshot: ExportSnapshot) -> bytes:
     """Render a snapshot as a sectioned, human-readable text file.
 
@@ -100,6 +150,15 @@ def human_readable_txt_mapper(snapshot: ExportSnapshot) -> bytes:
     lines.append(
         f"  Generated at     : {_fmt_date(snapshot.generated_at)}"
     )
+    lines.append("")
+
+    # Disclaimer — Slice 4 hardening (PM 2026-05-19, review #7).
+    # Block-quoted between two divider lines so it's visually
+    # distinct from the data sections that follow. Wrapped at ~72
+    # columns for printability.
+    lines.extend(_section_header("Patient packet — please read"))
+    for chunk in _wrap_for_txt(EXPORT_DISCLAIMER, indent="  ", width=72):
+        lines.append(chunk)
     lines.append("")
 
     # Record

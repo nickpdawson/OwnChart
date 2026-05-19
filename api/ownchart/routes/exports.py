@@ -261,7 +261,7 @@ async def create_export(
 
 @router.get("", response_model=list[ExportJobOut])
 async def list_exports(
-    ctx: AuthContext = Depends(require_role("viewer")),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> list[ExportJobOut]:
     """List the active (non-deleted) exports for the active record,
@@ -293,7 +293,7 @@ async def list_exports(
 @router.get("/{export_id}", response_model=ExportJobOut)
 async def get_export(
     export_id: uuid.UUID,
-    ctx: AuthContext = Depends(require_role("viewer")),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> ExportJobOut:
     job = (await db.execute(
@@ -321,11 +321,20 @@ async def download_export(
     export_id: uuid.UUID,
     request: Request,
     file_type: Literal["ownchart_json", "txt"] = Query(...),
-    ctx: AuthContext = Depends(require_role("viewer")),
+    ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ):
     """Stream one rendered file. Emits EXPORT_DOWNLOADED audit event
-    on success."""
+    on success.
+
+    Five rejection paths (Slice 4 hardening per PM 2026-05-19):
+      404 — cross-record probe, missing row, or soft-deleted.
+      409 — job not yet completed (still pending or running).
+      410 — past expires_at (TTL elapsed; purge worker hasn't run
+            yet but the file is conceptually gone).
+      404 — requested file_type not produced by this job.
+      410 — file on disk missing (purged early or never written).
+    """
     job = (await db.execute(
         select(ExportJob)
         .where(ExportJob.id == export_id)
@@ -338,6 +347,15 @@ async def download_export(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             detail=f"export status is {job.status!r}; not ready for download",
+        )
+    # Expired-but-not-yet-purged: the purge worker runs hourly, so
+    # there's a window between expires_at < now() and the worker's
+    # next pass where the row is technically still here. Refuse the
+    # download — the user-visible contract is "72 hours then gone."
+    if job.expires_at is not None and job.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(
+            status.HTTP_410_GONE,
+            detail="export has expired (past 72-hour TTL)",
         )
 
     file_row = (await db.execute(
