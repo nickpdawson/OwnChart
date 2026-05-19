@@ -22,6 +22,13 @@ EXPORT_COMPLETED = "export_completed"
 EXPORT_FAILED = "export_failed"
 EXPORT_DOWNLOADED = "export_downloaded"
 EXPORT_DELETED = "export_deleted"
+# Slice 4 hardening (PM 2026-05-19): the TTL purge worker emits
+# ``export_expired`` before hard-deleting the row so the audit
+# timeline records WHEN the file actually became unreachable, not
+# just when the user requested deletion. user_id=NULL on these
+# rows (system-attributed; audit_events.user_id is nullable for
+# exactly this case).
+EXPORT_EXPIRED = "export_expired"
 
 EXPORT_AUDIT_EVENT_TYPES: tuple[str, ...] = (
     EXPORT_REQUESTED,
@@ -29,6 +36,7 @@ EXPORT_AUDIT_EVENT_TYPES: tuple[str, ...] = (
     EXPORT_FAILED,
     EXPORT_DOWNLOADED,
     EXPORT_DELETED,
+    EXPORT_EXPIRED,
 )
 
 # Subject type marker — always the same for export events. Keeping
