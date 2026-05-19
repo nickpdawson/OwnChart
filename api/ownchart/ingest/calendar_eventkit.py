@@ -37,6 +37,7 @@ PrivacyMode = Literal["full_details", "title_and_time", "busy_only"]
 PRIVACY_MODES_TUPLE: tuple[PrivacyMode, ...] = (
     "full_details", "title_and_time", "busy_only",
 )
+SyncMode = Literal["backfill", "incremental"]
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,11 @@ class IOSEventKitEvent(BaseModel):
     re-applies the mode authoritatively.
     """
 
+    # iOS-side calendar-specific event identifier
+    # (``EKEvent.eventIdentifier``). Stable across re-syncs from the
+    # same calendar; differs between calendars even for the same
+    # underlying iCalendar invite (different calendars get different
+    # iOS event records). Use ical_uid for cross-calendar dedup.
     external_id: str = Field(..., max_length=256)
     external_modified_at: datetime
     start_at: datetime
@@ -61,16 +67,31 @@ class IOSEventKitEvent(BaseModel):
     location: str | None = Field(default=None, max_length=512)
     notes: str | None = None
     attendees_count: int | None = Field(default=None, ge=0)
+    # iCalendar UID (RFC 5545) — stable across calendars / accounts
+    # for the same underlying invite. iOS exposes this as
+    # ``EKEvent.calendarItemExternalIdentifier``. Captured for
+    # projection-time dedup when the user has the same meeting on
+    # two calendars (personal + work, primary + Family). Stored in
+    # raw_metadata.calendar.ical_uid.
+    ical_uid: str | None = Field(default=None, max_length=256)
+    # Event-local time zone (e.g. "America/Denver"). iOS exposes
+    # this on ``EKEvent.timeZone``. Used as part of the dedup
+    # fingerprint when ical_uid is absent.
+    time_zone: str | None = Field(default=None, max_length=64)
     # iOS-side provenance: recurrence pattern, EventKit calendar
     # color, attendee role, etc. Opaque to retrieval — stored as
-    # ``calendar_events.raw_metadata`` so future debug paths can
-    # see what iOS recorded without re-querying the device.
+    # ``calendar_events.raw_metadata.calendar.sample_metadata`` so
+    # future debug paths can see what iOS recorded without
+    # re-querying the device.
     metadata: dict[str, Any] | None = None
     # iOS-side delete signal: when true, server marks the existing
-    # row tombstoned rather than upserting fresh fields. iOS may
-    # batch a tombstoned=true alongside fresh events when a calendar
-    # has both modified-and-deleted-elsewhere events in the same
-    # window.
+    # row tombstoned rather than upserting fresh fields. iOS is the
+    # AUTHORITY for deletion — absence from a batch is NOT a delete
+    # signal, only explicit tombstoned=true. Server-side, the row
+    # stays for 30 days after the soft-delete (PM B-3) before hard
+    # delete. iOS may batch tombstoned=true alongside fresh events
+    # when a calendar has both modified-and-deleted-elsewhere events
+    # in the same scanned window.
     tombstoned: bool = False
 
 
@@ -85,6 +106,7 @@ def redact_event_for_storage(
     event: IOSEventKitEvent | dict[str, Any],
     *,
     privacy_mode: PrivacyMode,
+    sync_mode: SyncMode = "incremental",
 ) -> dict[str, Any]:
     """Apply ``privacy_mode`` at the server. Authoritative redactor.
 
@@ -97,10 +119,17 @@ def redact_event_for_storage(
       title_and_time  →  title kept; location, notes, attendees zeroed.
       full_details    →  all four kept as iOS sent them.
 
-    ``raw_metadata`` is preserved across all modes (it's iOS-side
-    provenance — recurrence pattern, EK color — not user content).
-    If iOS were to smuggle user content into metadata, that would be
-    an iOS bug; the server can't validate every metadata key.
+    ``raw_metadata`` lands as ``{"calendar": {...}}`` — a namespaced
+    sub-dict mirroring the Slice-2 ``raw_metadata.healthkit`` pattern
+    on ExtractedFact. The sub-dict carries:
+      - ``ical_uid`` (when iOS provided one) — projection-time dedup
+        key for the same invite across calendars.
+      - ``time_zone`` — fingerprint component for fallback dedup.
+      - ``sync_mode_at_ingest`` — audit trail for whether this row
+        landed during backfill or incremental sync.
+      - ``sample_metadata`` — iOS-side provenance bag (recurrence,
+        EK color, attendee role). Preserved across privacy modes
+        because it's not user content.
 
     ``privacy_mode_applied`` is stamped onto the returned dict so the
     DB row records the redaction decision and a later sweep can find
@@ -118,6 +147,16 @@ def redact_event_for_storage(
     else:
         e = IOSEventKitEvent.model_validate(event)
 
+    calendar_meta: dict[str, Any] = {
+        "sync_mode_at_ingest": sync_mode,
+    }
+    if e.ical_uid:
+        calendar_meta["ical_uid"] = e.ical_uid
+    if e.time_zone:
+        calendar_meta["time_zone"] = e.time_zone
+    if e.metadata:
+        calendar_meta["sample_metadata"] = e.metadata
+
     base: dict[str, Any] = {
         "external_id": e.external_id,
         "external_modified_at": e.external_modified_at,
@@ -126,7 +165,7 @@ def redact_event_for_storage(
         "all_day": e.all_day,
         "privacy_mode_applied": privacy_mode,
         "tombstoned": e.tombstoned,
-        "raw_metadata": e.metadata,
+        "raw_metadata": {"calendar": calendar_meta},
     }
 
     if privacy_mode == "busy_only":
@@ -202,6 +241,79 @@ def project_event_for_llm(
     base["notes"] = notes
     base["attendees_count"] = attendees_count
     return base
+
+
+# ---------------------------------------------------------------------------
+# Projection-time dedup (PM Slice 3 closeout)
+
+
+def _normalize_title(title: str | None) -> str:
+    """Lowercase + strip whitespace. Conservative for fingerprint
+    matching — title casing and surrounding spaces shouldn't split
+    a duplicate, but more aggressive normalization (punctuation,
+    accents) would risk false-positive collapses."""
+    return (title or "").strip().lower()
+
+
+def _dedup_key(event: dict[str, Any]) -> str:
+    """Pick the dedup key for one projected event.
+
+    Priority order:
+      1. ``raw_metadata.calendar.ical_uid`` when present — canonical
+         RFC 5545 identifier; stable across calendars and accounts
+         for the same invite.
+      2. Conservative fingerprint
+         ``(normalized title, start_at, end_at, time_zone)`` — won't
+         collapse a "Dentist" at 10am on Tuesday with another
+         "Dentist" at 10am on Friday, won't collapse an Eastern-tz
+         standup with a Pacific-tz standup that just happens to
+         show up at the same wall-clock.
+
+    Pure function. No DB writes. The collapsing happens at projection
+    time, never at storage; Slice 3 keeps every source-specific row
+    so an operator audit can always see what each calendar provided.
+    """
+    rm = event.get("raw_metadata") or {}
+    cal = rm.get("calendar") or {}
+    ical_uid = cal.get("ical_uid")
+    if ical_uid:
+        return f"uid:{ical_uid}"
+    tz = cal.get("time_zone") or "UTC"
+    return (
+        f"fp:{_normalize_title(event.get('title'))}|"
+        f"{event.get('start_at')}|{event.get('end_at')}|{tz}"
+    )
+
+
+def dedupe_events_for_projection(
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collapse likely-duplicate calendar events for user-facing
+    projection (Ask life-context, "next 7 days" rail, etc.).
+
+    Input: a list of projected event dicts (the kind
+    ``project_event_for_llm`` returns, plus an optional
+    ``raw_metadata`` for the dedup key lookup). Output: a list with
+    each duplicate group reduced to one representative.
+
+    First-seen wins. The caller is responsible for ordering the
+    input by whatever priority matters (most-recent
+    ``external_modified_at``, primary calendar first, etc.) before
+    handing it in — this function's job is the collapse, not the
+    selection criteria.
+
+    Slice 3 contract: this is a PROJECTION-time operation. Storage
+    keeps every per-source row. A future schema migration can add
+    ``ical_uid`` as a column with a partial index if dedup proves
+    too hot at query time — but Slice 3 does not assume the cost
+    is large enough to justify the schema change.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        key = _dedup_key(ev)
+        if key not in seen:
+            seen[key] = ev
+    return list(seen.values())
 
 
 # ---------------------------------------------------------------------------

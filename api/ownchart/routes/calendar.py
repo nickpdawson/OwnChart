@@ -52,6 +52,7 @@ from ..core.logger import get_logger
 from ..ingest.calendar_eventkit import (
     IOSEventKitEvent,
     PrivacyMode,
+    SyncMode,
     redact_event_for_storage,
 )
 from ..models.calendar_event import CalendarEvent
@@ -105,12 +106,27 @@ class CalendarSourceOut(BaseModel):
 class CalendarIngestRequest(BaseModel):
     calendar_source_id: str
     events: list[IOSEventKitEvent]
+    # iOS sends "backfill" while iterating a historical window on
+    # initial discovery, "incremental" after the first anchor.
+    # Stored per-event under raw_metadata.calendar.sync_mode_at_ingest
+    # so an audit can trace which mode a row landed in. The BE-3
+    # mode-agnostic invariant applies — storage is identical except
+    # for the metadata trail.
+    sync_mode: SyncMode = "incremental"
+    # iOS-scanned window for this batch — informational. iOS is the
+    # AUTHORITY for deletion (only explicit ``tombstoned: true`` on a
+    # per-event basis), so "scanned 30 days, didn't see event X" is
+    # NOT a delete signal. The window is logged for audit / future
+    # reconciliation, not used to soft-delete missing rows.
+    window_start_at: datetime | None = None
+    window_end_at: datetime | None = None
 
 
 class CalendarIngestResponse(BaseModel):
     accepted: int
     tombstoned: int
     privacy_mode_applied: str
+    sync_mode: str
 
 
 class CalendarEventOut(BaseModel):
@@ -383,7 +399,9 @@ async def ingest_events(
     now = datetime.now(timezone.utc)
 
     for ev in body.events:
-        redacted = redact_event_for_storage(ev, privacy_mode=src.privacy_mode)
+        redacted = redact_event_for_storage(
+            ev, privacy_mode=src.privacy_mode, sync_mode=body.sync_mode,
+        )
         if redacted["tombstoned"]:
             await db.execute(
                 update(CalendarEvent)
@@ -443,12 +461,20 @@ async def ingest_events(
         accepted=accepted,
         tombstoned=tombstoned_count,
         privacy_mode_applied=src.privacy_mode,
+        sync_mode=body.sync_mode,
+        window_start_at=(
+            body.window_start_at.isoformat() if body.window_start_at else None
+        ),
+        window_end_at=(
+            body.window_end_at.isoformat() if body.window_end_at else None
+        ),
         person_record_id=str(ctx.active_record_id),
     )
     return CalendarIngestResponse(
         accepted=accepted,
         tombstoned=tombstoned_count,
         privacy_mode_applied=src.privacy_mode,
+        sync_mode=body.sync_mode,
     )
 
 

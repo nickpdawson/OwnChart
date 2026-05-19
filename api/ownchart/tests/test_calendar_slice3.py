@@ -39,6 +39,7 @@ from ownchart.ingest.calendar_eventkit import (
     PRIVACY_MODES_TUPLE,
     PURGE_TTL_DAYS_DEFAULT,
     compute_purge_cutoff,
+    dedupe_events_for_projection,
     project_event_for_llm,
     redact_event_for_storage,
 )
@@ -121,13 +122,17 @@ def test_raw_metadata_preserved_across_all_privacy_modes():
     """Metadata is provenance (recurrence pattern, EK color), not user
     content. Slice 3 contract: preserved across modes. iOS smuggling
     text into metadata would be an iOS bug — server can't validate
-    every key."""
+    every key.
+
+    Stored under the namespaced ``raw_metadata.calendar.sample_metadata``
+    sub-key (mirrors Slice 2's ``raw_metadata.healthkit.*`` pattern).
+    """
     md = {"recurrence": "weekly_tuesday", "ek_color": "#0066CC"}
     for mode in PRIVACY_MODES_TUPLE:
         out = redact_event_for_storage(
             _event_dict(metadata=md), privacy_mode=mode,
         )
-        assert out["raw_metadata"] == md
+        assert out["raw_metadata"]["calendar"]["sample_metadata"] == md
 
 
 def test_redact_accepts_dict_or_pydantic_model():
@@ -391,10 +396,14 @@ def test_ingest_route_filters_source_by_active_record_id():
 
 def test_ingest_route_runs_redactor_before_insert():
     """The defense-in-depth contract: the server's redactor runs at
-    every UPSERT regardless of what iOS sent."""
+    every UPSERT regardless of what iOS sent. sync_mode flows from
+    the request body into the redactor so the per-row audit trail
+    records which mode landed each row."""
     from ownchart.routes.calendar import ingest_events
     src = inspect.getsource(ingest_events)
-    assert "redact_event_for_storage(ev, privacy_mode=src.privacy_mode)" in src
+    assert "redact_event_for_storage(" in src
+    assert "privacy_mode=src.privacy_mode" in src
+    assert "sync_mode=body.sync_mode" in src
 
 
 def test_ingest_uses_redacted_privacy_mode_applied_on_insert():
@@ -474,3 +483,362 @@ def test_calendar_event_model_has_privacy_mode_applied():
     exist for the route's `WHERE privacy_mode_applied = ...` clauses
     to compile."""
     assert hasattr(CalendarEvent, "privacy_mode_applied")
+
+
+# ---------------------------------------------------------------------------
+# Closeout — sync_mode contract (PM Slice 3 closeout point 1)
+
+
+def test_ingest_request_accepts_sync_mode():
+    """`/api/calendar/ingest` accepts sync_mode in the request body
+    and defaults to "incremental" for old iOS builds that don't send
+    it. Mirrors the Slice 2 HK pattern."""
+    from ownchart.routes.calendar import CalendarIngestRequest
+    body = CalendarIngestRequest(
+        calendar_source_id="00000000-0000-0000-0000-000000000000",
+        events=[],
+    )
+    assert body.sync_mode == "incremental"
+    body_bf = CalendarIngestRequest(
+        calendar_source_id="00000000-0000-0000-0000-000000000000",
+        events=[], sync_mode="backfill",
+    )
+    assert body_bf.sync_mode == "backfill"
+
+
+def test_sync_mode_lands_in_raw_metadata_calendar():
+    """sync_mode flows through to per-row audit trail so a future
+    investigation can tell whether a given event landed during
+    backfill or incremental sync."""
+    for mode in ("backfill", "incremental"):
+        out = redact_event_for_storage(
+            _event_dict(), privacy_mode="full_details", sync_mode=mode,
+        )
+        assert out["raw_metadata"]["calendar"]["sync_mode_at_ingest"] == mode
+
+
+def test_sync_mode_does_not_affect_user_visible_fields():
+    """BE-3 mode-agnostic invariant carried over: same input under
+    backfill and incremental must produce identical storage modulo
+    sync_mode_at_ingest."""
+    bf = redact_event_for_storage(
+        _event_dict(), privacy_mode="full_details", sync_mode="backfill",
+    )
+    inc = redact_event_for_storage(
+        _event_dict(), privacy_mode="full_details", sync_mode="incremental",
+    )
+    bf_meta = bf.pop("raw_metadata")
+    inc_meta = inc.pop("raw_metadata")
+    assert bf == inc
+    assert bf_meta["calendar"].pop("sync_mode_at_ingest") == "backfill"
+    assert inc_meta["calendar"].pop("sync_mode_at_ingest") == "incremental"
+    assert bf_meta == inc_meta
+
+
+def test_ingest_route_logs_window_for_audit():
+    """PM closeout point 3: iOS is the deletion authority, but the
+    scanned window is logged for audit. Verify the route source
+    threads ``body.window_start_at`` and ``body.window_end_at``
+    through to the batch log."""
+    from ownchart.routes.calendar import ingest_events
+    src = inspect.getsource(ingest_events)
+    assert "window_start_at" in src
+    assert "window_end_at" in src
+
+
+# ---------------------------------------------------------------------------
+# Closeout — backend-controlled LLM exposure (PM Slice 3 closeout point 2)
+
+
+def test_llm_projector_signature_does_not_accept_ios_supplied_consent():
+    """PM closeout point 2: full-details Ask exposure is backend-
+    controlled. ``project_event_for_llm``'s consent argument is
+    ``source_consent`` — the caller is expected to pass the value
+    read from ``calendar_sources.llm_full_details_consent`` on the
+    SERVER row, NOT an iOS-supplied request flag. This is a structural
+    test: the projector must not be invokable with ios-supplied
+    keyword (i.e., we don't accidentally rename the arg in a way
+    that suggests it's iOS-controlled)."""
+    sig = inspect.signature(project_event_for_llm)
+    assert "source_consent" in sig.parameters
+    # No "ios" / "client" / "device" keyword present — that would
+    # suggest the projector trusts user-side data.
+    for kw in ("ios_consent", "client_consent", "device_consent",
+               "user_supplied_consent"):
+        assert kw not in sig.parameters
+
+
+def test_llm_projector_consent_must_be_explicit_boolean():
+    """Consent is a boolean; no truthy-coercion shortcuts. A future
+    refactor that accidentally types this as ``Any`` and relies on
+    truthiness could let "false-y but truthy" values (e.g., the
+    string "true" coming back as truthy) silently elevate. Pin the
+    annotation.
+
+    ``eval_str=True`` resolves PEP 563 lazy string annotations
+    (which the project uses via ``from __future__ import annotations``)
+    back to the real type object.
+    """
+    sig = inspect.signature(project_event_for_llm, eval_str=True)
+    assert sig.parameters["source_consent"].annotation is bool
+
+
+# ---------------------------------------------------------------------------
+# Closeout — iOS as deletion authority (PM Slice 3 closeout point 3)
+
+
+def test_redact_passes_tombstoned_through_for_route_dispatch_only():
+    """The redactor passes ``tombstoned`` so the route can branch
+    to the soft-delete UPDATE. The redactor itself doesn't set
+    tombstoned_at — that's the route's responsibility (and only
+    when iOS explicitly sets the flag)."""
+    out = redact_event_for_storage(
+        _event_dict(tombstoned=True), privacy_mode="full_details",
+    )
+    assert out["tombstoned"] is True
+    # The redactor doesn't write tombstoned_at — that column is set
+    # by the route via UPDATE, not by the UPSERT VALUES().
+    assert "tombstoned_at" not in out
+
+
+def test_ingest_route_only_tombstones_on_explicit_flag():
+    """Absence from a batch is NOT a delete signal. The route only
+    sets tombstoned_at when iOS explicitly sets ``tombstoned: true``."""
+    from ownchart.routes.calendar import ingest_events
+    src = inspect.getsource(ingest_events)
+    # The tombstone branch is gated on the redacted dict's flag,
+    # which came directly from the iOS sample. No "rows not seen
+    # in this window" logic — that's PM's anti-pattern.
+    assert 'redacted["tombstoned"]' in src
+    # And the route does NOT loop over existing events to mark
+    # missing ones tombstoned. (Negative assertion.)
+    assert "missing" not in src.lower() or "missing" not in src.lower().split("tombstone")[0]
+
+
+def test_purge_function_is_the_only_hard_delete_path():
+    """Slice 3 contract: hard-delete happens via the 30d purge
+    function on tombstoned rows, never via the API. The route file
+    must not contain a `DELETE FROM calendar_events` or
+    `delete(CalendarEvent)` outside of the purge module."""
+    from ownchart.routes import calendar as cal_mod
+    src = inspect.getsource(cal_mod)
+    # No SQL DELETE on calendar_events from the route layer.
+    assert "delete(CalendarEvent" not in src
+    assert "DELETE FROM calendar_events" not in src
+    # The route's import of `delete` is used for SQL UPDATE chaining
+    # only; the actual hard-delete lives in calendar_eventkit.py.
+
+
+# ---------------------------------------------------------------------------
+# Multi-calendar support per (user, record, adapter)
+
+
+def test_calendar_sources_unique_on_external_id_not_just_adapter():
+    """Slice 3 supports MULTIPLE active calendar sources per (user,
+    record, adapter). The UNIQUE constraint distinguishes by
+    external_id so a user can hold a personal calendar + work
+    calendar + Family calendar + shared-trip calendar simultaneously.
+    """
+    from sqlalchemy import inspect as sqla_inspect
+    cs_table = CalendarSource.__table__
+    uniques = [c for c in cs_table.constraints
+               if c.__class__.__name__ == "UniqueConstraint"]
+    assert len(uniques) >= 1
+    # The unique key spans (user, record, adapter, external_id) so
+    # multiple external_ids under the same (user, record, adapter)
+    # ARE allowed.
+    found = False
+    for u in uniques:
+        cols = sorted(c.name for c in u.columns)
+        if cols == sorted([
+            "user_id", "person_record_id", "adapter_type", "external_id",
+        ]):
+            found = True
+            break
+    assert found, (
+        f"calendar_sources unique constraint must span (user, record, "
+        f"adapter, external_id); got: "
+        f"{[sorted(c.name for c in u.columns) for u in uniques]}"
+    )
+
+
+def test_multi_calendar_payloads_keep_distinct_external_ids():
+    """A user binding four calendars (e.g. personal, work, family,
+    shared-trip) under one record produces four distinct payloads,
+    one per iOS calendar identifier. Verify the wire shape doesn't
+    inadvertently collapse them — the redactor passes external_id
+    through verbatim and four redact calls produce four distinct
+    `external_id` fields."""
+    redacted = []
+    for cal_id in ("ek-personal", "ek-work", "ek-family", "ek-shared-trip"):
+        ev = _event_dict(external_id=f"{cal_id}-evt-1")
+        redacted.append(
+            redact_event_for_storage(ev, privacy_mode="full_details")
+        )
+    assert len({r["external_id"] for r in redacted}) == 4
+
+
+def test_at_least_four_distinct_sources_can_carry_events_for_one_record():
+    """A more stringent multi-calendar check: simulate the redact
+    output for four calendars under one record, with overlapping
+    events (e.g. holidays on both Personal and Family). Verify
+    storage keeps every per-source row distinct (no implicit
+    collapse at the redactor level) and that the projection-time
+    deduper can collapse the cross-calendar duplicates."""
+    fixed_start = datetime(2026, 7, 4, 12, tzinfo=timezone.utc)
+    fixed_end = datetime(2026, 7, 4, 13, tzinfo=timezone.utc)
+    rows: list[dict] = []
+    for cal_id, cal_label in [
+        ("ek-personal", "personal"),
+        ("ek-work", "work"),
+        ("ek-family", "family"),
+        ("ek-shared-trip", "shared-trip"),
+    ]:
+        rows.append(redact_event_for_storage(
+            _event_dict(
+                external_id=f"{cal_id}-holiday-2026-07-04",
+                start_at=fixed_start, end_at=fixed_end,
+                title="Independence Day",
+                ical_uid="holiday-2026-07-04",  # same UID across all four
+                time_zone="America/Denver",
+            ),
+            privacy_mode="full_details",
+        ))
+    # Storage keeps four rows — each per-source row is distinct.
+    assert len(rows) == 4
+    assert len({r["external_id"] for r in rows}) == 4
+    # Projection-time dedup collapses them to one (same ical_uid).
+    deduped = dedupe_events_for_projection(rows)
+    assert len(deduped) == 1
+
+
+# ---------------------------------------------------------------------------
+# Dedupe posture (PM Slice 3 closeout note)
+
+
+def test_dedupe_uses_ical_uid_when_present():
+    """Canonical key: RFC 5545 UID. Two rows with the same UID but
+    different external_id (e.g. same invite on personal + work
+    calendars) collapse to one in the projection."""
+    a = redact_event_for_storage(
+        _event_dict(external_id="cal-A-evt", ical_uid="abc-uid"),
+        privacy_mode="full_details",
+    )
+    b = redact_event_for_storage(
+        _event_dict(external_id="cal-B-evt", ical_uid="abc-uid"),
+        privacy_mode="full_details",
+    )
+    assert len(dedupe_events_for_projection([a, b])) == 1
+
+
+def test_dedupe_falls_back_to_fingerprint_when_uid_absent():
+    """No UID → conservative fingerprint: (normalized title, start,
+    end, time_zone). Same title at the same time in the same TZ
+    collapses; different times don't."""
+    base_kw = dict(
+        start_at=datetime(2026, 1, 15, 10, tzinfo=timezone.utc),
+        end_at=datetime(2026, 1, 15, 11, tzinfo=timezone.utc),
+        time_zone="America/Denver",
+    )
+    a = redact_event_for_storage(
+        _event_dict(external_id="cal-A", ical_uid=None, title="Dentist", **base_kw),
+        privacy_mode="full_details",
+    )
+    b = redact_event_for_storage(
+        _event_dict(external_id="cal-B", ical_uid=None, title="DENTIST  ", **base_kw),
+        privacy_mode="full_details",
+    )
+    # Normalized title comparison collapses casing + trailing space.
+    assert len(dedupe_events_for_projection([a, b])) == 1
+
+
+def test_dedupe_does_not_collapse_different_times():
+    a = redact_event_for_storage(
+        _event_dict(
+            external_id="cal-A", ical_uid=None, title="Dentist",
+            start_at=datetime(2026, 1, 15, 10, tzinfo=timezone.utc),
+            end_at=datetime(2026, 1, 15, 11, tzinfo=timezone.utc),
+        ),
+        privacy_mode="full_details",
+    )
+    b = redact_event_for_storage(
+        _event_dict(
+            external_id="cal-B", ical_uid=None, title="Dentist",
+            start_at=datetime(2026, 1, 16, 10, tzinfo=timezone.utc),
+            end_at=datetime(2026, 1, 16, 11, tzinfo=timezone.utc),
+        ),
+        privacy_mode="full_details",
+    )
+    assert len(dedupe_events_for_projection([a, b])) == 2
+
+
+def test_dedupe_distinguishes_time_zones():
+    """An Eastern-tz standup at 10am and a Pacific-tz standup at the
+    same UTC instant shouldn't collapse — they're different events
+    even if the wall-clock happens to look similar."""
+    common = dict(
+        start_at=datetime(2026, 1, 15, 10, tzinfo=timezone.utc),
+        end_at=datetime(2026, 1, 15, 11, tzinfo=timezone.utc),
+        ical_uid=None,  # force fingerprint path
+        title="standup",
+    )
+    a = redact_event_for_storage(
+        _event_dict(external_id="cal-A", time_zone="America/New_York", **common),
+        privacy_mode="full_details",
+    )
+    b = redact_event_for_storage(
+        _event_dict(external_id="cal-B", time_zone="America/Los_Angeles", **common),
+        privacy_mode="full_details",
+    )
+    assert len(dedupe_events_for_projection([a, b])) == 2
+
+
+def test_dedupe_first_seen_wins():
+    """When two rows collapse, the first in iteration order is the
+    representative. Callers responsible for ordering the input by
+    whatever priority matters (most-recent ``external_modified_at``,
+    primary calendar first, etc.) before dedup."""
+    a = redact_event_for_storage(
+        _event_dict(external_id="cal-A-first", ical_uid="uid-xyz"),
+        privacy_mode="full_details",
+    )
+    b = redact_event_for_storage(
+        _event_dict(external_id="cal-B-second", ical_uid="uid-xyz"),
+        privacy_mode="full_details",
+    )
+    out = dedupe_events_for_projection([a, b])
+    assert len(out) == 1
+    assert out[0]["external_id"] == "cal-A-first"
+
+
+def test_dedupe_is_projection_time_only_no_storage_writes():
+    """Static check: the dedup helper is a pure list → list function,
+    not async, doesn't take a db parameter. Slice 3 contract: storage
+    keeps every per-source row; dedup happens at projection."""
+    sig = inspect.signature(dedupe_events_for_projection)
+    assert not inspect.iscoroutinefunction(dedupe_events_for_projection)
+    assert "db" not in sig.parameters
+    assert "session" not in sig.parameters
+
+
+def test_iosevent_accepts_ical_uid_and_time_zone():
+    """Wire shape closeout: iOS can now send ical_uid + time_zone."""
+    ev = IOSEventKitEvent.model_validate(_event_dict(
+        ical_uid="ical-uid-001", time_zone="America/Denver",
+    ))
+    assert ev.ical_uid == "ical-uid-001"
+    assert ev.time_zone == "America/Denver"
+
+
+def test_iosevent_ical_uid_and_time_zone_default_to_none():
+    """Pre-closeout iOS builds that don't send these fields stay
+    backward-compatible — defaults are None, projector falls back
+    to the fingerprint path."""
+    ev = IOSEventKitEvent.model_validate({
+        "external_id": "ek-1",
+        "external_modified_at": datetime(2026, 1, 15, 10, tzinfo=timezone.utc),
+        "start_at": datetime(2026, 1, 15, 10, tzinfo=timezone.utc),
+        "end_at": datetime(2026, 1, 15, 11, tzinfo=timezone.utc),
+    })
+    assert ev.ical_uid is None
+    assert ev.time_zone is None

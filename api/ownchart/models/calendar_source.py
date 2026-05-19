@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,6 +39,18 @@ ADAPTER_TYPES: tuple[str, ...] = ("ios_eventkit",)
 
 class CalendarSource(Base, TimestampMixin):
     __tablename__ = "calendar_sources"
+
+    # Multi-calendar support: a user can hold multiple active
+    # sources under the same (record, adapter) by binding distinct
+    # external calendar identifiers. The UNIQUE key includes
+    # external_id so personal / work / family / shared-trip
+    # calendars all coexist for one person_record.
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "person_record_id", "adapter_type", "external_id",
+            name="calendar_sources_user_record_adapter_external_uq",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=new_uuid,
