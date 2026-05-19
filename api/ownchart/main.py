@@ -29,6 +29,7 @@ from .routes import (
     conversations,
     discover,
     episodes,
+    exports,
     facts,
     health,
     healthkit_sync,
@@ -230,6 +231,7 @@ app.include_router(timeline.router, prefix="/api/timeline", tags=["timeline"])
 app.include_router(discover.router, prefix="/api/discover", tags=["discover"])
 app.include_router(healthkit_sync.router, prefix="/api/healthkit", tags=["healthkit"])
 app.include_router(calendar.router, prefix="/api/calendar", tags=["calendar"])
+app.include_router(exports.router, prefix="/api/exports", tags=["exports"])
 app.include_router(settings_routes.router, prefix="/api/settings", tags=["settings"])
 app.include_router(sensemaking.router, prefix="/api", tags=["sensemaking"])
 app.include_router(conversations.router, prefix="/api/conversations", tags=["conversations"])
