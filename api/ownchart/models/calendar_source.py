@@ -80,3 +80,12 @@ class CalendarSource(Base, TimestampMixin):
     disconnected_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
     )
+    # FU-CAL-SOURCE-STATUS — coarse sync health. Stamped on every
+    # successful POST /api/calendar/ingest. Status is "ok" if any
+    # row was accepted or tombstoned, "empty" if iOS posted a
+    # zero-event batch (the calendar exists but had no rows in the
+    # scanned window). NULL until the first ingest.
+    last_sync_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+    )
+    last_sync_status: Mapped[str | None] = mapped_column(String(16))

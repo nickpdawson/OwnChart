@@ -42,7 +42,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -101,6 +101,14 @@ class CalendarSourceOut(BaseModel):
     llm_full_details_consent: bool
     connected_at: datetime
     disconnected_at: datetime | None
+    # FU-CAL-SOURCE-STATUS — sync health surfaced so the web settings
+    # UI doesn't have to client-side count events to render "last
+    # sync" / "events stored". last_sync_at/status are stamped by
+    # POST /api/calendar/ingest; the counts are computed at read.
+    last_sync_at: datetime | None = None
+    last_sync_status: str | None = None
+    visible_event_count: int = 0
+    stored_event_count: int = 0
 
 
 class CalendarIngestRequest(BaseModel):
@@ -202,7 +210,13 @@ async def create_source(
         llm_full_details_consent=row["llm_full_details_consent"],
         person_record_id=str(ctx.active_record_id),
     )
-    return _source_out(row)
+    # Counts reflect existing events on re-bind (UPSERT path); a
+    # fresh source returns (0, 0).
+    counts = await _event_counts_by_source(db, [row["id"]])
+    visible, stored = counts.get(row["id"], (0, 0))
+    return _source_out(
+        row, visible_event_count=visible, stored_event_count=stored,
+    )
 
 
 @router.get("/sources", response_model=list[CalendarSourceOut])
@@ -220,7 +234,15 @@ async def list_sources(
         .where(CalendarSource.disconnected_at.is_(None))
         .order_by(CalendarSource.connected_at)
     )).scalars().all()
-    return [_source_out_from_row(r) for r in rows]
+    counts = await _event_counts_by_source(db, [r.id for r in rows])
+    return [
+        _source_out_from_row(
+            r,
+            visible_event_count=counts.get(r.id, (0, 0))[0],
+            stored_event_count=counts.get(r.id, (0, 0))[1],
+        )
+        for r in rows
+    ]
 
 
 @router.patch("/sources/{source_id}", response_model=CalendarSourceOut)
@@ -270,7 +292,11 @@ async def patch_source(
         llm_full_details_consent=src.llm_full_details_consent,
         tightening_sweep=tightening_to is not None,
     )
-    return _source_out_from_row(src)
+    counts = await _event_counts_by_source(db, [src.id])
+    visible, stored = counts.get(src.id, (0, 0))
+    return _source_out_from_row(
+        src, visible_event_count=visible, stored_event_count=stored,
+    )
 
 
 async def _redact_events_for_tightening(
@@ -454,6 +480,16 @@ async def ingest_events(
         )
         accepted += 1
 
+    # FU-CAL-SOURCE-STATUS — stamp sync health on the owning source.
+    # "ok" if anything moved through the redactor (accept or
+    # tombstone); "empty" if iOS posted a zero-event batch (calendar
+    # exists but had no events in the scanned window).
+    src.last_sync_at = now
+    src.last_sync_status = (
+        "ok" if (accepted + tombstoned_count) > 0 else "empty"
+    )
+    src.updated_at = now
+
     await db.commit()
     log.info(
         "calendar_ingest_batch",
@@ -533,7 +569,41 @@ async def list_events(
 # Helpers
 
 
-def _source_out(row) -> CalendarSourceOut:
+async def _event_counts_by_source(
+    db: AsyncSession,
+    source_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, tuple[int, int]]:
+    """Return ``{source_id: (visible, stored)}`` for the given sources.
+
+    Single grouped query — avoids N+1 for the settings list page.
+    Sources with zero events don't appear in the result; callers
+    default to ``(0, 0)`` for those.
+    """
+    if not source_ids:
+        return {}
+    stmt = (
+        select(
+            CalendarEvent.calendar_source_id,
+            func.count(CalendarEvent.id)
+            .filter(CalendarEvent.tombstoned_at.is_(None))
+            .label("visible"),
+            func.count(CalendarEvent.id).label("stored"),
+        )
+        .where(CalendarEvent.calendar_source_id.in_(source_ids))
+        .group_by(CalendarEvent.calendar_source_id)
+    )
+    out: dict[uuid.UUID, tuple[int, int]] = {}
+    for row in (await db.execute(stmt)).all():
+        out[row.calendar_source_id] = (int(row.visible), int(row.stored))
+    return out
+
+
+def _source_out(
+    row,
+    *,
+    visible_event_count: int = 0,
+    stored_event_count: int = 0,
+) -> CalendarSourceOut:
     """Map a row-mapping (from .returning(table)) to the response."""
     return CalendarSourceOut(
         id=str(row["id"]),
@@ -544,10 +614,19 @@ def _source_out(row) -> CalendarSourceOut:
         llm_full_details_consent=row["llm_full_details_consent"],
         connected_at=row["connected_at"],
         disconnected_at=row["disconnected_at"],
+        last_sync_at=row.get("last_sync_at"),
+        last_sync_status=row.get("last_sync_status"),
+        visible_event_count=visible_event_count,
+        stored_event_count=stored_event_count,
     )
 
 
-def _source_out_from_row(r: CalendarSource) -> CalendarSourceOut:
+def _source_out_from_row(
+    r: CalendarSource,
+    *,
+    visible_event_count: int = 0,
+    stored_event_count: int = 0,
+) -> CalendarSourceOut:
     """Map a CalendarSource ORM row to the response."""
     return CalendarSourceOut(
         id=str(r.id),
@@ -558,4 +637,8 @@ def _source_out_from_row(r: CalendarSource) -> CalendarSourceOut:
         llm_full_details_consent=r.llm_full_details_consent,
         connected_at=r.connected_at,
         disconnected_at=r.disconnected_at,
+        last_sync_at=r.last_sync_at,
+        last_sync_status=r.last_sync_status,
+        visible_event_count=visible_event_count,
+        stored_event_count=stored_event_count,
     )

@@ -1146,3 +1146,98 @@ def test_openapi_calendar_source_out_returns_consent_flag():
     from ownchart.routes.calendar import CalendarSourceOut
     schema = CalendarSourceOut.model_json_schema()
     assert "llm_full_details_consent" in schema["properties"]
+
+
+# ---------------------------------------------------------------------------
+# FU-CAL-SOURCE-STATUS — sync health + event counts on CalendarSourceOut
+
+
+def test_calendar_source_out_advertises_sync_status_fields():
+    """The four fields the web settings UI needs are present on
+    every read of a CalendarSource: last_sync_at, last_sync_status,
+    visible_event_count, stored_event_count."""
+    from ownchart.routes.calendar import CalendarSourceOut
+    props = CalendarSourceOut.model_json_schema()["properties"]
+    for field in (
+        "last_sync_at",
+        "last_sync_status",
+        "visible_event_count",
+        "stored_event_count",
+    ):
+        assert field in props, f"CalendarSourceOut missing {field}"
+
+
+def test_calendar_source_out_count_defaults_are_zero():
+    """A bare CalendarSourceOut without explicit counts must default
+    to 0/0 — counts are computed at read time, never NULL."""
+    from ownchart.routes.calendar import CalendarSourceOut
+    s = CalendarSourceOut(
+        id="00000000-0000-0000-0000-000000000000",
+        adapter_type="ios_eventkit",
+        external_id="ek-1",
+        display_name="Test",
+        privacy_mode="title_and_time",
+        llm_full_details_consent=False,
+        connected_at=datetime(2026, 5, 20, tzinfo=timezone.utc),
+        disconnected_at=None,
+    )
+    assert s.visible_event_count == 0
+    assert s.stored_event_count == 0
+    assert s.last_sync_at is None
+    assert s.last_sync_status is None
+
+
+def test_ingest_route_stamps_last_sync_status_ok_on_nonempty_batch():
+    """A batch with at least one accepted or tombstoned event must
+    set last_sync_status='ok' on the source. Static-source check."""
+    from ownchart.routes.calendar import ingest_events
+    src = inspect.getsource(ingest_events)
+    assert "src.last_sync_at = now" in src
+    assert '"ok"' in src and '"empty"' in src
+    # The branch direction — "ok" when something moved, "empty" when nothing did.
+    assert "(accepted + tombstoned_count) > 0" in src
+
+
+def test_ingest_route_stamps_last_sync_status_empty_on_zero_event_batch():
+    """A zero-event batch (iOS scanned the window and saw nothing)
+    is still a successful sync — record it as 'empty' so the UI can
+    show 'last sync: just now (calendar is empty)' rather than
+    'never synced'. Same static-source check as the ok branch."""
+    from ownchart.routes.calendar import ingest_events
+    src = inspect.getsource(ingest_events)
+    # The expression maps (0,0) → 'empty' and (≥1, *) or (*, ≥1) → 'ok'.
+    # The single conditional in the source covers both.
+    assert (
+        '"ok" if (accepted + tombstoned_count) > 0 else "empty"'
+        in " ".join(src.split())
+    )
+
+
+def test_list_sources_computes_counts_in_one_query():
+    """list_sources must not N+1 — counts come from a single grouped
+    query keyed on calendar_source_id. Static-source check that the
+    helper is called once with all source IDs."""
+    from ownchart.routes.calendar import list_sources
+    src = inspect.getsource(list_sources)
+    assert "_event_counts_by_source(db, [r.id for r in rows])" in src
+
+
+def test_event_counts_helper_uses_filter_for_visible():
+    """The visible count must filter out tombstoned rows; the stored
+    count must not. Both come from one grouped query."""
+    from ownchart.routes.calendar import _event_counts_by_source
+    src = inspect.getsource(_event_counts_by_source)
+    # Visible uses FILTER (tombstoned_at IS NULL); stored does not.
+    assert ".filter(CalendarEvent.tombstoned_at.is_(None))" in src
+    assert "group_by(CalendarEvent.calendar_source_id)" in src
+
+
+def test_disconnect_does_not_clear_last_sync_at():
+    """Disconnect is a soft state change; the historical last_sync_at
+    stays so the user (or operator) can still see when the source
+    was actively syncing. Don't reset history just because the user
+    paused the source."""
+    from ownchart.routes.calendar import disconnect_source
+    src = inspect.getsource(disconnect_source)
+    assert "last_sync_at" not in src
+    assert "last_sync_status" not in src
