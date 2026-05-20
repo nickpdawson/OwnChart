@@ -769,24 +769,29 @@ _BANNED_SUBSTRINGS = (
 
 
 def _rich_snapshot_with_user_data() -> ExportSnapshot:
-    """A non-trivial snapshot that exercises every collection.
-    Useful for verifying mapper outputs against the banned-strings
-    list, since an empty snapshot couldn't possibly contain
-    credential surface."""
+    """A non-trivial synthetic snapshot that exercises every
+    collection. Useful for verifying mapper outputs against the
+    banned-strings list, since an empty snapshot couldn't possibly
+    contain credential surface.
+
+    Every string here is fabricated. Do NOT seed this from a real
+    record — real values would leak Nick-identifying / device-
+    fingerprinting data into the test corpus and through CI.
+    """
     now = datetime(2026, 5, 19, 3, 0, tzinfo=timezone.utc)
     return ExportSnapshot(
         generated_at=now,
         record={
             "id": "rec-1",
-            "display_name": "Me",
-            "given_names": "Nick",
-            "family_name": "Dawson",
+            "display_name": "Test Patient",
+            "given_names": "Test",
+            "family_name": "Patient",
             "is_self": True,
         },
         sources=[{
             "id": "src-1",
             "source_type": "native_healthkit",
-            "source_label": "Apple Watch — 2026-01-15",
+            "source_label": "Test Wearable — 2026-01-15",
             "source_system": "HealthKit",
             "original_filename": "native-healthkit-2026-01-15.batch",
             "acquired_at": now,
@@ -803,7 +808,10 @@ def _rich_snapshot_with_user_data() -> ExportSnapshot:
             "coded_concepts": {
                 "healthkit_identifier": "HKWorkoutType",
                 "workout_activity_type": "running",
-                "source_bundle_id": "com.apple.health.DE49D92E",
+                # Generic placeholder — real Apple Health source
+                # bundle IDs carry a device UUID suffix; the
+                # banned-substring scan doesn't need a real one.
+                "source_bundle_id": "com.apple.health.TESTDEVICE",
             },
             "confidence": 95,
             "significance": "major_activity_lifestyle",
@@ -813,7 +821,7 @@ def _rich_snapshot_with_user_data() -> ExportSnapshot:
         calendar_sources=[{
             "id": "cs-1",
             "adapter_type": "ios_eventkit",
-            "display_name": "Apps (Nick)",
+            "display_name": "Personal Calendar",
             "privacy_mode": "title_and_time",
             "llm_full_details_consent": False,
             "connected_at": now,
