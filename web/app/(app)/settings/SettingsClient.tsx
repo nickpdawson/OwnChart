@@ -109,6 +109,22 @@ export function SettingsClient({
         </a>
       </section>
 
+      <section>
+        <h2 className="text-xs uppercase tracking-widest text-muted">
+          Calendar sources
+        </h2>
+        <p className="mt-1 max-w-2xl text-sm text-muted">
+          Connected calendars for this record. Privacy mode controls
+          what gets stored at ingest; AI exposure is a separate decision.
+        </p>
+        <a
+          href="/settings/calendar"
+          className="mt-3 inline-block rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/10"
+        >
+          Manage calendar sources →
+        </a>
+      </section>
+
       {SECTIONS.filter((s) => s.key !== "profile").map((section) => {
         const items = registry.filter((r) => r.section === section.key);
         if (items.length === 0) return null;

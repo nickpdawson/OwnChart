@@ -1065,3 +1065,41 @@ export async function listCredentials(): Promise<CredentialOut[]> {
   if (!r.ok) throw new Error(`listCredentials failed: ${r.status}`);
   return (await r.json()) as CredentialOut[];
 }
+
+// ---------------------------------------------------------------------------
+// Calendar sources (FU-CAL-WEB-SETTINGS-UI)
+//
+// Mirrors `routes/calendar.py::CalendarSourceOut`. The active-record
+// scope is enforced server-side; this client doesn't need to pin a
+// record. iOS EventKit is the only adapter wired today; the UI
+// surfaces other adapter_type values as placeholders.
+
+export type CalendarPrivacyMode = "full_details" | "title_and_time" | "busy_only";
+
+export type CalendarSyncStatus = "ok" | "empty";
+
+export type CalendarSourceOut = {
+  id: string;
+  adapter_type: string;
+  external_id: string;
+  display_name: string;
+  privacy_mode: CalendarPrivacyMode;
+  llm_full_details_consent: boolean;
+  connected_at: string;
+  disconnected_at: string | null;
+  // FU-CAL-SOURCE-STATUS — populated by the backend so the web
+  // settings UI doesn't have to client-side count events.
+  last_sync_at: string | null;
+  last_sync_status: CalendarSyncStatus | null;
+  visible_event_count: number;
+  stored_event_count: number;
+};
+
+export async function listCalendarSources(): Promise<CalendarSourceOut[]> {
+  const r = await fetch(`${INTERNAL_API}/api/calendar/sources`, {
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`listCalendarSources failed: ${r.status}`);
+  return (await r.json()) as CalendarSourceOut[];
+}
