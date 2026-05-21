@@ -45,3 +45,16 @@ async def enqueue_personal_photo_vision(source_id: str) -> str:
     pool = await get_arq_pool()
     arq_job = await pool.enqueue_job("process_personal_photo", source_id)
     return arq_job.job_id if arq_job is not None else ""
+
+
+async def enqueue_google_calendar_sync(source_id: str) -> str:
+    """Enqueue an incremental sync against a Google Calendar source
+    (FU-CAL-GOOGLE-OAUTH). Worker refreshes the access token if
+    needed, lists events for the configured history window, redacts
+    via ``redact_event_for_storage``, and upserts into
+    ``calendar_events``."""
+    pool = await get_arq_pool()
+    arq_job = await pool.enqueue_job(
+        "sync_google_calendar_source", source_id,
+    )
+    return arq_job.job_id if arq_job is not None else ""

@@ -56,6 +56,25 @@ class Settings(BaseSettings):
     # will want per-user tokens instead.
     auto_export_token: SecretStr | None = Field(default=None)
 
+    # Google Calendar OAuth (FU-CAL-GOOGLE-OAUTH).
+    # Operator secrets only — never read from config.yaml, never
+    # logged, never returned in /api/instance/info. The
+    # ``is_google_calendar_configured()`` helper gates the start
+    # endpoint; missing config returns 503 ("not configured by this
+    # OwnChart operator"), never silently fails open. The redirect
+    # URI must exactly match what's registered in the operator's
+    # Google Cloud OAuth consent screen, including scheme + path.
+    google_calendar_client_id: SecretStr | None = Field(default=None)
+    google_calendar_client_secret: SecretStr | None = Field(default=None)
+    google_calendar_redirect_uri: str | None = Field(
+        default=None,
+        description=(
+            "Full callback URL registered in Google Cloud. Example: "
+            "https://ownchart.your-instance.example.com"
+            "/api/calendar/google/callback"
+        ),
+    )
+
     cors_allow_origins: list[str] = Field(default_factory=list)
 
     # Demo mode (demo.ownchart.me). When True, the API rejects every

@@ -24,6 +24,7 @@ from .routes import (
     auth_device,
     auto_export,
     calendar,
+    calendar_google,
     connectors,
     consent,
     conversations,
@@ -231,6 +232,11 @@ app.include_router(timeline.router, prefix="/api/timeline", tags=["timeline"])
 app.include_router(discover.router, prefix="/api/discover", tags=["discover"])
 app.include_router(healthkit_sync.router, prefix="/api/healthkit", tags=["healthkit"])
 app.include_router(calendar.router, prefix="/api/calendar", tags=["calendar"])
+app.include_router(
+    calendar_google.router,
+    prefix="/api/calendar/google",
+    tags=["calendar"],
+)
 app.include_router(exports.router, prefix="/api/exports", tags=["exports"])
 app.include_router(settings_routes.router, prefix="/api/settings", tags=["settings"])
 app.include_router(sensemaking.router, prefix="/api", tags=["sensemaking"])

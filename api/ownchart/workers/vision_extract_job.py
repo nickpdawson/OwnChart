@@ -470,7 +470,18 @@ class WorkerSettings:
     behind a long vision extraction we'll split workers later.
     """
 
-    functions = [extract_pages_task, process_auto_export_push, process_personal_photo]
+    # Imported lazily so a circular-import between this module and
+    # google_calendar_sync (which imports calendar_eventkit which
+    # doesn't pull workers, but keep symmetry with how the other
+    # functions are added inline above) doesn't fire at module load.
+    from .google_calendar_sync import sync_google_calendar_source
+
+    functions = [
+        extract_pages_task,
+        process_auto_export_push,
+        process_personal_photo,
+        sync_google_calendar_source,
+    ]
     on_startup = _reenqueue_stranded_jobs
     max_jobs = 2  # one extraction is plenty heavy; cap concurrency
     # Default Arq job_timeout is 300s, which is comically short for our
