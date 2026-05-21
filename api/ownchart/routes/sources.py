@@ -1301,6 +1301,7 @@ async def extract_facts_from_source(
 
     job = ExtractionJob(
         source_document_id=source_id,
+        person_record_id=ctx.active_record_id,
         user_id=user.id,
         status="pending",
         only_pages=body.only_pages,

@@ -26,6 +26,16 @@ class ExtractionJob(Base):
         nullable=False,
         index=True,
     )
+    # Slice 1 perimeter — DB column landed via migration 0029 and was
+    # made NOT NULL in 0031, but the ORM model and the route's
+    # ExtractionJob(...) construction missed the stamp during Batch 2c.
+    # Restored 2026-05-21 (FU-EXTRACT-PERIMETER-MISS).
+    person_record_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("person_records.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="RESTRICT"),

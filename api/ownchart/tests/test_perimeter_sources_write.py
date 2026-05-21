@@ -244,3 +244,47 @@ def test_cross_record_get_after_write_denies(app_fixture):
     r = c.get(f"/api/sources/{_id()}")
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "record_access_revoked"
+
+
+# ---------------------------------------------------------------------------
+# FU-EXTRACT-PERIMETER-MISS regression — extract-facts row must stamp
+# person_record_id.
+#
+# Migration 0031 made extraction_jobs.person_record_id NOT NULL. The
+# ORM model and the extract_facts_from_source route both missed the
+# stamp during Batch 2c rollout, so every kickoff 500'd with a
+# NotNullViolationError. Two-line fix, pinned here so the constructor
+# call doesn't regress.
+
+
+def test_extraction_job_model_declares_person_record_id():
+    """ExtractionJob's mapped columns must include person_record_id
+    so SQLAlchemy emits it on INSERT (no column → SQLAlchemy silently
+    omits → 500 against the NOT NULL constraint)."""
+    from ownchart.models.extraction_job import ExtractionJob
+    cols = {c.name for c in ExtractionJob.__table__.columns}
+    assert "person_record_id" in cols, (
+        "ExtractionJob model missing person_record_id; SQLAlchemy "
+        "will omit it from INSERT and hit the NOT NULL constraint."
+    )
+    col = ExtractionJob.__table__.c.person_record_id
+    assert col.nullable is False, (
+        "person_record_id must be NOT NULL on the model to match the "
+        "DB constraint set by migration 0031."
+    )
+
+
+def test_extract_facts_route_stamps_person_record_id():
+    """extract_facts_from_source must pass
+    person_record_id=ctx.active_record_id to the ExtractionJob
+    constructor. Static-source check — without it, the INSERT
+    omits the column and the route 500s."""
+    import inspect
+    from ownchart.routes.sources import extract_facts_from_source
+    src = inspect.getsource(extract_facts_from_source)
+    # The constructor call must include the perimeter stamp.
+    assert "person_record_id=ctx.active_record_id" in src, (
+        "extract_facts_from_source must stamp "
+        "person_record_id=ctx.active_record_id on the ExtractionJob "
+        "it creates; otherwise the INSERT hits a NOT NULL violation."
+    )
