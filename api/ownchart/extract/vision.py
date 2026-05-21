@@ -139,6 +139,11 @@ async def extract_page(
         nonlocal fact_count
         anchor = EvidenceAnchor(
             source_document_id=source.id,
+            # Slice 1 perimeter — denormalize record scope from the
+            # parent SourceDocument so retrieval can filter without
+            # traversing the anchor chain. Round-2 stamp; round-1
+            # covered routes/sources.py only.
+            person_record_id=source.person_record_id,
             anchor_type="pdf_page",
             page_number=page_number,
             text_excerpt=(str(kwargs.get("text_excerpt") or ""))[:2000] or None,
@@ -190,6 +195,8 @@ async def extract_page(
             why_needs_review_text=why_text,
             review_task_type=task_type,
             source_context_only_eligible=source_only_eligible,
+            # Slice 1 perimeter — Round-2 stamp from the parent source.
+            person_record_id=source.person_record_id,
         )
         pending.append((anchor, fact))
         fact_count += 1

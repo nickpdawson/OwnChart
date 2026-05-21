@@ -402,6 +402,8 @@ async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[st
             coded = sf.get("coded_concepts") if isinstance(sf.get("coded_concepts"), dict) else None
             sf_anchor = EvidenceAnchor(
                 source_document_id=source.id,
+                # Slice 1 perimeter — Round-2 stamp from parent source.
+                person_record_id=source.person_record_id,
                 anchor_type="image_structured_field",
                 text_excerpt=(sf.get("description") or label)[:2000],
             )
@@ -419,6 +421,8 @@ async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[st
                 review_state=review_state,
                 evidence_anchor_ids=[sf_anchor.id],
                 extraction_method="claude_vision_v1",
+                # Slice 1 perimeter — Round-2 stamp from parent source.
+                person_record_id=source.person_record_id,
             )
             db.add(sf_fact)
             structured_facts_persisted += 1

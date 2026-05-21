@@ -288,3 +288,88 @@ def test_extract_facts_route_stamps_person_record_id():
         "person_record_id=ctx.active_record_id on the ExtractionJob "
         "it creates; otherwise the INSERT hits a NOT NULL violation."
     )
+
+
+# ---------------------------------------------------------------------------
+# Round-2 perimeter regression — every EvidenceAnchor + ExtractedFact
+# constructor in worker / extract modules must stamp person_record_id.
+#
+# Round-1 caught extraction_jobs.person_record_id. The first end-to-end
+# verification surfaced the same NOT NULL violation on evidence_anchors
+# (the worker downstream of the route). Audit found 4 paths where both
+# anchor and fact constructors were silently dropping the column. These
+# tests pin the stamp on each.
+
+
+def _slice_constructor(src: str, ctor_open: str) -> str:
+    """Return the parenthesized argument block for the first
+    occurrence of `ctor_open` (e.g. "EvidenceAnchor(") in `src`.
+    Counts balanced parens — naive ``split(")")`` truncates at the
+    first inner ``)`` from a nested call like ``str(...)``."""
+    idx = src.find(ctor_open)
+    if idx < 0:
+        return ""
+    start = idx + len(ctor_open)
+    depth = 1
+    i = start
+    while i < len(src) and depth > 0:
+        ch = src[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        i += 1
+    return src[start:i - 1]
+
+
+@pytest.mark.parametrize(
+    "module, symbol",
+    [
+        ("ownchart.extract.vision", "extract_page"),
+        ("ownchart.extract.clinical_note", "extract_clinical_note"),
+        ("ownchart.workers.vision_extract_job", "process_personal_photo"),
+        ("ownchart.workers.auto_export_job", "process_auto_export_push"),
+    ],
+)
+def test_extract_worker_paths_stamp_person_record_id(module, symbol):
+    """Worker / extract functions that build EvidenceAnchor +
+    ExtractedFact rows must stamp person_record_id from the parent
+    SourceDocument (or a captured record_id when the source row is
+    out of session). Static-source check with proper paren balancing
+    — pin the stamp so a future refactor can't silently drop it."""
+    import importlib
+    import inspect as _inspect
+    mod = importlib.import_module(module)
+    fn = getattr(mod, symbol)
+    src = _inspect.getsource(fn)
+    if "EvidenceAnchor(" in src:
+        block = _slice_constructor(src, "EvidenceAnchor(")
+        assert "person_record_id" in block, (
+            f"{module}.{symbol} builds an EvidenceAnchor without "
+            f"stamping person_record_id; that INSERT will hit the "
+            f"NOT NULL constraint set by migration 0031."
+        )
+    if "ExtractedFact(" in src:
+        block = _slice_constructor(src, "ExtractedFact(")
+        assert "person_record_id" in block, (
+            f"{module}.{symbol} builds an ExtractedFact without "
+            f"stamping person_record_id; that INSERT will hit the "
+            f"NOT NULL constraint set by migration 0031."
+        )
+
+
+def test_auto_export_worker_captures_record_id_outside_session():
+    """auto_export_job loads the SourceDocument inside one SessionLocal
+    block then exits before building anchors/facts. Capture
+    record_id while still attached, so the constructor stamps don't
+    touch a detached attribute. Static check on the capture pattern."""
+    import inspect as _inspect
+    from ownchart.workers.auto_export_job import process_auto_export_push
+    src = _inspect.getsource(process_auto_export_push)
+    assert "record_id = src.person_record_id" in src, (
+        "process_auto_export_push must capture record_id from the "
+        "attached SourceDocument before the SessionLocal block exits; "
+        "subsequent EvidenceAnchor / ExtractedFact INSERTs need a "
+        "stable local reference."
+    )
+    assert "person_record_id=record_id" in src

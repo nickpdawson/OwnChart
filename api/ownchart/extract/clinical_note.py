@@ -262,6 +262,8 @@ async def extract_clinical_note(
         excerpt = (kwargs.get("text_excerpt") or "")
         anchor = EvidenceAnchor(
             source_document_id=source.id,
+            # Slice 1 perimeter — Round-2 stamp from parent source.
+            person_record_id=source.person_record_id,
             anchor_type="note_section",
             page_number=None,
             text_excerpt=str(excerpt)[:2000] or None,
@@ -337,6 +339,8 @@ async def extract_clinical_note(
             why_needs_review_text=why_text,
             review_task_type=task_type,
             source_context_only_eligible=source_only_eligible,
+            # Slice 1 perimeter — Round-2 stamp from parent source.
+            person_record_id=source.person_record_id,
         )
         pending.append((anchor, fact))
         fact_count += 1

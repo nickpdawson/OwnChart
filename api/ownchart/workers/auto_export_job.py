@@ -57,6 +57,10 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
         meta["processing_status"] = "running"
         meta["processing_started_at"] = datetime.now(timezone.utc).isoformat()
         src.raw_metadata = meta
+        # Slice 1 perimeter — capture record id while the row is
+        # attached. Subsequent EvidenceAnchor / ExtractedFact INSERTs
+        # happen outside this session and need the stamp; Round-2.
+        record_id = src.person_record_id
         await db.commit()
 
     # Load + parse outside the DB session to keep the transaction short.
@@ -140,6 +144,10 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
             continue
         anchor = EvidenceAnchor(
             source_document_id=src_uuid,
+            # Slice 1 perimeter — Round-2 stamp from the captured
+            # parent record id (the SourceDocument session closed
+            # earlier).
+            person_record_id=record_id,
             # Default anchor_type is "auto_export_metric" for the
             # vital-signs / activity / sleep path; medications and
             # symptoms set their own (e.g. auto_export_medication).
@@ -151,6 +159,7 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
         )
         ef = ExtractedFact(
             fact_type=f.fact_type,
+            person_record_id=record_id,
             label=f.label,
             description=f.description,
             date_start=f.date_start,
