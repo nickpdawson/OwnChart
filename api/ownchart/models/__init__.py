@@ -3,7 +3,17 @@ from .auto_export_token import AutoExportToken
 from .base import Base
 from .brief_message import BriefMessage
 from .calendar_event import CalendarEvent
-from .calendar_source import ADAPTER_TYPES, PRIVACY_MODES, CalendarSource
+from .calendar_oauth_credential import (
+    GOOGLE_CALENDAR_PROVIDER,
+    OAUTH_STATUSES,
+    CalendarOAuthCredential,
+)
+from .calendar_source import (
+    ADAPTER_TYPES,
+    HISTORY_WINDOWS,
+    PRIVACY_MODES,
+    CalendarSource,
+)
 from .conversation import Conversation, ConversationCitation, ConversationMessage
 from .device_token import DeviceToken
 from .episode import Episode, EpisodeMember
@@ -37,7 +47,11 @@ __all__ = [
     "Base",
     "BriefMessage",
     "CalendarEvent",
+    "CalendarOAuthCredential",
     "CalendarSource",
+    "GOOGLE_CALENDAR_PROVIDER",
+    "HISTORY_WINDOWS",
+    "OAUTH_STATUSES",
     "Conversation",
     "ConversationCitation",
     "ConversationMessage",

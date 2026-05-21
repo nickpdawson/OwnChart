@@ -34,7 +34,16 @@ PRIVACY_MODES: tuple[str, ...] = (
     "title_and_time",
     "busy_only",
 )
-ADAPTER_TYPES: tuple[str, ...] = ("ios_eventkit",)
+# Adapter allowlist tracks the route + worker wiring. Schema CHECK
+# constraint widens with each migration (0036 → 0042). Adding a value
+# here without the CHECK migration will cause inserts to fail.
+ADAPTER_TYPES: tuple[str, ...] = ("ios_eventkit", "google_calendar", "ics")
+
+# Per-source history windows (FU-CAL-HISTORY-WINDOW). The window
+# controls (a) how far back a worker backfills on widen, and (b)
+# how far back the LLM projector exposes events. The schema CHECK
+# pinned by migration 0042 enforces the allowlist at the DB layer.
+HISTORY_WINDOWS: tuple[str, ...] = ("90d", "1y", "3y", "5y", "all")
 
 
 class CalendarSource(Base, TimestampMixin):
@@ -89,3 +98,23 @@ class CalendarSource(Base, TimestampMixin):
         DateTime(timezone=True),
     )
     last_sync_status: Mapped[str | None] = mapped_column(String(16))
+
+    # FU-CAL-HISTORY-WINDOW — per-source back-window for retrieval +
+    # backfill. Default '90d' matches today's iOS behavior. Widening
+    # triggers a client-side backfill (iOS sync coordinator;
+    # google_calendar sync worker); narrowing hides events from
+    # projections without hard-delete (the projector filters by the
+    # window at read time, so narrowing then widening doesn't lose
+    # data — events that fell outside the narrow window are still
+    # stored, just not exposed to Ask).
+    history_window_back: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="90d",
+    )
+
+    # FU-CAL-GOOGLE-OAUTH — for adapter_type='google_calendar',
+    # points back to the OAuth credential row holding the encrypted
+    # refresh token. NULL for ios_eventkit / ics sources.
+    oauth_credential_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("calendar_oauth_credentials.id", ondelete="SET NULL"),
+    )
