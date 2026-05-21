@@ -26,6 +26,10 @@ from ..core.db import get_session
 from ..llm import call_with_tool, get_registry
 from ..models.conversation import Conversation, ConversationMessage
 from ..models.extracted_fact import ExtractedFact
+from ..retrieval.calendar_life_context import (
+    fetch_calendar_life_context,
+    format_calendar_context_block,
+)
 from ..retrieval.topics import search_facts
 
 router = APIRouter()
@@ -134,12 +138,24 @@ async def ask(
         person_record_id=ctx.active_record_id,
     )
     retrieved_ids: set[str] = {str(f.id) for f in facts}
+
+    # FU-CAL-ASK-INTEGRATION — append projected calendar life-context
+    # to the prompt block. The projector enforces the two-elevation
+    # floor (privacy_mode + llm_full_details_consent) per source and
+    # the per-source history_window_back hides events that fall
+    # outside the user's chosen back-window.
+    calendar_items = await fetch_calendar_life_context(
+        db, person_record_id=ctx.active_record_id,
+    )
+    context_block = _format_context(facts) + format_calendar_context_block(
+        calendar_items,
+    )
     prompt = get_registry().get("ask_query")
     result = await call_with_tool(
         db, user, prompt,
         user_vars={
             "question": body.question,
-            "context_block": _format_context(facts),
+            "context_block": context_block,
         },
         purpose="ask_query",
         tool_name="emit_answer",

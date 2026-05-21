@@ -90,8 +90,18 @@ def test_ask_passes_person_record_id_to_search_facts(app_fixture):
 
     # Patch BOTH the canonical import path and the local import the
     # route uses, so the patch survives regardless of how the route
-    # references it.
-    with patch("ownchart.routes.ask.search_facts", new=_fake_search_facts):
+    # references it. The calendar life-context fetch (FU-CAL-ASK-
+    # INTEGRATION) also touches the DB; stub it out so this test
+    # stays a pure perimeter-contract check.
+    async def _no_calendar_context(*a, **kw):
+        return []
+
+    with patch(
+        "ownchart.routes.ask.search_facts", new=_fake_search_facts,
+    ), patch(
+        "ownchart.routes.ask.fetch_calendar_life_context",
+        new=_no_calendar_context,
+    ):
         active_record = uuid.uuid4()
         user_id = uuid.uuid4()
         c = authed_client(
@@ -238,8 +248,17 @@ def test_ask_filters_citations_to_retrieved_set(app_fixture):
         yield _NullSession()
     app_fixture.dependency_overrides[get_session] = _fake_get_session
 
+    # Calendar life-context (FU-CAL-ASK-INTEGRATION) touches the DB
+    # too; stub it out so this perimeter check stays pure.
+    async def _no_calendar_context(*a, **kw):
+        return []
+
     with patch("ownchart.routes.ask.search_facts", new=_fake_search_facts), \
          patch("ownchart.routes.ask.call_with_tool", new=_fake_call_with_tool), \
+         patch(
+             "ownchart.routes.ask.fetch_calendar_life_context",
+             new=_no_calendar_context,
+         ), \
          patch("ownchart.routes.ask.Conversation", new=_NullModel), \
          patch("ownchart.routes.ask.ConversationMessage", new=_NullModel):
         c = authed_client(app_fixture, role="owner")

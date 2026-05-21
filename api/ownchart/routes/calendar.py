@@ -90,6 +90,10 @@ class CalendarSourcePatchRequest(BaseModel):
     privacy_mode: PrivacyMode | None = None
     llm_full_details_consent: bool | None = None
     display_name: str | None = Field(default=None, max_length=256)
+    # FU-CAL-HISTORY-WINDOW — per-source back-window. Widening
+    # triggers a backfill (iOS sync coordinator / Google worker);
+    # narrowing hides events from projections without hard-delete.
+    history_window_back: Literal["90d", "1y", "3y", "5y", "all"] | None = None
 
 
 class CalendarSourceOut(BaseModel):
@@ -109,6 +113,8 @@ class CalendarSourceOut(BaseModel):
     last_sync_status: str | None = None
     visible_event_count: int = 0
     stored_event_count: int = 0
+    # FU-CAL-HISTORY-WINDOW — per-source back-window enum.
+    history_window_back: str = "90d"
 
 
 class CalendarIngestRequest(BaseModel):
@@ -278,6 +284,14 @@ async def patch_source(
         src.llm_full_details_consent = body.llm_full_details_consent
     if body.display_name is not None:
         src.display_name = body.display_name
+    if body.history_window_back is not None:
+        # Schema CHECK enforces the allowlist at the DB layer.
+        # Widening: the worker/iOS sync coordinator picks up the new
+        # window on next sync. Narrowing: events outside the new
+        # window are silently hidden from projections by
+        # fetch_calendar_life_context (per-source clamp). No
+        # destructive UPDATE here — narrowing is reversible.
+        src.history_window_back = body.history_window_back
     src.updated_at = datetime.now(timezone.utc)
 
     if tightening_to is not None:
@@ -618,6 +632,7 @@ def _source_out(
         last_sync_status=row.get("last_sync_status"),
         visible_event_count=visible_event_count,
         stored_event_count=stored_event_count,
+        history_window_back=row.get("history_window_back") or "90d",
     )
 
 
@@ -641,4 +656,5 @@ def _source_out_from_row(
         last_sync_status=r.last_sync_status,
         visible_event_count=visible_event_count,
         stored_event_count=stored_event_count,
+        history_window_back=r.history_window_back,
     )
