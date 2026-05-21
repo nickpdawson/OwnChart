@@ -30,8 +30,10 @@ from __future__ import annotations
 import inspect
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 
 from ownchart.core.config import Settings, get_settings
@@ -47,6 +49,7 @@ from ownchart.ingest.google_calendar import (
     google_event_to_wire,
     granted_scope_is_read_only,
     is_google_calendar_configured,
+    list_events,
 )
 
 
@@ -313,32 +316,102 @@ def test_google_cancelled_event_projects_to_tombstoned():
 
 
 # ---------------------------------------------------------------------------
-# 6. Authorize URL composition — pins critical params
+# 6. Authorize URL composition — pins critical params via parse_qs so
+#    encoding bugs (raw spaces in scope, unencoded redirect_uri /
+#    state, etc.) surface as round-trip mismatches.
 
 
-def test_authorize_url_includes_critical_params(monkeypatch):
+def _parse_authorize_url(url: str) -> dict[str, list[str]]:
+    parts = urlsplit(url)
+    return parse_qs(parts.query, keep_blank_values=True)
+
+
+def test_authorize_url_query_round_trips_via_parse_qs(monkeypatch):
+    """Parse the URL with urlsplit+parse_qs and assert every critical
+    param round-trips to the exact intended value. This catches
+    encoding regressions (raw spaces, missing %2F on redirect_uri,
+    truncated state) that ``in url`` substring checks miss."""
     _configured_settings(monkeypatch)
-    url = build_authorize_url(state="STATE123")
-    assert url.startswith(GOOGLE_AUTHORIZE_URL + "?")
-    assert "client_id=test-client-id" in url
-    assert "state=STATE123" in url
-    # Refresh-token guarantee.
-    assert "access_type=offline" in url
-    assert "prompt=consent" in url
-    # Read-only scope landed in the URL.
-    assert "calendar.readonly" in url
-    # And it's NOT requesting any write scope.
-    assert "auth/calendar%20" not in url  # bare 'calendar' = read+write
-    assert "auth/calendar.events%20" not in url  # bare 'events' = write
+    state = "signed.state.value-with/slashes+plus=eq"
+    url = build_authorize_url(state=state)
+
+    # No literal ASCII space in the URL.
+    assert " " not in url, f"raw space leaked into URL: {url!r}"
+
+    parts = urlsplit(url)
+    assert (
+        f"{parts.scheme}://{parts.netloc}{parts.path}"
+        == GOOGLE_AUTHORIZE_URL
+    )
+    q = parse_qs(parts.query, keep_blank_values=True)
+
+    # client_id round-trips exactly (not the secret — that's a
+    # client-side public id).
+    assert q["client_id"] == ["test-client-id"]
+
+    # state round-trips exactly, slashes/plus/equals and all.
+    assert q["state"] == [state]
+
+    # redirect_uri round-trips to the configured value.
+    assert q["redirect_uri"] == [
+        "https://example.test/api/calendar/google/callback",
+    ]
+
+    # response_type + offline + consent invariants.
+    assert q["response_type"] == ["code"]
+    assert q["access_type"] == ["offline"]
+    assert q["prompt"] == ["consent"]
+    assert q["include_granted_scopes"] == ["true"]
+
+    # scope round-trips to the read-only set (space-separated,
+    # but the URL encoding is invisible to parse_qs).
+    scope_values = q["scope"][0].split(" ")
+    assert set(scope_values) == set(READ_ONLY_SCOPES)
 
 
-def test_authorize_url_uses_configured_redirect_uri(monkeypatch):
+def test_authorize_url_scope_decodes_to_read_only_scopes(monkeypatch):
+    """Specifically pin that the decoded ``scope`` value is exactly
+    the read-only allowlist, in stable order. A future widening
+    that accidentally adds a write scope shows up here first."""
     _configured_settings(monkeypatch)
     url = build_authorize_url(state="X")
-    # URL-encoded form of the test redirect URI.
-    assert "redirect_uri=https" in url
-    assert "example.test" in url
-    assert "callback" in url
+    parts = urlsplit(url)
+    q = parse_qs(parts.query)
+    decoded_scopes = q["scope"][0].split(" ")
+    for s in decoded_scopes:
+        assert s in READ_ONLY_SCOPES, f"unexpected scope leaked: {s}"
+    for s in READ_ONLY_SCOPES:
+        assert s in decoded_scopes, f"missing read-only scope: {s}"
+
+
+def test_authorize_url_does_not_request_write_scopes(monkeypatch):
+    """A parse_qs round-trip check that no Calendar write scope
+    appears in the decoded scope list."""
+    _configured_settings(monkeypatch)
+    url = build_authorize_url(state="X")
+    parts = urlsplit(url)
+    q = parse_qs(parts.query)
+    decoded_scopes = q["scope"][0].split(" ")
+    write_scopes = {
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/calendar.events",
+    }
+    for ws in write_scopes:
+        assert ws not in decoded_scopes
+
+
+def test_authorize_url_redirect_uri_is_percent_encoded(monkeypatch):
+    """The redirect_uri value contains ``/`` and ``:`` which MUST
+    be percent-encoded in the query string. parse_qs decodes for
+    us; we additionally check the raw query for the encoded form
+    so a regression that pastes the URL verbatim trips."""
+    _configured_settings(monkeypatch)
+    url = build_authorize_url(state="X")
+    parts = urlsplit(url)
+    # The raw query must contain the percent-encoded scheme separator.
+    assert "redirect_uri=https%3A%2F%2F" in parts.query, (
+        f"redirect_uri not percent-encoded: query={parts.query!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -431,3 +504,104 @@ def test_google_calendar_api_endpoints_pinned():
     assert gc.GOOGLE_TOKEN_URL.startswith("https://oauth2.googleapis.com/")
     assert gc.GOOGLE_CALENDAR_API == "https://www.googleapis.com/calendar/v3"
     assert GOOGLE_CALENDAR_API == gc.GOOGLE_CALENDAR_API
+
+
+# ---------------------------------------------------------------------------
+# 9. list_events percent-encodes the calendar id as a path segment.
+#
+# Google calendar IDs commonly contain ``#`` (group calendars like
+# ``family#events@group.calendar.google.com``) and ``@`` (the
+# canonical address form). Without explicit percent-encoding, ``#``
+# truncates the URL at the fragment boundary on the wire — the
+# request reaches ``/calendars/family`` and Google 404s. Pin the
+# encoding here so a refactor that switches back to raw interpolation
+# trips immediately.
+
+
+@pytest.mark.asyncio
+async def test_list_events_percent_encodes_calendar_id_with_hash_and_at():
+    """A calendar id containing ``#`` and ``@`` must end up
+    percent-encoded in the requested URL — both characters are
+    reserved as path-segment delimiters / fragment markers."""
+
+    captured: dict[str, str] = {}
+
+    class _FakeResponse:
+        status_code = 200
+        def json(self) -> dict:
+            return {"items": [], "nextSyncToken": "tok"}
+
+    class _FakeClient:
+        async def get(self, url: str, **kwargs):
+            captured["url"] = url
+            captured["params"] = dict(kwargs.get("params") or {})
+            return _FakeResponse()
+
+    cal_id = "family#events@example.com"
+    await list_events(
+        access_token="fake-access",
+        calendar_external_id=cal_id,
+        time_min=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        time_max=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        client=_FakeClient(),
+    )
+
+    url = captured["url"]
+    # Raw ``#`` must NOT survive into the URL path.
+    assert "#" not in url, (
+        f"raw '#' leaked into URL — fragment would truncate: {url!r}"
+    )
+    # Raw ``@`` must not survive either when safe="" is used. (The
+    # underlying httpx client may pass it through to httpcore, but
+    # the URL WE construct should already be encoded.)
+    path_only = url.split("?", 1)[0]
+    assert "@" not in path_only, (
+        f"raw '@' leaked into URL path: {path_only!r}"
+    )
+    # Percent-encoded forms must be present.
+    assert "%23" in url, f"missing %23 (encoded #): {url!r}"
+    assert "%40" in path_only, f"missing %40 (encoded @): {path_only!r}"
+    # The URL must still target the events sub-resource on the
+    # calendars/{id} collection — not a fragment-truncated form.
+    assert "/calendars/" in url
+    assert url.endswith("/events") or "/events?" in url
+
+
+@pytest.mark.asyncio
+async def test_list_events_simple_calendar_id_round_trips():
+    """A simple calendar id (no reserved chars) survives encoding
+    too — sanity check that ``quote(..., safe="")`` doesn't mangle
+    plain ASCII slugs."""
+    captured: dict[str, str] = {}
+
+    class _FakeResponse:
+        status_code = 200
+        def json(self) -> dict:
+            return {"items": [], "nextSyncToken": "tok"}
+
+    class _FakeClient:
+        async def get(self, url: str, **kwargs):
+            captured["url"] = url
+            return _FakeResponse()
+
+    await list_events(
+        access_token="fake-access",
+        calendar_external_id="primary",
+        time_min=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        time_max=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        client=_FakeClient(),
+    )
+    assert "/calendars/primary/events" in captured["url"]
+
+
+def test_list_events_source_uses_quote_with_safe_empty():
+    """Static-source pin: list_events must call quote() with
+    safe="" so reserved characters (``@``, ``+``, ``/``, ``:``)
+    are also encoded. A default safe="/" would leave ``/`` raw
+    and break group-calendar IDs."""
+    from ownchart.ingest import google_calendar as gc
+    src = inspect.getsource(gc.list_events)
+    assert "quote(calendar_external_id, safe=" in src
+    # The ``safe=""`` form (empty string) is the load-bearing
+    # detail; assert it specifically.
+    assert 'quote(calendar_external_id, safe="")' in src

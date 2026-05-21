@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -104,6 +105,11 @@ def build_authorize_url(
     list is the read-only set. Callers should NOT pass write scopes
     — the callback will reject them — but we don't filter here so a
     test can exercise the rejection path.
+
+    Query string is built via ``httpx.QueryParams.__str__`` so
+    every value is percent-encoded (spaces in ``scope``, slashes
+    in ``redirect_uri``, etc.). An earlier version hand-joined
+    decoded values which produced raw spaces and unencoded paths.
     """
     if not is_google_calendar_configured():
         raise RuntimeError(
@@ -125,7 +131,7 @@ def build_authorize_url(
         "prompt": "consent",
         "include_granted_scopes": "true",
     }
-    qs = "&".join(f"{k}={httpx.QueryParams({k: v})[k]}" for k, v in params.items())
+    qs = str(httpx.QueryParams(params))
     return f"{GOOGLE_AUTHORIZE_URL}?{qs}"
 
 
@@ -348,6 +354,14 @@ async def list_events(
             params["timeMin"] = _to_rfc3339(time_min)
             params["timeMax"] = _to_rfc3339(time_max)
 
+        # Percent-encode the calendar id as a path segment. Google
+        # calendar IDs commonly contain reserved characters
+        # (``#`` for group calendars like ``family#events@group``,
+        # ``@`` for the address-form id). Without encoding, ``#``
+        # truncates the URL at the fragment boundary and the
+        # request reaches ``/calendars/family`` — wrong calendar.
+        # safe="" forces ``@``, ``+``, ``/``, ``:`` to be encoded too.
+        calendar_id = quote(calendar_external_id, safe="")
         all_events: list[dict[str, Any]] = []
         next_sync_token: str | None = None
         next_page_token: str | None = None
@@ -355,7 +369,7 @@ async def list_events(
             if next_page_token:
                 params["pageToken"] = next_page_token
             r = await cli.get(
-                f"{GOOGLE_CALENDAR_API}/calendars/{calendar_external_id}/events",
+                f"{GOOGLE_CALENDAR_API}/calendars/{calendar_id}/events",
                 params=params,
                 headers={"authorization": f"Bearer {access_token}"},
             )
