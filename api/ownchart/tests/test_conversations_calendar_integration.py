@@ -539,17 +539,13 @@ def test_conversations_wearable_telemetry_log_no_phi():
 # enumerates a broader phrase list.
 
 
-def test_general_ask_v3_is_latest_version():
-    """v3 wins the bare ``general_ask`` lookup (registry picks
-    latest by alphabetical sort). v1 + v2 stay callable by
-    @1 / @2 for historical ModelRun audit."""
+def test_general_ask_v3_exists_for_audit():
+    """v3 must still be callable by id@3 for historical ModelRun
+    audit after v4 supersedes it. The 'latest is v3' check
+    was rolled forward to test_general_ask_v4_is_latest_version."""
     from ownchart.llm import get_registry
     get_registry.cache_clear()
-    reg = get_registry()
-    assert reg.get("general_ask@1").version == 1
-    assert reg.get("general_ask@2").version == 2
-    assert reg.get("general_ask@3").version == 3
-    assert reg.get("general_ask").version == 3
+    assert get_registry().get("general_ask@3").version == 3
 
 
 # All banned phrases — the bug PM caught ("honest read") plus the
@@ -665,3 +661,167 @@ def test_active_general_ask_prompt_has_no_banned_phrases_in_voice_rules():
             f"banned phrase {phrase!r} appears as instruction text "
             f"outside the Tone rules section — would prime the model"
         )
+
+
+# ---------------------------------------------------------------------------
+# 9. general_ask v4 — structural ban on "honest" (PM-caught
+# 2026-05-22 evening: v3 leaked "honest gap").
+
+
+def test_general_ask_v4_is_latest_version():
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    reg = get_registry()
+    assert reg.get("general_ask@1").version == 1
+    assert reg.get("general_ask@2").version == 2
+    assert reg.get("general_ask@3").version == 3
+    assert reg.get("general_ask@4").version == 4
+    assert reg.get("general_ask").version == 4
+
+
+def test_general_ask_v4_contains_absolute_structural_ban():
+    """v4 replaces the v3 enumerated whack-a-mole list with a
+    structural rule: NO inflection of 'honest' anywhere in the
+    output, period. The phrase 'absolute ban' must appear so a
+    future cleanup that softens this trips immediately."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@4")
+    system = p.system
+    assert "ABSOLUTE BAN" in system, (
+        "v4 must declare an ABSOLUTE BAN — the v3 enumerated list "
+        "was insufficient (PM caught 'honest gap' leaking)"
+    )
+    # The rule must reference "any inflection" or equivalent
+    # structural language.
+    assert "any inflection" in system.lower() or (
+        "any grammatical role" in system.lower()
+    ), (
+        "v4 must use structural language ('any inflection' / 'any "
+        "grammatical role') so the model can't argue a synonym "
+        "around the ban"
+    )
+
+
+def test_general_ask_v4_enumerates_honest_gap_explicitly():
+    """The PM-caught leak phrase. Must appear in the forbidden
+    enumeration so a similar phrase in a future regression flags
+    immediately."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@4")
+    text = p.system.lower()
+    assert "honest gap" in text, (
+        "v4 must explicitly enumerate 'honest gap' — the literal "
+        "phrase the model leaked under v3"
+    )
+
+
+def test_general_ask_v4_includes_self_check_instruction():
+    """v4 instructs the model to scan its own output for 'honest'
+    before emitting. This is the additional layer that the
+    enumerated list alone didn't catch."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@4")
+    system = p.system.lower()
+    assert "before emitting" in system or "scan it once" in system or (
+        "scan your output" in system
+    ), (
+        "v4 must contain a self-check instruction so the model "
+        "runs a final pass to remove any 'honest' leak"
+    )
+
+
+def test_general_ask_v4_has_acceptable_forms_enumerated():
+    """The positive replacement: concrete acceptable forms for
+    stating a limitation. Without these the model wouldn't know
+    HOW to express the gap."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@4")
+    text = p.system
+    assert "Acceptable forms" in text or "acceptable forms" in text
+    # Specific concrete examples PM listed.
+    assert "retrieved evidence does not include" in text
+    assert "isn't in the retrieved evidence" in text
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "honest gap",          # the PM-caught regression
+        "honest read",          # carried over from v3
+        "honest take",
+        "honest answer",
+        "the honest truth",
+        "in all honesty",
+        "honestly",
+        "to be honest",
+        "frankly",
+        "honest picture",       # v4 additions
+        "honest reality",
+        "honest summary",
+    ],
+)
+def test_general_ask_v4_enumerates_each_phrase(phrase):
+    """v4 must enumerate every phrase as a concrete example so
+    the model has a list to avoid. Anchors against future
+    leak variants."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@4")
+    text = p.system.lower()
+    assert phrase.lower() in text, (
+        f"v4 missing forbidden example phrase {phrase!r}"
+    )
+
+
+def test_general_ask_v4_allows_quotation_exception():
+    """The narrow exception: model may use 'honest' when QUOTING
+    the user's question text. This must be explicit so the model
+    doesn't fail-closed and refuse to echo a user word."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@4")
+    text = p.system.lower()
+    assert ("quoting" in text and "user" in text) or (
+        "echoing the user" in text
+    ), (
+        "v4 must surface the quotation exception so the model "
+        "doesn't refuse to echo a user word"
+    )
+
+
+def test_general_ask_v4_preserves_medical_safety_unchanged():
+    """Tone-only change — every medical safety / source authority
+    / medication chronology rule must survive verbatim."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@4")
+    system = p.system
+    assert "treatment instructions" in system
+    assert "dosing changes" in system
+    assert "self-harm" in system
+    assert "safety_response" in system
+    assert "primary_event" in system
+    assert "self_reported_history" in system
+    assert "Earliest tracker log" in system
+    assert "originating prescription" in system
+
+
+def test_general_ask_v4_tool_schema_unchanged():
+    """v4 must keep the same tool name + required-field shape as
+    v1/v2/v3 so route-layer parsing is stable across versions."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    reg = get_registry()
+    versions = [reg.get(f"general_ask@{i}") for i in (1, 2, 3, 4)]
+    tools = [v.tools[0] for v in versions]
+    names = {t["name"] for t in tools}
+    assert names == {"emit_answer"}
+    required_sets = [
+        frozenset(t["input_schema"].get("required", [])) for t in tools
+    ]
+    # All four versions must agree on required fields.
+    assert all(r == required_sets[0] for r in required_sets)

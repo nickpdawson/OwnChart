@@ -43,10 +43,38 @@ from ownchart.retrieval.wearable_summary import (
         "step count yesterday",
         "active energy this week",
         "compare my sleep, HRV, resting HR, and training",
+        # PM-caught 2026-05-22 evening — the device-data nouns
+        # the user actually says.
+        "what was my schedule like last week and did it correlate "
+        "to my wearable data?",
+        "summarize my wearable data for this week",
+        "how do my wearables look",
+        "show me my HealthKit data",
+        "summarize my apple health data",
+        "what's my body data showing",
+        "device data for the past 14 days",
+        "show me my fitness data",
+        "summarize my fitness this week",
+        "what does my recovery look like",
+        "my readiness scores past week",
+        "whoop summary",
+        "garmin data",
+        "fitbit data",
     ],
 )
 def test_wearable_pattern_detected(question):
     assert question_is_wearable_pattern(question) is True
+
+
+def test_wearable_pattern_exact_pm_failing_question():
+    """The exact question Nick sent that did NOT trigger under
+    the prior trigger set. Pin it explicitly so a future refactor
+    can't silently break it again."""
+    q = (
+        "What was my schedule like last week and did it correlate "
+        "to my wearable data?"
+    )
+    assert question_is_wearable_pattern(q) is True
 
 
 @pytest.mark.parametrize(

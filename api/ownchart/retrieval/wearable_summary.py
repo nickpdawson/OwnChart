@@ -145,7 +145,18 @@ _METRIC_AGGREGATION: dict[str, str] = {
 # Subset of _FACT_TYPE_SYNONYMS["observation"] — only the truly
 # wearable tokens, not the clinical "observation" / "vital" terms
 # (which would also fire on EHR observation rows).
+#
+# 2026-05-22 evening update: the noun "wearable" itself was
+# missing — a question like "did it correlate to my wearable
+# data?" didn't trigger even though the entire purpose of the
+# summary pass is to answer wearable questions. The PM-caught
+# regression. Added "wearable", "wearables", "healthkit",
+# "health kit", "body data", "device data", "fitness data",
+# "fitness tracker", "apple watch", "watch data", "ring",
+# "whoop", "garmin", "fitbit" so any common device-data noun
+# fires the pass.
 _WEARABLE_TRIGGER_TOKENS: frozenset[str] = frozenset({
+    # Metric nouns
     "sleep", "sleeping", "slept",
     "hrv", "heart rate variability",
     "heart rate", "resting heart rate", "resting hr", "rhr", "pulse",
@@ -154,6 +165,23 @@ _WEARABLE_TRIGGER_TOKENS: frozenset[str] = frozenset({
     "steps", "step count",
     "activity", "activities",
     "calories", "energy",
+    # Device-data category nouns (PM-caught 2026-05-22 evening +
+    # 2026-05-22 round-2: also "fitness", "recovery", "readiness",
+    # and "apple health" — common natural-language framings).
+    "wearable", "wearables",
+    "wearable data",
+    "healthkit", "health kit",
+    "apple health",
+    "body data",
+    "device data",
+    "fitness", "fitness data", "fitness tracker",
+    "apple watch",
+    "watch data",
+    # Recovery / readiness — Whoop/Oura/Garmin-style framing the
+    # user may bring even without naming the device.
+    "recovery", "readiness",
+    # Common third-party device brand names users may say
+    "whoop", "garmin", "fitbit", "oura",
 })
 
 
