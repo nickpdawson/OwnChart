@@ -121,6 +121,21 @@ class GoogleBindResponse(BaseModel):
     history_window_back: str
 
 
+class GoogleCredentialOut(BaseModel):
+    """Read shape for the web settings UI to render the
+    'connected Google account' line distinct from the bound
+    calendars. FU-CAL-MULTI-CALENDAR-PICKER (2026-05-22): a
+    single account can hold many calendars, so credential ≠
+    source. ``last_synced_at`` is the credential-wide
+    timestamp (most-recently-synced source); per-source
+    sync health lives on ``CalendarSourceOut`` already."""
+    id: str
+    google_account_email: str
+    status: str
+    last_synced_at: datetime | None = None
+    bound_source_count: int = 0
+
+
 # ---------------------------------------------------------------------------
 # 503 helper — keep error shape identical across the three endpoints.
 
@@ -321,7 +336,75 @@ async def callback(
 
 
 # ---------------------------------------------------------------------------
-# 3. Bind a Google calendar to a CalendarSource
+# 3. List active Google OAuth credentials for the active record.
+# Web settings UI uses this to render the "connected account"
+# line distinct from per-calendar source rows.
+
+
+@router.get(
+    "/credentials",
+    response_model=list[GoogleCredentialOut],
+)
+async def list_credentials(
+    ctx: AuthContext = Depends(require_role("viewer")),
+    db: AsyncSession = Depends(get_session),
+) -> list[GoogleCredentialOut]:
+    """Active Google OAuth credentials for the active record.
+
+    Disconnected / revoked credentials are not surfaced — once
+    a user has disconnected a Google account, the settings UI
+    shouldn't show it. Re-consent under the same account email
+    is idempotent via the UNIQUE key and resurfaces the row.
+
+    ``bound_source_count`` is computed per credential so the UI
+    can show "Google account X — 2 calendars selected" without a
+    second round-trip.
+    """
+    rows = (await db.execute(
+        select(CalendarOAuthCredential)
+        .where(
+            CalendarOAuthCredential.person_record_id == ctx.active_record_id,
+        )
+        .where(CalendarOAuthCredential.status == "connected")
+        .order_by(CalendarOAuthCredential.created_at)
+    )).scalars().all()
+    if not rows:
+        return []
+
+    # Count bound (active) CalendarSource rows per credential in
+    # one grouped query — no N+1.
+    from sqlalchemy import func as _func
+    counts = dict(
+        (cred_id, n) for cred_id, n in (
+            await db.execute(
+                select(
+                    CalendarSource.oauth_credential_id,
+                    _func.count(CalendarSource.id),
+                )
+                .where(
+                    CalendarSource.oauth_credential_id.in_(
+                        [r.id for r in rows],
+                    ),
+                )
+                .where(CalendarSource.disconnected_at.is_(None))
+                .group_by(CalendarSource.oauth_credential_id)
+            )
+        ).all()
+    )
+    return [
+        GoogleCredentialOut(
+            id=str(r.id),
+            google_account_email=r.google_account_email,
+            status=r.status,
+            last_synced_at=r.last_synced_at,
+            bound_source_count=int(counts.get(r.id, 0)),
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 4. Bind a Google calendar to a CalendarSource
 
 
 @router.post(

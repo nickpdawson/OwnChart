@@ -507,6 +507,52 @@ def test_google_calendar_api_endpoints_pinned():
 
 
 # ---------------------------------------------------------------------------
+# 10. GET /api/calendar/google/credentials — list endpoint
+# powering the FU-CAL-MULTI-CALENDAR-PICKER UI surface.
+
+
+def test_list_credentials_route_registered():
+    """The new GET /credentials route must be mounted on the
+    router so the web settings page can call it."""
+    from ownchart.routes.calendar_google import router
+    paths = {r.path for r in router.routes}
+    assert "/credentials" in paths
+
+
+def test_list_credentials_403_on_record_access_revoked(app_fixture):
+    """Slice 1 perimeter — GET /credentials returns 403 when the
+    user's record access is revoked."""
+    from ownchart.tests.conftest import denied_client
+    c = denied_client(app_fixture, code="record_access_revoked")
+    r = c.get("/api/calendar/google/credentials")
+    assert r.status_code == 403
+
+
+def test_credential_out_schema_fields():
+    """The picker UI consumes id, google_account_email, status,
+    last_synced_at, bound_source_count. Pin the shape."""
+    from ownchart.routes.calendar_google import GoogleCredentialOut
+    fields = set(GoogleCredentialOut.model_fields.keys())
+    assert fields == {
+        "id",
+        "google_account_email",
+        "status",
+        "last_synced_at",
+        "bound_source_count",
+    }
+
+
+def test_list_credentials_uses_viewer_role_for_read():
+    """Reads use viewer+ to match list_sources; writes (bind /
+    callback) require caregiver+. Static-source check."""
+    import inspect
+    from ownchart.routes.calendar_google import list_credentials
+    sig = inspect.signature(list_credentials, eval_str=True)
+    src = inspect.getsource(list_credentials)
+    assert 'require_role("viewer")' in src
+
+
+# ---------------------------------------------------------------------------
 # 9. list_events percent-encodes the calendar id as a path segment.
 #
 # Google calendar IDs commonly contain ``#`` (group calendars like

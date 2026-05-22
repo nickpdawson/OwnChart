@@ -1,19 +1,45 @@
-import { listCalendarSources, type CalendarSourceOut } from "@/lib/api";
+import {
+  listCalendarSources,
+  listGoogleCredentials,
+  probeGoogleCalendarConfigured,
+  type CalendarSourceOut,
+  type GoogleConfiguredStatus,
+  type GoogleCredentialOut,
+} from "@/lib/api";
 import { CalendarSettingsClient } from "./CalendarSettingsClient";
 
 export const dynamic = "force-dynamic";
 
-// FU-CAL-WEB-SETTINGS-UI — web settings/status surface for calendar
-// sources. Wires only against existing backend endpoints
-// (GET/PATCH/DELETE /api/calendar/sources). Google/ICS are
-// rendered as "not configured by operator" placeholders until the
-// FU-CAL-GOOGLE-OAUTH / FU-CAL-ICS-ADAPTER adapters land.
+// Beta 1 Section A — Calendar settings surface. Three lanes:
+//   - iOS EventKit sources (existing FU-CAL-WEB-SETTINGS-UI).
+//   - Google Calendar connect + multi-calendar picker.
+//   - ICS placeholder (still operator-not-configured).
+//
+// Google config probe: a 503 from /connect-start means the
+// operator hasn't set the three env vars. We render the
+// placeholder in that case rather than a broken-feeling button.
 
-export default async function CalendarSettingsPage() {
+type SearchParams = { google_bind?: string };
+
+export default async function CalendarSettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<SearchParams>;
+}) {
+  const params = await searchParams;
   let sources: CalendarSourceOut[] = [];
+  let credentials: GoogleCredentialOut[] = [];
+  let googleConfigured: GoogleConfiguredStatus = {
+    configured: false,
+    detail: "Unknown — server did not respond.",
+  };
   let loadError: string | null = null;
   try {
-    sources = await listCalendarSources();
+    [sources, googleConfigured, credentials] = await Promise.all([
+      listCalendarSources(),
+      probeGoogleCalendarConfigured(),
+      listGoogleCredentials().catch(() => []),
+    ]);
   } catch (e) {
     loadError = (e as Error).message;
   }
@@ -34,8 +60,18 @@ export default async function CalendarSettingsPage() {
         controls what Ask can see, independent of storage.
       </p>
 
+      {params.google_bind === "ok" && (
+        <p className="mt-4 rounded-md border border-evidence/30 bg-evidence/10 p-3 text-sm text-evidence">
+          Google calendars connected. The first sync runs in the
+          background — refresh in a minute or two to see event
+          counts.
+        </p>
+      )}
+
       <CalendarSettingsClient
         initialSources={sources}
+        googleConfigured={googleConfigured}
+        googleCredentials={credentials}
         loadError={loadError}
       />
     </div>

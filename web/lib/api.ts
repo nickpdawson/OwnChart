@@ -1093,6 +1093,8 @@ export type CalendarSourceOut = {
   last_sync_status: CalendarSyncStatus | null;
   visible_event_count: number;
   stored_event_count: number;
+  // FU-CAL-HISTORY-WINDOW — per-source enum: 90d / 1y / 3y / 5y / all.
+  history_window_back: string;
 };
 
 export async function listCalendarSources(): Promise<CalendarSourceOut[]> {
@@ -1102,4 +1104,119 @@ export async function listCalendarSources(): Promise<CalendarSourceOut[]> {
   });
   if (!r.ok) throw new Error(`listCalendarSources failed: ${r.status}`);
   return (await r.json()) as CalendarSourceOut[];
+}
+
+// ---------------------------------------------------------------------------
+// Google Calendar OAuth (Beta 1 Section A)
+//
+// Mirrors `routes/calendar_google.py`. The connect-start endpoint
+// returns 503 when the operator hasn't configured the three env
+// vars — the UI must surface "not configured by this OwnChart
+// operator" rather than appearing broken.
+//
+// FU-CAL-MULTI-CALENDAR-PICKER (2026-05-22) — a single Google
+// account can contain multiple calendars; the UI distinguishes
+// the connected ``CalendarOAuthCredential`` from the per-calendar
+// ``CalendarSource`` rows.
+
+export type GoogleConnectStartResponse = {
+  authorize_url: string;
+  state: string;
+};
+
+export type GoogleCalendarChoice = {
+  external_id: string;
+  summary: string;
+  primary: boolean;
+  time_zone: string | null;
+  background_color: string | null;
+};
+
+export type GoogleCallbackResponse = {
+  credential_id: string;
+  google_account_email: string;
+  calendars: GoogleCalendarChoice[];
+};
+
+export type GoogleCredentialOut = {
+  id: string;
+  google_account_email: string;
+  status: string;
+  last_synced_at: string | null;
+  bound_source_count: number;
+};
+
+export type GoogleBindRequest = {
+  external_id: string;
+  display_name: string;
+  privacy_mode: CalendarPrivacyMode;
+  llm_full_details_consent: boolean;
+  history_window_back: string;
+};
+
+export type GoogleBindResponse = {
+  source_id: string;
+  adapter_type: string;
+  external_id: string;
+  display_name: string;
+  privacy_mode: string;
+  history_window_back: string;
+};
+
+export type GoogleConfiguredStatus =
+  | { configured: true }
+  | { configured: false; detail: string };
+
+/** SSR-friendly probe: hits connect-start; treats 503 as "not
+ * configured by operator" (the canonical message). 401/403 mean
+ * the user isn't authenticated/authorized — the layout handles
+ * that already. Any other status is treated as configured=false
+ * to avoid surfacing a broken-feeling UI. */
+export async function probeGoogleCalendarConfigured(): Promise<GoogleConfiguredStatus> {
+  const r = await fetch(`${INTERNAL_API}/api/calendar/google/connect-start`, {
+    method: "POST",
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (r.ok) return { configured: true };
+  if (r.status === 503) {
+    return {
+      configured: false,
+      detail:
+        "Google Calendar is not configured by this OwnChart operator.",
+    };
+  }
+  // 401/403/etc. — we don't surface to the user from here; the
+  // settings page will fail the layout check first.
+  return { configured: false, detail: `HTTP ${r.status}` };
+}
+
+export async function listGoogleCredentials(): Promise<GoogleCredentialOut[]> {
+  const r = await fetch(
+    `${INTERNAL_API}/api/calendar/google/credentials`,
+    { headers: await withSessionHeaders(), cache: "no-store" },
+  );
+  if (!r.ok) throw new Error(`listGoogleCredentials failed: ${r.status}`);
+  return (await r.json()) as GoogleCredentialOut[];
+}
+
+/** Server-side helper for the /settings/calendar/google/callback
+ * Next.js page: exchanges Google's `code` + `state` for a stored
+ * credential and returns the calendar picker payload. */
+export async function exchangeGoogleCallback(
+  code: string,
+  state: string,
+): Promise<GoogleCallbackResponse> {
+  const params = new URLSearchParams({ code, state });
+  const r = await fetch(
+    `${INTERNAL_API}/api/calendar/google/callback?${params}`,
+    { headers: await withSessionHeaders(), cache: "no-store" },
+  );
+  if (!r.ok) {
+    const body = await r.text();
+    throw new Error(
+      `Google OAuth callback failed (HTTP ${r.status}): ${body}`,
+    );
+  }
+  return (await r.json()) as GoogleCallbackResponse;
 }

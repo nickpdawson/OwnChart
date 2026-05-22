@@ -5,12 +5,24 @@ import type {
   CalendarPrivacyMode,
   CalendarSourceOut,
   CalendarSyncStatus,
+  GoogleConfiguredStatus,
+  GoogleCredentialOut,
 } from "@/lib/api";
 
 type Props = {
   initialSources: CalendarSourceOut[];
+  googleConfigured: GoogleConfiguredStatus;
+  googleCredentials: GoogleCredentialOut[];
   loadError: string | null;
 };
+
+const HISTORY_CHOICES: { value: string; label: string }[] = [
+  { value: "90d", label: "Last 90 days" },
+  { value: "1y", label: "Last 1 year" },
+  { value: "3y", label: "Last 3 years" },
+  { value: "5y", label: "Last 5 years" },
+  { value: "all", label: "All history" },
+];
 
 const PRIVACY_CHOICES: { value: CalendarPrivacyMode; label: string; blurb: string }[] = [
   {
@@ -59,15 +71,18 @@ function syncStatusLabel(
 
 export function CalendarSettingsClient({
   initialSources,
+  googleConfigured,
+  googleCredentials,
   loadError,
 }: Props) {
   const [sources, setSources] = useState<CalendarSourceOut[]>(initialSources);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [googleConnecting, setGoogleConnecting] = useState(false);
 
   async function patchSource(
     id: string,
-    body: Partial<Pick<CalendarSourceOut, "privacy_mode" | "llm_full_details_consent" | "display_name">>,
+    body: Partial<Pick<CalendarSourceOut, "privacy_mode" | "llm_full_details_consent" | "display_name" | "history_window_back">>,
   ) {
     setBusyId(id);
     setError(null);
@@ -149,17 +164,89 @@ export function CalendarSettingsClient({
 
       <section>
         <h2 className="text-xs uppercase tracking-widest text-muted">
+          Google Calendar
+        </h2>
+        {!googleConfigured.configured ? (
+          <ul className="mt-3 space-y-3">
+            <PlaceholderRow
+              adapter="google_calendar"
+              note="Google Calendar is not configured by this OwnChart operator."
+            />
+          </ul>
+        ) : (
+          <div className="mt-3 space-y-3">
+            {googleCredentials.length === 0 ? (
+              <div className="rounded-xl border border-muted/15 bg-surface p-4">
+                <p className="text-sm text-muted">
+                  No Google account connected for this record.
+                </p>
+                <button
+                  type="button"
+                  disabled={googleConnecting}
+                  onClick={connectGoogle}
+                  className="mt-3 rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/10 disabled:opacity-50"
+                >
+                  {googleConnecting ? "Opening Google…" : "Connect Google account"}
+                </button>
+              </div>
+            ) : (
+              <ul className="space-y-3">
+                {googleCredentials.map((cred) => (
+                  <li
+                    key={cred.id}
+                    className="rounded-xl border border-muted/15 bg-surface p-4"
+                  >
+                    <div className="flex flex-wrap items-baseline justify-between gap-3">
+                      <div>
+                        <p className="font-medium">
+                          {cred.google_account_email}
+                        </p>
+                        <p className="mt-1 text-xs text-muted">
+                          Google account · status {cred.status} ·{" "}
+                          {cred.bound_source_count} calendar
+                          {cred.bound_source_count === 1 ? "" : "s"} bound
+                          {cred.last_synced_at && (
+                            <>
+                              {" "}
+                              · last synced{" "}
+                              {formatTimestamp(cred.last_synced_at)}
+                            </>
+                          )}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={googleConnecting}
+                        onClick={connectGoogle}
+                        className="rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/10 disabled:opacity-50"
+                      >
+                        {googleConnecting
+                          ? "Opening Google…"
+                          : "Add more calendars"}
+                      </button>
+                    </div>
+                    <p className="mt-3 text-xs text-muted">
+                      Individual calendar privacy mode, AI exposure,
+                      history window, and disconnect controls live
+                      on each calendar row above under{" "}
+                      <span className="font-medium">Connected</span>.
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="text-xs uppercase tracking-widest text-muted">
           Other adapters
         </h2>
         <p className="mt-1 max-w-2xl text-sm text-muted">
-          Additional calendar adapters are not configured on this OwnChart
-          deployment. Today only the iOS EventKit adapter is wired up.
+          ICS feed adapter is not yet wired up on this OwnChart deployment.
         </p>
         <ul className="mt-3 space-y-3">
-          <PlaceholderRow
-            adapter="google_calendar"
-            note="Google Calendar OAuth adapter is not yet wired up on this OwnChart deployment."
-          />
           <PlaceholderRow
             adapter="ics"
             note="ICS feed adapter is not yet wired up on this OwnChart deployment."
@@ -172,6 +259,32 @@ export function CalendarSettingsClient({
       )}
     </div>
   );
+
+  async function connectGoogle() {
+    setGoogleConnecting(true);
+    setError(null);
+    try {
+      const r = await fetch(`/api/calendar/google/connect-start`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (r.status === 503) {
+        throw new Error(
+          "Google Calendar is not configured by this OwnChart operator.",
+        );
+      }
+      if (!r.ok) {
+        const body = await r.text();
+        throw new Error(body || `HTTP ${r.status}`);
+      }
+      const out = (await r.json()) as { authorize_url: string };
+      // Hand off to Google. The callback page handles the return.
+      window.location.href = out.authorize_url;
+    } catch (e) {
+      setError((e as Error).message);
+      setGoogleConnecting(false);
+    }
+  }
 }
 
 function SourceRow({
@@ -183,7 +296,7 @@ function SourceRow({
   source: CalendarSourceOut;
   busy: boolean;
   onPatch: (
-    body: Partial<Pick<CalendarSourceOut, "privacy_mode" | "llm_full_details_consent" | "display_name">>,
+    body: Partial<Pick<CalendarSourceOut, "privacy_mode" | "llm_full_details_consent" | "display_name" | "history_window_back">>,
   ) => void;
   onDisconnect: () => void;
 }) {
@@ -275,6 +388,30 @@ function SourceRow({
               )}
             </span>
           </div>
+        </dd>
+
+        <dt className="text-muted">History window</dt>
+        <dd>
+          <select
+            disabled={busy}
+            value={source.history_window_back}
+            onChange={(e) =>
+              onPatch({ history_window_back: e.target.value })
+            }
+            className="rounded-md border border-muted/30 bg-surface px-2 py-1 text-sm disabled:opacity-50"
+            aria-label="History window"
+          >
+            {HISTORY_CHOICES.map((h) => (
+              <option key={h.value} value={h.value}>
+                {h.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 max-w-xl text-xs text-muted">
+            Events older than this window are hidden from Ask and
+            OwnChart summaries. Events stay on disk — narrowing is
+            reversible.
+          </p>
         </dd>
 
         <dt className="text-muted">Connected</dt>
