@@ -78,6 +78,128 @@ def test_wearable_pattern_exact_pm_failing_question():
     assert question_is_wearable_pattern(q) is True
 
 
+def test_wearable_pattern_body_signal_data_phrasing():
+    """PM round-3 (2026-05-22) — 'body signal data' is the literal
+    phrasing in the next live verification. Pin it explicitly so
+    it never silently regresses."""
+    q = (
+        "What was my schedule like last week and did it correlate "
+        "to my body signal data?"
+    )
+    assert question_is_wearable_pattern(q) is True
+
+
+# ---------------------------------------------------------------------------
+# Trigger vocab — PM round-3 buckets (generic / source / metric).
+# The retrieval trigger must be metric/source/intent based, not
+# dependent on any single PM taxonomy phrase.
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # Generic intent
+        "summarize my health metrics for the week",
+        "what do my numbers look like",
+        "how are my stats",
+        "show me my vitals last week",
+        "tell me about my body data",
+        "what does my health data show",
+        "my fitness data this month",
+        "my activity data trend",
+        "recovery data last 7 days",
+        "device data this week",
+        "watch data overview",
+        # Body signal phrasings
+        "body signal data over the past 7 days",
+        "my body signals correlation",
+        "physiologic signals during travel",
+        "physiological signals after training",
+        "health signals review",
+    ],
+)
+def test_generic_intent_phrasings_trigger(question):
+    assert question_is_wearable_pattern(question) is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # Sources / devices PM enumerated
+        "my Apple Health data",
+        "Apple Watch summary",
+        "HealthKit numbers",
+        "Whoop recovery",
+        "Garmin data",
+        "Fitbit trend",
+        "my Oura ring data",
+        "Withings weight history",
+        "Omron BP cuff",
+        "Dexcom glucose trend",
+        "Libre data",
+        "freestyle libre last week",
+        "my CGM readings",
+        "continuous glucose monitor data",
+        "blood pressure cuff data",
+        "smart scale",
+        "sleep tracker output",
+    ],
+)
+def test_source_device_phrasings_trigger(question):
+    assert question_is_wearable_pattern(question) is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # Metrics PM enumerated (beyond the original set)
+        "blood pressure trend last month",
+        "my BP this week",
+        "weight change",
+        "body weight history",
+        "glucose readings",
+        "blood sugar after meals",
+        "blood glucose pattern",
+        "SpO2 last week",
+        "oxygen saturation lows",
+        "oxygen overnight",
+        "my VO2 max",
+        "vo2max progression",
+        "distance per day",
+        "active energy yesterday",
+        "basal energy",
+        "exercise time",
+        "stand time",
+        "strain past week",
+    ],
+)
+def test_metric_phrasings_trigger(question):
+    assert question_is_wearable_pattern(question) is True
+
+
+def test_clinical_only_questions_still_do_not_trigger():
+    """The wearable summary should NOT fire for pure clinical
+    questions even though vocabulary has been broadened.
+    Specifically the 'vitals' token IS now a trigger because PM
+    listed it, but a pure clinical question without 'vitals' or
+    any wearable noun must still bypass."""
+    assert question_is_wearable_pattern(
+        "what medications am I on"
+    ) is False
+    assert question_is_wearable_pattern(
+        "tell me about my eye surgery"
+    ) is False
+    assert question_is_wearable_pattern(
+        "list my providers"
+    ) is False
+    assert question_is_wearable_pattern(
+        "when was my last lab work"
+    ) is False
+    assert question_is_wearable_pattern(
+        "what conditions are on my problem list"
+    ) is False
+
+
 @pytest.mark.parametrize(
     "question",
     [
@@ -784,6 +906,107 @@ def test_format_block_renders_deduped_sleep_total_as_hours_minutes():
     assert "duration=8h 0m" in block
     # The pre-dedup multiplied form must NOT appear.
     assert "duration=80h" not in block
+
+
+# ---------------------------------------------------------------------------
+# FU-SLEEP-PLAUSIBILITY (2026-05-22) — even after interval-merge,
+# a value over ~18h is a data-quality condition. Mark
+# implausible_sleep_duration; do not silently cap; keep raw
+# merged minutes visible.
+
+
+def test_sleep_under_18h_is_normal():
+    """Plausible sleep night — 9h merged — renders as normal
+    duration, no quality flag."""
+    iv = _i(0.0, 9.0)
+    b = _PerMetricBucket(intervals=[iv], row_count=1)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    assert s.quality_flag is None
+    assert s.duration_min_sum == pytest.approx(540.0)
+    block = format_wearable_summary_block([s])
+    assert "duration=9h 0m" in block
+    assert "implausible" not in block.lower()
+
+
+def test_sleep_exactly_18h_is_still_normal():
+    """The threshold is STRICTLY greater than 18h (1080 min).
+    Exactly 18h passes as normal — extreme but possible for a
+    sick day."""
+    # 18 segments × 60 min, non-overlapping → 18h exactly
+    intervals = [_i(float(h), float(h + 1)) for h in range(0, 18)]
+    b = _PerMetricBucket(intervals=intervals, row_count=18)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    assert s.duration_min_sum == pytest.approx(1080.0)
+    assert s.quality_flag is None
+
+
+def test_sleep_over_18h_flagged_implausible():
+    """>18h merged → quality_flag set. The raw merged minutes
+    stay visible in duration_min_sum for debugging."""
+    # 19h via two non-overlapping intervals
+    intervals = [
+        _i(0.0, 12.0),   # 12h
+        _i(12.0, 19.0),  # 7h, touches the previous
+    ]
+    b = _PerMetricBucket(intervals=intervals, row_count=2)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    assert s.duration_min_sum == pytest.approx(19 * 60.0)
+    assert s.quality_flag == "implausible_sleep_duration"
+
+
+def test_sleep_implausible_render_surfaces_quality_flag():
+    """The rendered block must mark the day as
+    'quality=implausible_sleep_duration' AND show the raw merged
+    minutes AND include an explanation about overlapping sources.
+    Must NOT render as a normal 'duration=Xh Ym' line."""
+    intervals = [
+        _i(0.0, 12.0),
+        _i(12.0, 23.0),
+    ]
+    b = _PerMetricBucket(intervals=intervals, row_count=10)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    block = format_wearable_summary_block([s])
+    assert "implausible_sleep_duration" in block
+    # Raw merged minutes visible for debugging.
+    assert "merged=23h 0m" in block
+    # Segment count visible (10 input rows).
+    assert "10 segments" in block
+    # Explanation present.
+    assert "overlapping sleep sources or duplicate segments likely" in block
+    # MUST NOT render as a normal sleep duration line.
+    # (The flagged form contains "merged=" not "duration=".)
+    assert "duration=23h 0m" not in block
+
+
+def test_sleep_implausible_keeps_raw_minutes_not_silent_cap():
+    """PM directive: do not silently cap to the threshold.
+    duration_min_sum stays at the actual merged total (e.g. 23h)
+    so an operator debugging upstream ingestion has the real
+    number."""
+    intervals = [_i(0.0, 23.0)]  # 23h merged (single source bug?)
+    b = _PerMetricBucket(intervals=intervals, row_count=1)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    assert s.duration_min_sum == pytest.approx(23 * 60.0)
+    # The cap is 18h but we did NOT clamp.
+    assert s.duration_min_sum > 18 * 60
+
+
+def test_sleep_implausibility_does_not_affect_workout_metric():
+    """The guardrail is sleep-only. Workouts can legitimately
+    sum to 5h+ on a heavy training day — no quality flag."""
+    intervals = [_i(6.0, 7.5), _i(10.0, 12.0), _i(16.0, 17.5)]  # 5h workouts
+    b = _PerMetricBucket(intervals=intervals, row_count=3)
+    s = _summarize_bucket(date(2026, 5, 22), "workout", b)
+    assert s.quality_flag is None
+
+
+def test_implausible_sleep_threshold_constant_is_18h():
+    """Pin the threshold value so a future refactor doesn't
+    silently widen it. 18 * 60 = 1080 minutes."""
+    from ownchart.retrieval.wearable_summary import (
+        _IMPLAUSIBLE_SLEEP_MINUTES,
+    )
+    assert _IMPLAUSIBLE_SLEEP_MINUTES == 18 * 60
 
 
 def test_workout_overlap_merged_too():

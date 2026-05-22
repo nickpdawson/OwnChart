@@ -161,46 +161,61 @@ _DISPLAY_SCALE: dict[str, tuple[float, str]] = {
 
 
 # Vocabulary that should trigger the wearable summary pass.
-# Subset of _FACT_TYPE_SYNONYMS["observation"] — only the truly
-# wearable tokens, not the clinical "observation" / "vital" terms
-# (which would also fire on EHR observation rows).
 #
-# 2026-05-22 evening update: the noun "wearable" itself was
-# missing — a question like "did it correlate to my wearable
-# data?" didn't trigger even though the entire purpose of the
-# summary pass is to answer wearable questions. The PM-caught
-# regression. Added "wearable", "wearables", "healthkit",
-# "health kit", "body data", "device data", "fitness data",
-# "fitness tracker", "apple watch", "watch data", "ring",
-# "whoop", "garmin", "fitbit" so any common device-data noun
-# fires the pass.
+# PM doctrine (2026-05-22 evening, round-3): the trigger should be
+# metric / source / intent based, not dependent on a PM taxonomy
+# phrase. A user is more likely to say "my numbers" or "Apple Health"
+# than "wearable data". Three buckets below — generic intent,
+# source/device names, specific metrics. Adding a new entry to any
+# bucket should not require touching the detector or formatter.
+#
+# Care: vocabulary words that ALSO appear in the EHR clinical
+# observation bucket (e.g. "vitals") are intentionally listed here
+# too. The wearable summary pass JOINs on extraction_method IN
+# ('native_healthkit', 'health_auto_export'), so even when the
+# trigger fires, only wearable rows enter the summary block;
+# clinical observation rows still flow through search_facts to the
+# fact_block. Both can appear in the prompt and that's fine.
 _WEARABLE_TRIGGER_TOKENS: frozenset[str] = frozenset({
-    # Metric nouns
-    "sleep", "sleeping", "slept",
+    # ----- Generic intent / category nouns
+    "wearable", "wearables", "wearable data",
+    "body data", "body signal", "body signals", "body signal data",
+    "health data", "health metrics", "health signals",
+    "physiologic signals", "physiological signals",
+    "fitness", "fitness data", "fitness tracker",
+    "activity data", "recovery data",
+    "device data", "watch data",
+    "my numbers", "my stats", "my metrics",
+    "vitals",  # also lives in observation synonyms — see note above
+    # ----- Sources / devices
+    "healthkit", "health kit", "apple health", "apple watch",
+    "whoop", "garmin", "fitbit", "oura", "withings", "omron",
+    "dexcom", "libre", "freestyle libre",
+    "cgm", "continuous glucose monitor",
+    "bp cuff", "blood pressure cuff", "smart scale",
+    "sleep tracker", "ring",
+    # ----- Sleep
+    "sleep", "sleeping", "slept", "sleep data", "sleep stages",
+    # ----- Cardiac / cardiovascular
     "hrv", "heart rate variability",
-    "heart rate", "resting heart rate", "resting hr", "rhr", "pulse",
+    "heart rate", "resting heart rate", "resting hr", "rhr",
+    "walking heart rate", "pulse",
+    "blood pressure", "bp",
+    # ----- Respiratory / oxygen
+    "spo2", "oxygen", "oxygen saturation",
+    "vo2 max", "vo2max",
+    # ----- Activity / training
     "workout", "workouts", "training", "trained",
     "exercise", "exercises", "exercising",
-    "steps", "step count",
+    "steps", "step count", "stand", "stand time",
     "activity", "activities",
-    "calories", "energy",
-    # Device-data category nouns (PM-caught 2026-05-22 evening +
-    # 2026-05-22 round-2: also "fitness", "recovery", "readiness",
-    # and "apple health" — common natural-language framings).
-    "wearable", "wearables",
-    "wearable data",
-    "healthkit", "health kit",
-    "apple health",
-    "body data",
-    "device data",
-    "fitness", "fitness data", "fitness tracker",
-    "apple watch",
-    "watch data",
-    # Recovery / readiness — Whoop/Oura/Garmin-style framing the
-    # user may bring even without naming the device.
-    "recovery", "readiness",
-    # Common third-party device brand names users may say
-    "whoop", "garmin", "fitbit", "oura",
+    "distance", "walking + running",
+    "calories", "energy", "active energy", "basal energy",
+    "exercise time",
+    "recovery", "readiness", "strain",
+    # ----- Body composition / metabolic
+    "weight", "body weight",
+    "glucose", "blood sugar", "blood glucose",
 })
 
 
@@ -341,6 +356,22 @@ class WearableDaySummary:
     sum: float | None = None
     duration_min_sum: float | None = None
     unit: str | None = None
+    # Data-quality flag (FU-SLEEP-PLAUSIBILITY 2026-05-22).
+    # When set, the summary surfaces the day's data as
+    # "implausible_sleep_duration" rather than passing it through
+    # as a normal sleep figure. Examples: a sleep night whose
+    # merged duration still exceeds the physiologic ceiling
+    # (~18h) after interval-merge — typically caused by sources
+    # whose interval boundaries don't actually overlap (e.g. one
+    # source records UTC-naive while another records a
+    # different-tz wall-clock window).
+    quality_flag: str | None = None
+
+
+# Sleep plausibility ceiling. Even with interval dedupe, anything
+# over this is a data-quality condition, not a real night. Surface
+# it instead of silently capping (PM-required, 2026-05-22).
+_IMPLAUSIBLE_SLEEP_MINUTES: float = 18 * 60  # 1080 minutes / 18h
 
 
 def _summarize_bucket(
@@ -369,6 +400,19 @@ def _summarize_bucket(
         merged = _merge_intervals_minutes(bucket.intervals)
         labeled = sum(bucket.durations_min)
         s.duration_min_sum = merged + labeled
+
+    # Sleep plausibility guardrail (FU-SLEEP-PLAUSIBILITY 2026-05-22).
+    # Even after interval-merge, a value over ~18h/night is a
+    # data-quality condition, not a real night. Surface as a
+    # quality flag rather than silently capping — the raw merged
+    # minutes stay visible in s.duration_min_sum so an operator
+    # can debug without re-running the query.
+    if (
+        metric == "sleep"
+        and s.duration_min_sum is not None
+        and s.duration_min_sum > _IMPLAUSIBLE_SLEEP_MINUTES
+    ):
+        s.quality_flag = "implausible_sleep_duration"
     return s
 
 
@@ -559,7 +603,23 @@ def _summary_value_text(s: WearableDaySummary) -> str:
         # Sleep — render as "duration=7h 12m" from summed segment
         # spans. Skip the sample count; it isn't user-meaningful
         # for sleep (Apple HK emits many short stage rows per night).
-        if s.duration_min_sum is not None and s.duration_min_sum > 0:
+        #
+        # When the day is flagged implausible (merged total >
+        # _IMPLAUSIBLE_SLEEP_MINUTES even after dedupe), do NOT
+        # present the value as a normal sleep figure. Surface the
+        # quality flag + raw merged minutes for debugging, and a
+        # short explanation. The PM directive (2026-05-22) — do not
+        # silently cap; the merged total stays visible so an
+        # operator can trace the upstream ingestion gap.
+        if s.quality_flag == "implausible_sleep_duration":
+            assert s.duration_min_sum is not None  # set together
+            parts.append(
+                f"quality=implausible_sleep_duration "
+                f"(merged={_format_hours_minutes(s.duration_min_sum)} "
+                f"from {s.row_count} segments; "
+                f"overlapping sleep sources or duplicate segments likely)"
+            )
+        elif s.duration_min_sum is not None and s.duration_min_sum > 0:
             parts.append(f"duration={_format_hours_minutes(s.duration_min_sum)}")
         else:
             # No usable timestamps — surface the gap honestly.
