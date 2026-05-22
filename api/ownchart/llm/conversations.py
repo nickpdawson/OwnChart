@@ -35,7 +35,13 @@ from ..retrieval.calendar_life_context import (
     fetch_calendar_life_context,
     format_calendar_context_block,
 )
+from ..retrieval.temporal import parse_temporal_window
 from ..retrieval.topics import search_facts
+from ..retrieval.wearable_summary import (
+    format_wearable_summary_block,
+    question_is_wearable_pattern,
+    summarize_wearable_window,
+)
 from ..settings.registry import effective as setting_effective
 from .anthropic_client import call_with_tool
 from .prompts import get_registry
@@ -688,10 +694,43 @@ async def add_user_message_and_reply(
     # per source; per-source history_window_back clamps how far back
     # events are exposed. Same retrieval contract as /api/ask, just
     # now in the user-facing Chat path.
+    #
+    # FU-TEMPORAL-WINDOW (2026-05-22 evening) — parse the question
+    # for a relative-date phrase ("last week", "this week", "yesterday",
+    # etc.) and narrow the fetch window accordingly. Without this,
+    # the default 30d forward window leaks future events into a
+    # "last week" answer (Nick caught: "last week" question got
+    # MAY 22-29 travel events).
+    temporal = parse_temporal_window(content)
     calendar_items: list[dict[str, Any]] = []
     if conv_record_id is not None:
-        calendar_items = await fetch_calendar_life_context(
-            db, person_record_id=conv_record_id,
+        kwargs: dict[str, Any] = {"person_record_id": conv_record_id}
+        if temporal is not None:
+            kwargs["time_min"] = temporal.time_min
+            kwargs["time_max"] = temporal.time_max
+        calendar_items = await fetch_calendar_life_context(db, **kwargs)
+
+    # FU-ASK-RECENT-WEARABLE-SUMMARY (2026-05-22 evening) — when the
+    # question is wearable-pattern ("sleep", "HRV", "training", ...),
+    # aggregate native_healthkit / health_auto_export rows for the
+    # parsed window (or default trailing 7d) per (day, metric) so
+    # the LLM sees compact daily summaries instead of 600 raw rows.
+    wearable_summaries: list = []
+    wearable_telemetry: dict[str, int] = {}
+    if conv_record_id is not None and question_is_wearable_pattern(content):
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        if temporal is not None:
+            w_min, w_max = temporal.time_min, temporal.time_max
+        else:
+            now_utc = _dt.now(_tz.utc)
+            w_min, w_max = now_utc - _td(days=7), now_utc
+        wearable_summaries, wearable_telemetry = (
+            await summarize_wearable_window(
+                db,
+                person_record_id=conv_record_id,
+                time_min=w_min,
+                time_max=w_max,
+            )
         )
 
     # Load recent history (this conversation only) for prompt context.
@@ -762,10 +801,15 @@ async def add_user_message_and_reply(
     prompt = get_registry().get("general_ask")
     fact_block = _evidence_block(facts, fact_source_meta)
     calendar_block = format_calendar_context_block(calendar_items)
-    evidence_block = fact_block + calendar_block
+    wearable_block = format_wearable_summary_block(
+        wearable_summaries,
+        phrase=temporal.phrase if temporal is not None else None,
+    )
+    evidence_block = fact_block + calendar_block + wearable_block
 
     # Count-only retrieval-shape telemetry per PM directive
-    # (FU-CAL-CONVERSATIONS-INTEGRATION 2026-05-22). Mirrors the
+    # (FU-CAL-CONVERSATIONS-INTEGRATION 2026-05-22 +
+    # FU-ASK-RECENT-WEARABLE-SUMMARY follow-on). Mirrors the
     # ask_retrieval_shape event on /api/ask. NEVER log titles,
     # event ids, fact ids, prompt body, or answer text — only the
     # counts and char-lengths below.
@@ -786,8 +830,16 @@ async def add_user_message_and_reply(
         calendar_item_count=len(calendar_items),
         fact_block_chars=len(fact_block),
         calendar_block_chars=len(calendar_block),
+        wearable_block_chars=len(wearable_block),
+        wearable_summary_rows=len(wearable_summaries),
+        wearable_telemetry=wearable_telemetry,
         context_block_chars=len(evidence_block),
         calendar_block_present=len(calendar_block) > 0,
+        wearable_block_present=len(wearable_block) > 0,
+        temporal_phrase=temporal.phrase if temporal is not None else None,
+        temporal_semantics=(
+            temporal.semantics if temporal is not None else None
+        ),
     )
 
     result = await call_with_tool(

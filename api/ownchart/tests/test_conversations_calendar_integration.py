@@ -45,17 +45,20 @@ def test_conversations_imports_calendar_life_context():
 def test_conversations_fetches_calendar_with_record_scope():
     """The fetch call site MUST pass conv_record_id (the
     person_record_id inherited from the Conversation row), not the
-    user_id or a default. Static-source check on the call args."""
+    user_id or a default. Static-source check — the record id can
+    be passed directly or via a kwargs dict; either way the
+    literal pair must appear in the function source."""
     from ownchart.llm.conversations import add_user_message_and_reply
     src = inspect.getsource(add_user_message_and_reply)
-    # The fetch must run, and it must use the inherited record id.
     assert "fetch_calendar_life_context(" in src
-    after = src.split("fetch_calendar_life_context(", 1)[1]
-    block = after.split(")", 1)[0]
-    assert "person_record_id=conv_record_id" in block, (
-        "add_user_message_and_reply must pass person_record_id="
-        "conv_record_id to fetch_calendar_life_context; the inherited "
-        "record id is the load-bearing scope for the chat path."
+    # Accept either direct kwarg or kwargs-dict form (the FU-TEMPORAL
+    # plumbing builds a kwargs dict to conditionally add time_min/max).
+    assert (
+        "person_record_id=conv_record_id" in src
+        or '"person_record_id": conv_record_id' in src
+    ), (
+        "add_user_message_and_reply must scope the calendar fetch "
+        "to the inherited person_record_id."
     )
 
 
@@ -282,19 +285,14 @@ def test_wearable_synonym_terms_do_not_collide_with_clinical_categories():
 # 4. general_ask v2 prompt — tone rule + calendar acknowledgement
 
 
-def test_general_ask_v2_exists_and_is_latest():
-    """The conversations path uses get_registry().get('general_ask')
-    — the bare id resolves to the latest version. v2 ships with the
-    tone fix; v1 stays callable by id@1 for ModelRun audit."""
+def test_general_ask_v2_exists_for_audit():
+    """v2 must still be callable by id@2 for historical ModelRun
+    audit even after v3 supersedes it. The 'latest is v2' check
+    was rolled forward to test_general_ask_v3_is_latest_version."""
     from ownchart.llm import get_registry
     get_registry.cache_clear()
-    reg = get_registry()
-    v1 = reg.get("general_ask@1")
-    v2 = reg.get("general_ask@2")
-    latest = reg.get("general_ask")
-    assert v1.version == 1
+    v2 = get_registry().get("general_ask@2")
     assert v2.version == 2
-    assert latest.version == 2
 
 
 def test_general_ask_v2_forbids_self_labeled_honesty():
@@ -402,3 +400,268 @@ def test_wearable_terms_only_in_observation_bucket():
                 "remove the duplicate so retrieval routing stays "
                 "deterministic"
             )
+
+
+# ---------------------------------------------------------------------------
+# 6. Temporal window plumbing (FU-TEMPORAL-WINDOW 2026-05-22)
+
+
+def test_conversations_imports_temporal_parser():
+    from ownchart.llm import conversations as mod
+    src = inspect.getsource(mod)
+    assert "from ..retrieval.temporal import parse_temporal_window" in src
+
+
+def test_conversations_calls_parse_temporal_window_on_question():
+    """The chat path must parse the question for a temporal phrase
+    BEFORE calling fetch_calendar_life_context; without this, a
+    'last week' question gets future events from the default
+    forward window."""
+    from ownchart.llm.conversations import add_user_message_and_reply
+    src = inspect.getsource(add_user_message_and_reply)
+    assert "temporal = parse_temporal_window(content)" in src
+    # And the parsed window is passed through to the calendar fetch.
+    assert 'kwargs["time_min"] = temporal.time_min' in src
+    assert 'kwargs["time_max"] = temporal.time_max' in src
+
+
+def test_fetch_calendar_life_context_accepts_time_window_override():
+    """The fetch helper signature must accept time_min/time_max
+    keyword args so callers (chat + ask) can override the default
+    rolling window."""
+    import inspect as _inspect
+    from ownchart.retrieval.calendar_life_context import (
+        fetch_calendar_life_context,
+    )
+    sig = _inspect.signature(fetch_calendar_life_context)
+    assert "time_min" in sig.parameters
+    assert "time_max" in sig.parameters
+    # Defaults to None so existing call sites keep working.
+    assert sig.parameters["time_min"].default is None
+    assert sig.parameters["time_max"].default is None
+
+
+# ---------------------------------------------------------------------------
+# 7. Wearable summary wiring (FU-ASK-RECENT-WEARABLE-SUMMARY)
+
+
+def test_conversations_imports_wearable_summary():
+    from ownchart.llm import conversations as mod
+    src = inspect.getsource(mod)
+    assert "from ..retrieval.wearable_summary import (" in src
+    assert "summarize_wearable_window" in src
+    assert "format_wearable_summary_block" in src
+    assert "question_is_wearable_pattern" in src
+
+
+def test_conversations_triggers_wearable_summary_when_pattern_detected():
+    """When the question is wearable-pattern, the chat path must
+    call summarize_wearable_window with a record-scoped window.
+    Default (no temporal phrase) is trailing 7 days."""
+    from ownchart.llm.conversations import add_user_message_and_reply
+    src = inspect.getsource(add_user_message_and_reply)
+    assert "question_is_wearable_pattern(content)" in src
+    assert "summarize_wearable_window(" in src
+    # Per-record scope.
+    after = src.split("summarize_wearable_window(", 1)[1]
+    block = after.split(")", 1)[0]
+    assert "person_record_id=conv_record_id" in block
+
+
+def test_conversations_appends_wearable_block_to_evidence():
+    """The wearable summary block lands inside the evidence_block
+    string the LLM sees — alongside fact_block and calendar_block."""
+    from ownchart.llm.conversations import add_user_message_and_reply
+    src = inspect.getsource(add_user_message_and_reply)
+    assert "wearable_block = format_wearable_summary_block(" in src
+    assert "evidence_block = fact_block + calendar_block + wearable_block" in src
+
+
+def test_conversations_log_emits_wearable_counts():
+    """Telemetry must include wearable counts so an operator can
+    see whether the summary pass ran without reading the prompt."""
+    from ownchart.llm.conversations import add_user_message_and_reply
+    src = inspect.getsource(add_user_message_and_reply)
+    for field in (
+        "wearable_block_chars=",
+        "wearable_summary_rows=",
+        "wearable_telemetry=",
+        "wearable_block_present=",
+        "temporal_phrase=",
+        "temporal_semantics=",
+    ):
+        assert field in src, (
+            f"conversations_retrieval_shape log missing {field}"
+        )
+
+
+def test_conversations_wearable_telemetry_log_no_phi():
+    """wearable_telemetry dict contains row counts per metric.
+    Verify no field references row values, labels, or identifiers
+    in the log emission."""
+    from ownchart.llm.conversations import add_user_message_and_reply
+    src = inspect.getsource(add_user_message_and_reply)
+    # Find the conversations_retrieval_shape log block.
+    marker = '"conversations_retrieval_shape"'
+    idx = src.find(marker)
+    open_idx = src.rfind("log.info(", 0, idx)
+    depth = 0
+    end = open_idx
+    for i, ch in enumerate(src[open_idx:], start=open_idx):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    log_block = src[open_idx:end]
+    for term in (
+        "wearable_block=wearable_block",  # would echo the block text
+        "wearable_summaries=wearable_summaries",  # would echo the list
+        "rows=rows",
+        "label",
+        "value",
+        ".description",
+    ):
+        assert term not in log_block, (
+            f"conversations_retrieval_shape log contains forbidden "
+            f"term {term!r} that could leak PHI/values"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8. general_ask v3 — hardened tone ban
+#
+# Bug 1 PM-filed regression: v2 banned "Honest answer up front" /
+# "Honestly" but the model still leaked "So the honest read…".
+# v3 bans the bare word "honest" as a self-label entirely and
+# enumerates a broader phrase list.
+
+
+def test_general_ask_v3_is_latest_version():
+    """v3 wins the bare ``general_ask`` lookup (registry picks
+    latest by alphabetical sort). v1 + v2 stay callable by
+    @1 / @2 for historical ModelRun audit."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    reg = get_registry()
+    assert reg.get("general_ask@1").version == 1
+    assert reg.get("general_ask@2").version == 2
+    assert reg.get("general_ask@3").version == 3
+    assert reg.get("general_ask").version == 3
+
+
+# All banned phrases — the bug PM caught ("honest read") plus the
+# existing v2 set plus belt-and-suspenders additions for "honest
+# take", "honest assessment", "I'll be honest", "if I'm honest",
+# "in all honesty".
+_BANNED_TONE_PHRASES = (
+    "Honest answer up front",
+    "Honestly",
+    "To be honest",
+    "Frankly",
+    "The honest truth",
+    "The honest answer",
+    "The honest read",
+    "Honest read",
+    "Honest take",
+    "Honest assessment",
+    "I'll be honest",
+    "If I'm honest",
+    "In all honesty",
+)
+
+
+@pytest.mark.parametrize("phrase", _BANNED_TONE_PHRASES)
+def test_general_ask_v3_enumerates_each_banned_phrase(phrase):
+    """v3 must explicitly list every banned phrase so the model
+    has a concrete pattern to avoid. This pins the regression
+    PM filed when 'honest read' leaked under v2."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@3")
+    system = p.system.lower()
+    assert phrase.lower() in system, (
+        f"general_ask v3 missing banned phrase {phrase!r}; the "
+        f"model needs concrete examples to avoid it"
+    )
+
+
+def test_general_ask_v3_has_positive_replacement_instruction():
+    """v3 must tell the model HOW to express limitations plainly
+    when it would have used a 'honest' framing. Per PM directive:
+    'state limitations plainly.'"""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@3")
+    text = p.system.lower()
+    assert "state limitations plainly" in text, (
+        "general_ask v3 must contain the positive replacement "
+        "instruction 'state limitations plainly'"
+    )
+    # And concrete acceptable forms must be enumerated.
+    assert "retrieved evidence does not include" in text
+
+
+def test_general_ask_v3_does_not_use_be_honest_in_voice_rules():
+    """v1 had 'Be honest when the evidence is missing or thin' in
+    the Voice section; that line PRIMED the model to echo
+    'honestly' back. v3 must replace it with 'State limitations
+    plainly.'"""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@3")
+    text = p.system
+    # The old line is gone.
+    assert "Be honest when the evidence" not in text
+    # The new line is present.
+    assert "State limitations plainly" in text
+
+
+def test_general_ask_v3_preserves_medical_safety_unchanged():
+    """Tone-only change — every medical safety / source authority
+    / medication chronology rule must survive verbatim."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@3")
+    system = p.system
+    assert "treatment instructions" in system
+    assert "dosing changes" in system
+    assert "self-harm" in system
+    assert "safety_response" in system
+    assert "primary_event" in system
+    assert "self_reported_history" in system
+    assert "Earliest tracker log" in system
+    assert "originating prescription" in system
+
+
+def test_active_general_ask_prompt_has_no_banned_phrases_in_voice_rules():
+    """Sanity scan: the active prompt (latest version) must not
+    use any banned phrase as instruction text — only enumerate
+    them under the Tone rules section as forbidden examples.
+    A future edit that accidentally USES 'honestly' in a Voice
+    rule would trip this."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask")
+    text = p.system
+    # Find the Tone rules section — banned phrases are listed
+    # there as examples and that's expected. Outside that section,
+    # banned phrases must not appear.
+    tone_start = text.find("Tone rules")
+    assert tone_start > 0
+    tone_end_marker = "Evidence contract"
+    tone_end = text.find(tone_end_marker, tone_start)
+    assert tone_end > tone_start
+    voice_section_pre_tone = text[:tone_start]
+    rest_after_tone = text[tone_end:]
+    outside_tone = voice_section_pre_tone + rest_after_tone
+    for phrase in ("honestly", "to be honest", "frankly"):
+        # The pattern check is case-insensitive — these words
+        # used as INSTRUCTION text outside the Tone rules section
+        # would prime the model.
+        assert phrase.lower() not in outside_tone.lower(), (
+            f"banned phrase {phrase!r} appears as instruction text "
+            f"outside the Tone rules section — would prime the model"
+        )

@@ -66,6 +66,8 @@ async def fetch_calendar_life_context(
     now: datetime | None = None,
     forward_window: timedelta = _DEFAULT_FORWARD,
     max_events: int = 50,
+    time_min: datetime | None = None,
+    time_max: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Return up to ``max_events`` projected calendar events for the
     active record, clipped by each owning source's
@@ -79,10 +81,23 @@ async def fetch_calendar_life_context(
       - ``source_display_name`` — for the LLM to ground its answer
         ("Apps (Personal)" vs "Work").
       - ``source_id`` — for downstream citation.
+
+    ``time_min`` / ``time_max`` override the default
+    (now - max_history_back, now + forward_window) window when the
+    caller has parsed a relative-date phrase from the question
+    (FU-TEMPORAL-WINDOW, 2026-05-22). Per-source ``history_window_back``
+    still clamps as a privacy/storage backstop even when an
+    explicit window narrows further — narrowing wins.
     """
     now = now or datetime.now(timezone.utc)
-    forward_at = now + forward_window
-    farthest_back = now - max(_HISTORY_DELTAS.values())
+    if time_max is not None:
+        forward_at = time_max
+    else:
+        forward_at = now + forward_window
+    if time_min is not None:
+        farthest_back = time_min
+    else:
+        farthest_back = now - max(_HISTORY_DELTAS.values())
 
     # Join calendar_events → calendar_sources so we get both the per-
     # event payload AND the source's consent + history_window_back +
