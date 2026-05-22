@@ -213,8 +213,17 @@ def test_ask_route_imports_calendar_life_context():
     src = inspect.getsource(ask)
     assert "fetch_calendar_life_context" in src
     assert "format_calendar_context_block" in src
-    assert "context_block = _format_context(facts)" in src
+    # Pin the structural invariant: fact block is concatenated with
+    # the calendar block to form context_block. The exact variable
+    # names matter less than the property that calendar text reaches
+    # context_block.
+    assert "_format_context(facts)" in src
     assert "format_calendar_context_block(" in src
+    # Both component blocks land in the same context_block string
+    # that's passed to the LLM.
+    assert "context_block = " in src
+    # And the LLM call uses context_block in user_vars.
+    assert '"context_block": context_block' in src
 
 
 def test_ask_route_passes_active_record_to_calendar_fetch():
@@ -287,6 +296,97 @@ def test_two_year_old_event_inside_3y_window():
 
 
 # ---------------------------------------------------------------------------
+# Privacy invariant pin (per-PM): source_consent must be derived from
+# CalendarSource.llm_full_details_consent at the JOIN, never hardcoded
+# True. If a refactor flips this to a constant the projector floor
+# becomes unenforceable in Ask and titles can leak under consent=False.
+
+
+def test_fetch_helper_derives_source_consent_from_db_column_not_constant():
+    """Static-source pin: fetch_calendar_life_context must read
+    source_consent from the JOIN'd CalendarSource row, not pass a
+    constant. A refactor that hardcodes ``source_consent=True`` (or
+    True via Boolean default) defeats the LLM exposure floor."""
+    import inspect
+    from ownchart.retrieval import calendar_life_context as mod
+    src = inspect.getsource(mod.fetch_calendar_life_context)
+
+    # The exact form the deployed code uses.
+    assert "source_consent=bool(src.llm_full_details_consent)" in src, (
+        "fetch_calendar_life_context must derive source_consent from "
+        "the JOIN'd CalendarSource.llm_full_details_consent column "
+        "per event; hardcoding the value breaks the projector floor."
+    )
+    # And the bad forms must NOT appear anywhere in the function.
+    forbidden = (
+        "source_consent=True",
+        "source_consent=true",
+        "source_consent = True",
+    )
+    for bad in forbidden:
+        assert bad not in src, (
+            f"fetch_calendar_life_context contains forbidden form {bad!r}; "
+            "source_consent must be DB-derived, never a constant."
+        )
+
+
+def test_fetch_helper_signature_has_no_source_consent_override():
+    """A caller (e.g. routes/ask.py) must NOT be able to pass a
+    source_consent override. The helper's signature must not expose
+    that kwarg, so the only way to control consent is via the
+    CalendarSource row itself."""
+    import inspect
+    from ownchart.retrieval.calendar_life_context import (
+        fetch_calendar_life_context,
+    )
+    sig = inspect.signature(fetch_calendar_life_context)
+    assert "source_consent" not in sig.parameters, (
+        "fetch_calendar_life_context must not expose source_consent "
+        "as a keyword — letting Ask override the per-source flag "
+        "would defeat the privacy floor."
+    )
+
+
+def test_ask_route_does_not_override_source_consent():
+    """Static-source pin on routes/ask.py: the fetch_calendar_
+    life_context call site must NOT pass source_consent in any
+    form. If a future patch adds it (perhaps for debugging) the
+    projector floor becomes overridable per-Ask-request."""
+    import inspect
+    from ownchart.routes.ask import ask as ask_handler
+    src = inspect.getsource(ask_handler)
+    # Isolate the fetch_calendar_life_context call site.
+    after = src.split("fetch_calendar_life_context(", 1)[1]
+    call_args = after.split(")", 1)[0]
+    assert "source_consent" not in call_args, (
+        "routes/ask.py must not pass source_consent to "
+        "fetch_calendar_life_context; consent is per-source, not "
+        "per-Ask-call."
+    )
+
+
+def test_projector_floor_is_the_only_consent_gate():
+    """Sanity: project_event_for_llm's first conditional after
+    composing the base dict is the consent check. A refactor that
+    flips the order (e.g. checks privacy_mode_applied first and
+    leaks fields before the consent check) would defeat the
+    floor. Pin the order via static-source inspection."""
+    import inspect
+    from ownchart.ingest.calendar_eventkit import project_event_for_llm
+    src = inspect.getsource(project_event_for_llm)
+    # The base = {...} dict must come first, then the consent check.
+    base_idx = src.find("base = {")
+    consent_idx = src.find("if not source_consent:")
+    privacy_mode_idx = src.find('privacy_mode_applied == "busy_only"')
+    assert 0 < base_idx < consent_idx < privacy_mode_idx, (
+        f"project_event_for_llm must check source_consent BEFORE "
+        f"branching on privacy_mode_applied. "
+        f"base_idx={base_idx} consent_idx={consent_idx} "
+        f"privacy_mode_idx={privacy_mode_idx}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 7. Pure-function fetch logic — exercises per-source clamp on a
 # fake (CalendarEvent, CalendarSource) tuple stream. We don't spin
 # up a DB; instead, we drive the post-SQL Python path that does the
@@ -338,3 +438,205 @@ def test_fetch_logic_clamps_old_events_per_source():
 
     assert len(survived) == 1
     assert survived[0]["source"] == "3y"
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic logging pins (FU-CAL-ASK-INTEGRATION triage 2026-05-22).
+#
+# PM directive: count-only logging in fetch_calendar_life_context +
+# routes/ask.py. Pin both the presence of the log emission AND the
+# absence of any PHI surface in the log payload (no titles, no event
+# ids, no fact_ids, no description bodies).
+
+
+def test_calendar_life_context_fetch_emits_counts_only_log():
+    """fetch_calendar_life_context must emit one log event per call
+    summarizing the retrieval shape. Pin the event name + the count
+    fields + the absence of PHI fields."""
+    import inspect as _inspect
+    from ownchart.retrieval import calendar_life_context as mod
+    src = _inspect.getsource(mod.fetch_calendar_life_context)
+    # Event name pinned for log-line greps.
+    assert 'log.info(\n        "calendar_life_context_fetch"' in src, (
+        "fetch_calendar_life_context must emit a log event named "
+        "'calendar_life_context_fetch' so an operator can grep counts."
+    )
+    # All five required count fields per PM directive.
+    for field in (
+        "candidate_count",
+        "dropped_history_clamp",
+        "consent_true_count",
+        "consent_false_count",
+        "projection_count",
+    ):
+        assert f"{field}=" in src, (
+            f"calendar_life_context_fetch log missing {field}"
+        )
+
+
+def test_calendar_life_context_log_emits_no_phi():
+    """The diagnostic log MUST NOT include any PHI surface. Pin
+    that no title, label, description, location, or event id
+    appears in the log emission block."""
+    import inspect as _inspect
+    from ownchart.retrieval import calendar_life_context as mod
+    src = _inspect.getsource(mod.fetch_calendar_life_context)
+    # Isolate the log.info(...) block via paren balancing.
+    idx = src.find('log.info(')
+    assert idx > 0
+    depth = 0
+    end = idx
+    for i, ch in enumerate(src[idx:], start=idx):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    log_block = src[idx:end]
+    forbidden = (
+        "title", "label", "description", "location", "notes",
+        "external_id", "calendar_event_id", "ev.id", "src.id",
+        "source_id=",  # NB: source_id IS in the projection but not in the log
+    )
+    for term in forbidden:
+        assert term not in log_block, (
+            f"calendar_life_context_fetch log contains forbidden "
+            f"PHI/identifier term {term!r}: {log_block!r}"
+        )
+
+
+def test_ask_route_emits_retrieval_shape_log():
+    """routes/ask.py must emit an ask_retrieval_shape event so we
+    can read whether the calendar block actually reached the
+    prompt without inspecting the prompt body."""
+    import inspect as _inspect
+    from ownchart.routes.ask import ask as ask_handler
+    src = _inspect.getsource(ask_handler)
+    assert '"ask_retrieval_shape"' in src, (
+        "ask route must emit an 'ask_retrieval_shape' log event"
+    )
+    for field in (
+        "fact_count=",
+        "fact_type_counts=",
+        "extraction_method_counts=",
+        "calendar_item_count=",
+        "fact_block_chars=",
+        "calendar_block_chars=",
+        "context_block_chars=",
+        "calendar_block_present=",
+    ):
+        assert field in src, (
+            f"ask_retrieval_shape log missing {field}"
+        )
+
+
+def test_ask_route_retrieval_shape_log_emits_no_phi():
+    """ask_retrieval_shape MUST not log titles, ids, prompt bodies,
+    or answer text. Pin via static-source scan of the log block."""
+    import inspect as _inspect
+    from ownchart.routes.ask import ask as ask_handler
+    src = _inspect.getsource(ask_handler)
+    # Find the ask_retrieval_shape log call and balance parens.
+    marker = '"ask_retrieval_shape"'
+    idx = src.find(marker)
+    assert idx > 0
+    # Walk back to the opening log.info(
+    open_idx = src.rfind("log.info(", 0, idx)
+    assert open_idx > 0
+    depth = 0
+    end = open_idx
+    for i, ch in enumerate(src[open_idx:], start=open_idx):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    log_block = src[open_idx:end]
+    # Forbidden — any of these would leak PHI / prompt body.
+    for term in (
+        "question",
+        "answer",
+        "context_block=context_block",
+        "prompt",
+        "title",
+        "label",
+        "fact.id",
+        ".label",
+        ".description",
+    ):
+        assert term not in log_block, (
+            f"ask_retrieval_shape log contains forbidden term {term!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tone — anti-"honest answer" prompt pin (FU-ASK-TONE 2026-05-22).
+
+
+def test_ask_query_prompt_v2_exists_and_is_latest():
+    """ask_query.v2.yaml must register in the registry and win
+    the bare 'ask_query' lookup. v1 stays callable by id@1 for
+    historical ModelRun audit."""
+    from ownchart.llm import get_registry
+    # Force a fresh registry load — prompts are file-system loaded
+    # at lru_cache time so a process that started before v2 landed
+    # would not see it. Tests always run fresh.
+    get_registry.cache_clear()
+    reg = get_registry()
+    v1 = reg.get("ask_query@1")
+    v2 = reg.get("ask_query@2")
+    latest = reg.get("ask_query")
+    assert v1.version == 1
+    assert v2.version == 2
+    # The bare id resolves to the latest by file-sort order; v2
+    # comes after v1 alphabetically so v2 wins.
+    assert latest.version == 2
+
+
+def test_ask_query_v2_forbids_self_labeled_honesty():
+    """The v2 prompt's system message must explicitly forbid
+    'Honest answer', 'Honestly', and similar self-labels — this
+    is the user-facing tone rule landed 2026-05-22. Pin the
+    exact forbidden phrases so a future cleanup of the prompt
+    that drops the rule trips this test."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("ask_query@2")
+    system = p.system.lower()
+    # The rule itself must be present.
+    assert "do not preface" in system or "forbidden openings" in system, (
+        "ask_query v2 must contain an explicit anti-self-labeling "
+        "tone rule"
+    )
+    # Each forbidden phrase listed in the prompt so the model has
+    # concrete examples.
+    for phrase in (
+        "honest answer up front",
+        "honestly",
+        "to be honest",
+        "frankly",
+    ):
+        assert phrase.lower() in system, (
+            f"ask_query v2 must enumerate the forbidden phrase "
+            f"{phrase!r} so the model has a concrete example"
+        )
+
+
+def test_ask_query_v2_preserves_medical_safety_disclaimers():
+    """Tone-only change — the medical safety disclaimers (no
+    treatment instructions, self-harm response routing) must NOT
+    be weakened by the v2 edit."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("ask_query@2")
+    system = p.system
+    # Treatment-instructions rule preserved.
+    assert "treatment instructions" in system
+    assert "dosing changes" in system
+    # Self-harm routing preserved.
+    assert "safety_response" in system
+    assert "self-harm" in system

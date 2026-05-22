@@ -28,9 +28,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.logger import get_logger
 from ..ingest.calendar_eventkit import project_event_for_llm
 from ..models.calendar_event import CalendarEvent
 from ..models.calendar_source import CalendarSource
+
+log = get_logger("ownchart.retrieval.calendar_life_context")
 
 
 # Per-source history_window_back → back-window timedelta. ``all``
@@ -103,8 +106,13 @@ async def fetch_calendar_life_context(
         .limit(max_events * 3)
     )
     rows = (await db.execute(stmt)).all()
+    candidate_count = len(rows)
 
     out: list[dict[str, Any]] = []
+    dropped_history_clamp = 0
+    dropped_unknown_window = 0
+    consent_true_count = 0
+    consent_false_count = 0
     for ev, src in rows:
         # Per-source clamp: events older than the source's
         # history_window_back are hidden from Ask even though they're
@@ -113,10 +121,16 @@ async def fetch_calendar_life_context(
             back_delta = history_window_back_to_delta(src.history_window_back)
         except ValueError:
             # Defensive: row has an unexpected window value. Skip.
+            dropped_unknown_window += 1
             continue
         per_source_floor = now - back_delta
         if ev.start_at < per_source_floor:
+            dropped_history_clamp += 1
             continue
+        if src.llm_full_details_consent:
+            consent_true_count += 1
+        else:
+            consent_false_count += 1
         projection = project_event_for_llm(
             start_at=ev.start_at,
             end_at=ev.end_at,
@@ -135,6 +149,24 @@ async def fetch_calendar_life_context(
         })
         if len(out) >= max_events:
             break
+
+    # Count-only diagnostic emission per PM directive
+    # (FU-CAL-ASK-INTEGRATION triage 2026-05-22). NEVER log event
+    # ids, titles, or any PHI surface — only the integer counts +
+    # boolean flags below. The "source_consent_true" / "_false"
+    # counts let an operator see *whether* the floor is engaging
+    # without revealing which events were affected.
+    log.info(
+        "calendar_life_context_fetch",
+        person_record_id=str(person_record_id),
+        candidate_count=candidate_count,
+        dropped_history_clamp=dropped_history_clamp,
+        dropped_unknown_window=dropped_unknown_window,
+        consent_true_count=consent_true_count,
+        consent_false_count=consent_false_count,
+        projection_count=len(out),
+        capped_at_max=len(out) >= max_events,
+    )
     return out
 
 

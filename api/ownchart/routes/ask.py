@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from ..core.auth_context import AuthContext, get_auth_context
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
+from ..core.logger import get_logger
 from ..llm import call_with_tool, get_registry
 from ..models.conversation import Conversation, ConversationMessage
 from ..models.extracted_fact import ExtractedFact
@@ -33,6 +34,7 @@ from ..retrieval.calendar_life_context import (
 from ..retrieval.topics import search_facts
 
 router = APIRouter()
+log = get_logger("ownchart.routes.ask")
 
 
 _SELF_HARM_PATTERNS = [
@@ -147,8 +149,31 @@ async def ask(
     calendar_items = await fetch_calendar_life_context(
         db, person_record_id=ctx.active_record_id,
     )
-    context_block = _format_context(facts) + format_calendar_context_block(
-        calendar_items,
+    fact_block = _format_context(facts)
+    calendar_block = format_calendar_context_block(calendar_items)
+    context_block = fact_block + calendar_block
+
+    # Count-only retrieval-shape diagnostics (FU-CAL-ASK-INTEGRATION +
+    # FU-ASK-RECENT-WEARABLE triage 2026-05-22). PM directive: never
+    # log titles, ids, or any prompt body — only counts and the
+    # boolean "block present" flags.
+    fact_type_counts: dict[str, int] = {}
+    extraction_method_counts: dict[str, int] = {}
+    for f in facts:
+        fact_type_counts[f.fact_type] = fact_type_counts.get(f.fact_type, 0) + 1
+        em = f.extraction_method or "(none)"
+        extraction_method_counts[em] = extraction_method_counts.get(em, 0) + 1
+    log.info(
+        "ask_retrieval_shape",
+        person_record_id=str(ctx.active_record_id),
+        fact_count=len(facts),
+        fact_type_counts=fact_type_counts,
+        extraction_method_counts=extraction_method_counts,
+        calendar_item_count=len(calendar_items),
+        fact_block_chars=len(fact_block),
+        calendar_block_chars=len(calendar_block),
+        context_block_chars=len(context_block),
+        calendar_block_present=len(calendar_block) > 0,
     )
     prompt = get_registry().get("ask_query")
     result = await call_with_tool(
