@@ -94,6 +94,22 @@ export function SettingsClient({
           would dwarf the rest of Settings; keep it on its own. */}
       <section>
         <h2 className="text-xs uppercase tracking-widest text-muted">
+          Records
+        </h2>
+        <p className="mt-1 max-w-2xl text-sm text-muted">
+          The person records you have access to and your role on each.
+          Switch between them or review what each role permits.
+        </p>
+        <a
+          href="/settings/records"
+          className="mt-3 inline-block rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/10"
+        >
+          Manage records →
+        </a>
+      </section>
+
+      <section>
+        <h2 className="text-xs uppercase tracking-widest text-muted">
           AI providers
         </h2>
         <p className="mt-1 max-w-2xl text-sm text-muted">

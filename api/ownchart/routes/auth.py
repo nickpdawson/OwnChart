@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
@@ -53,6 +54,18 @@ class ActiveRecordOut(BaseModel):
     role: str
 
 
+class SetActiveRecordRequest(BaseModel):
+    """Body of `POST /api/auth/set-active-record`. The web record
+    switcher pins the user's choice into the session cookie so
+    subsequent requests resolve to it without re-sending a header.
+
+    iOS does NOT use this endpoint — it sends
+    `X-OwnChart-Person-Record` on every request and never relies
+    on session pinning. See `core/auth_context.py` for the
+    four-step resolution order."""
+    person_record_id: str
+
+
 class MeResponse(BaseModel):
     """Bootstrap response for any signed-in client.
 
@@ -77,8 +90,35 @@ class MeResponse(BaseModel):
     active_record: ActiveRecordOut | None = None
 
 
-def _set_session_cookie(response: Response, user_id: str) -> None:
-    token = sign_session({"uid": user_id})
+def _compose_session_payload(
+    *,
+    user_id: str,
+    active_record_id: str | None = None,
+) -> dict:
+    """Build the dict that gets signed into the session cookie.
+
+    Pulled out as a pure function so the switcher can pin the
+    `{uid, active_record_id}` shape without spinning up FastAPI.
+    The active_record_id key only appears when set — pre-M02 iOS
+    builds and fresh logins keep the legacy `{uid}` shape.
+    """
+    payload: dict = {"uid": user_id}
+    if active_record_id is not None:
+        payload[SESSION_KEY_ACTIVE_RECORD] = active_record_id
+    return payload
+
+
+def _set_session_cookie(
+    response: Response,
+    user_id: str,
+    *,
+    active_record_id: str | None = None,
+) -> None:
+    token = sign_session(
+        _compose_session_payload(
+            user_id=user_id, active_record_id=active_record_id,
+        )
+    )
     response.set_cookie(
         key=_settings.session_cookie_name,
         value=token,
@@ -288,4 +328,138 @@ async def me(
         user=user,
         memberships=memberships,
         active_record_id=resolved,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Web record switcher (Beta 1 Section B — Multi-tenant UI)
+
+
+def _parse_target_record_id(raw: str) -> uuid.UUID | None:
+    """Best-effort UUID parse for the switcher payload. Returns
+    None for any malformed input; the route maps that to a 404
+    so we do not leak server validation rules. Matches the
+    header-parsing pattern in `core/auth_context.py`."""
+    try:
+        return uuid.UUID(str(raw).strip())
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _classify_switch_target(
+    *,
+    target_id: uuid.UUID,
+    active_memberships: list[tuple[Membership, PersonRecord]],
+    has_any_membership_row: bool,
+) -> Literal["ok", "revoked", "not_found"]:
+    """Pure-function classifier for the record-switcher.
+
+    Inputs are two facts the caller has already queried:
+      - `active_memberships` — non-revoked memberships joined to
+        non-disconnected records (the canonical happy-path set).
+      - `has_any_membership_row` — does the membership table have
+        ANY row (revoked or not) for this user+record? Distinguishes
+        "you used to have access, it was revoked" from "you never
+        had access / record doesn't exist".
+
+    Returns one of:
+      - "ok": the target is in the user's active membership set;
+        the switch is allowed.
+      - "revoked": user had a membership row but it's not active
+        (revoked, or the underlying record is disconnected).
+      - "not_found": no membership row at all — either the record
+        does not exist, or it exists but belongs only to other
+        users. Same response to avoid leaking record existence.
+    """
+    for _mem, rec in active_memberships:
+        if rec.id == target_id:
+            return "ok"
+    if has_any_membership_row:
+        return "revoked"
+    return "not_found"
+
+
+@router.post("/set-active-record")
+async def set_active_record(
+    body: SetActiveRecordRequest,
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> MeResponse:
+    """Pin the active person_record for this web session.
+
+    The web record switcher calls this when the user picks a
+    different record from the sidebar dropdown. The endpoint:
+
+      1. Validates that the user has a non-revoked membership on
+         the target record (404 if no membership row exists at all;
+         403 record_access_revoked if a row exists but was revoked
+         or the underlying record is disconnected).
+      2. Re-signs the session cookie with
+         `{uid, active_record_id}` so every subsequent request
+         resolves to the new record without needing the header.
+      3. Returns the updated `MeResponse` so the client can hydrate
+         the new active record immediately without a follow-up
+         /me round-trip.
+
+    Cross-record leak guard: the validation step only consults the
+    caller's own memberships. A user cannot switch to a record
+    they don't have access to, regardless of what id they POST.
+    """
+    target_id = _parse_target_record_id(body.person_record_id)
+    if target_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "record_not_found",
+                "message": "Record not found.",
+            },
+        )
+
+    memberships = await _load_active_memberships(db, user.id)
+
+    # Second query: does ANY membership row (revoked or not) link
+    # this user to this record? Distinguishes revoked-from-never.
+    any_row = (await db.execute(
+        select(Membership)
+        .where(Membership.user_id == user.id)
+        .where(Membership.person_record_id == target_id)
+        .limit(1)
+    )).scalar_one_or_none()
+
+    verdict = _classify_switch_target(
+        target_id=target_id,
+        active_memberships=memberships,
+        has_any_membership_row=any_row is not None,
+    )
+
+    if verdict == "revoked":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "record_access_revoked",
+                "message": (
+                    "Your access to this record has been revoked. "
+                    "Refresh memberships and pick another record."
+                ),
+            },
+        )
+    if verdict == "not_found":
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "record_not_found",
+                "message": "Record not found.",
+            },
+        )
+
+    _set_session_cookie(
+        response,
+        str(user.id),
+        active_record_id=str(target_id),
+    )
+    return _compose_me_response(
+        user=user,
+        memberships=memberships,
+        active_record_id=target_id,
     )

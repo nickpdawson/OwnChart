@@ -3,10 +3,30 @@ import { cookies } from "next/headers";
 const INTERNAL_API =
   process.env.OWNCHART_API_INTERNAL_URL || "http://api:8000";
 
+export type Membership = {
+  person_record_id: string;
+  role: "viewer" | "caregiver" | "owner";
+  display_name: string;
+  is_self: boolean;
+};
+
+export type ActiveRecord = {
+  id: string;
+  display_name: string;
+  role: "viewer" | "caregiver" | "owner";
+};
+
 export type Me = {
   id: string;
   email: string;
   phi_consent_granted: boolean;
+  // M02 additions (PM Decision Note §1). Optional in the type so
+  // pre-M02 backends still parse, but the live backend always
+  // sends them now.
+  is_instance_admin?: boolean;
+  default_person_record_id?: string | null;
+  memberships?: Membership[];
+  active_record?: ActiveRecord | null;
 };
 
 async function withSessionHeaders(): Promise<HeadersInit> {

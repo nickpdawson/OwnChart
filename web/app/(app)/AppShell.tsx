@@ -4,6 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { Route } from "next";
 import { useEffect, useState } from "react";
+import type { ActiveRecord, Membership } from "@/lib/api";
+import { RecordSwitcher } from "./RecordSwitcher";
 
 type NavItem = { href: Route; label: string };
 type TopicLink = { id: string; slug: string; name: string };
@@ -11,10 +13,14 @@ type TopicLink = { id: string; slug: string; name: string };
 export function AppShell({
   nav,
   topics,
+  activeRecord,
+  memberships,
   children,
 }: {
   nav: ReadonlyArray<NavItem>;
   topics: TopicLink[];
+  activeRecord: ActiveRecord | null;
+  memberships: Membership[];
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -82,6 +88,7 @@ export function AppShell({
                 </svg>
               </button>
             </div>
+            <RecordSwitcher active={activeRecord} memberships={memberships} />
             <NavList nav={nav} topics={topics} pathname={pathname} compact={false} />
           </aside>
         </div>
@@ -92,6 +99,7 @@ export function AppShell({
         <Link href="/dashboard" className="font-serif text-xl">
           OwnChart
         </Link>
+        <RecordSwitcher active={activeRecord} memberships={memberships} />
         <NavList nav={nav} topics={topics} pathname={pathname} compact={false} />
       </aside>
 
