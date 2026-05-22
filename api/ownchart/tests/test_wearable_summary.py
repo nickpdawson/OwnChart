@@ -228,12 +228,16 @@ def test_aggregation_sum_metric_uses_sum():
     assert s.sum == 600.0
 
 
-def test_aggregation_sleep_uses_count_with_duration():
+def test_aggregation_sleep_uses_duration_from_timestamps():
+    """PM-corrected 2026-05-22: sleep aggregates via
+    duration_from_timestamps (sum of segment spans), NOT
+    count_with_duration. Sleep labels carry no duration string
+    so the only reliable source is date_end - date_start."""
     b = _PerMetricBucket(
         values=[], durations_min=[420.0], row_count=4,
     )
     s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
-    assert s.aggregation == "count_with_duration"
+    assert s.aggregation == "duration_from_timestamps"
     assert s.row_count == 4
     assert s.duration_min_sum == 420.0
 
@@ -275,7 +279,10 @@ def test_aggregation_handles_zero_rows():
 @pytest.mark.parametrize(
     "metric, expected_agg",
     [
-        ("sleep", "count_with_duration"),
+        # PM-corrected 2026-05-22: sleep now uses
+        # duration_from_timestamps (sum of segment spans), NOT
+        # count_with_duration. HK sleep labels carry no duration.
+        ("sleep", "duration_from_timestamps"),
         ("workout", "count_with_duration"),
         ("heart_rate_variability", "avg"),
         ("resting_heart_rate", "avg"),
@@ -346,17 +353,19 @@ def test_format_wearable_summary_block_includes_phrase_in_header():
     assert "(window: last week)" in block
 
 
-def test_format_wearable_summary_count_only_metrics():
-    """Sleep aggregation without parseable duration → count only;
-    no fake 'avg=None' / 'total=None' leak."""
+def test_format_wearable_summary_sleep_with_no_durations_falls_back():
+    """Sleep aggregation without ANY parseable duration must
+    surface the gap honestly — segments=N (no durations) — not
+    a fake 'avg=None' / 'total=None' leak."""
     items = [
         _summarize_bucket(
             date(2026, 5, 22), "sleep",
-            _PerMetricBucket(row_count=8),
+            _PerMetricBucket(row_count=8),  # no durations_min
         ),
     ]
     block = format_wearable_summary_block(items)
-    assert "count=8" in block
+    assert "segments=8" in block
+    assert "no durations" in block
     assert "None" not in block
 
 
@@ -375,6 +384,208 @@ def test_format_wearable_summary_render_units():
 
 # ---------------------------------------------------------------------------
 # Doctrine pins
+
+
+# ---------------------------------------------------------------------------
+# Sleep duration from timestamps (2026-05-22 evening hotfix —
+# Apple HK sleep labels carry no duration string; the segment span
+# date_end - date_start is the only reliable source).
+
+
+def test_sleep_duration_renders_as_hours_minutes_when_durations_present():
+    """Daily sleep total: sum of segment durations, formatted as
+    'Xh Ym' instead of 'count=N' or '432 min'."""
+    # 7 hours 12 minutes split across 4 segments.
+    durations = [180.0, 120.0, 90.0, 42.0]  # 432 minutes total = 7h 12m
+    b = _PerMetricBucket(durations_min=durations, row_count=4)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    block = format_wearable_summary_block([s])
+    assert "duration=7h 12m" in block
+    # And the sample count is NOT shown for sleep (user-meaningless).
+    assert "count=4" not in block
+    assert "segments" not in block  # the no-duration fallback
+
+
+def test_sleep_zero_duration_falls_back_to_segment_count():
+    """If sleep rows have no parseable timestamps, surface the
+    gap as 'segments=N (no durations)' instead of pretending to
+    have data."""
+    b = _PerMetricBucket(durations_min=[], row_count=5)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    block = format_wearable_summary_block([s])
+    assert "segments=5" in block
+    assert "no durations" in block
+    assert "duration=" not in block  # no fake duration emitted
+
+
+def test_workout_duration_renders_in_hours_minutes_too():
+    """Workout aggregation also gets the hours/minutes treatment
+    via _format_hours_minutes, so 'duration=2h 11m' beats
+    'duration=131 min' on a heavy day."""
+    b = _PerMetricBucket(durations_min=[51.0, 30.0, 50.0], row_count=3)
+    s = _summarize_bucket(date(2026, 5, 22), "workout", b)
+    block = format_wearable_summary_block([s])
+    assert "count=3" in block
+    assert "duration=2h 11m" in block
+
+
+def test_hours_minutes_formatter_edge_cases():
+    """Pure-function sanity on the formatter helper."""
+    from ownchart.retrieval.wearable_summary import _format_hours_minutes
+    assert _format_hours_minutes(0) == "0m"
+    assert _format_hours_minutes(45) == "45m"
+    assert _format_hours_minutes(60) == "1h 0m"
+    assert _format_hours_minutes(125) == "2h 5m"
+    assert _format_hours_minutes(432.4) == "7h 12m"
+    assert _format_hours_minutes(432.6) == "7h 13m"
+    assert _format_hours_minutes(-5) == "0m"  # negative clamped
+
+
+def test_summarize_window_pulls_date_end_in_select():
+    """Static-source pin: the SELECT statement must include
+    ExtractedFact.date_end so sleep + workout duration can be
+    computed from timestamps (Apple HK sleep rows have no
+    duration in the label)."""
+    import inspect
+    from ownchart.retrieval import wearable_summary as mod
+    src = inspect.getsource(mod.summarize_wearable_window)
+    assert "ExtractedFact.date_end" in src, (
+        "summarize_wearable_window must include date_end in the "
+        "SELECT — without it, sleep duration can't be computed."
+    )
+    # And the loop must actually use it.
+    assert "dt_end" in src or "date_end" in src
+    # The (dt_end - dt) computation in minutes must appear.
+    assert "(dt_end - dt).total_seconds() / 60" in src
+
+
+def test_summarize_window_prefers_timestamp_duration_over_label():
+    """Static-source pin: when both date_end and label-parsed
+    duration exist, the timestamp duration wins (more reliable).
+    A label-only fallback covers Auto Export workout summary
+    lines that don't have date_end."""
+    import inspect
+    from ownchart.retrieval import wearable_summary as mod
+    src = inspect.getsource(mod.summarize_wearable_window)
+    # Verify the fallback structure: timestamp first, label as
+    # fallback when timestamp is None.
+    assert "if ts_minutes is None:" in src
+    assert "parse_duration_minutes(label or" in src
+
+
+# ---------------------------------------------------------------------------
+# SpO2 display scaling (Apple HK 0.0–1.0 → 0–100%).
+
+
+def test_oxygen_saturation_avg_scaled_to_percent():
+    """SpO2 stored as 0.0–1.0 fraction; display as 0–100%.
+    avg=0.972 → 'avg=97.2 %'."""
+    b = _PerMetricBucket(
+        values=[0.97, 0.98, 0.96],
+        units=["count"],  # Apple may report unit as 'count' — irrelevant after scale
+        row_count=3,
+    )
+    s = _summarize_bucket(date(2026, 5, 22), "oxygen_saturation", b)
+    block = format_wearable_summary_block([s])
+    # Decimal place is one; value scaled by 100.
+    assert "avg=97.0 %" in block
+    # The raw fractional form must NOT appear.
+    assert "avg=0.97" not in block
+    assert "avg=0.9 " not in block
+
+
+def test_oxygen_saturation_min_max_also_scaled():
+    """When min != max, the formatter emits a 'min=X, max=Y' line
+    too. Both must be scaled to percent."""
+    b = _PerMetricBucket(
+        values=[0.92, 0.99],
+        units=["count"],
+        row_count=2,
+    )
+    s = _summarize_bucket(date(2026, 5, 22), "oxygen_saturation", b)
+    block = format_wearable_summary_block([s])
+    assert "min=92.0" in block
+    assert "max=99.0" in block
+
+
+def test_oxygen_saturation_unit_overridden_to_percent():
+    """Even if the stored unit was "count" (Apple's quirky unit
+    code), the display must show '%' for SpO2."""
+    b = _PerMetricBucket(
+        values=[0.97],
+        units=["count"],
+        row_count=1,
+    )
+    s = _summarize_bucket(date(2026, 5, 22), "oxygen_saturation", b)
+    block = format_wearable_summary_block([s])
+    assert "%" in block
+    # The stored "count" unit must NOT leak into the display.
+    assert "97.0 count" not in block
+
+
+def test_non_spo2_metrics_unaffected_by_scaling():
+    """Display scaling MUST be SpO2-specific (or any metric
+    explicitly added to _DISPLAY_SCALE). HR, HRV, etc. must
+    render as stored."""
+    b = _PerMetricBucket(
+        values=[58.2],
+        units=["ms"],
+        row_count=1,
+    )
+    s = _summarize_bucket(
+        date(2026, 5, 22), "heart_rate_variability", b,
+    )
+    block = format_wearable_summary_block([s])
+    assert "avg=58.2 ms" in block
+    # No accidental scaling.
+    assert "5820" not in block
+
+
+def test_display_scale_map_only_includes_known_fraction_metrics():
+    """Doctrine pin — _DISPLAY_SCALE must list only metrics
+    whose storage form differs from human-readable form. Today
+    that's oxygen_saturation; future additions need explicit
+    justification (otherwise rendering drifts silently)."""
+    from ownchart.retrieval.wearable_summary import _DISPLAY_SCALE
+    # SpO2 is the only entry; factor 100, unit "%".
+    assert _DISPLAY_SCALE == {"oxygen_saturation": (100.0, "%")}
+
+
+# ---------------------------------------------------------------------------
+# PM-failing question end-to-end shape (no DB — pure function chain).
+
+
+def test_format_block_for_pm_failing_question_renders_sleep_hours():
+    """Synthetic input mirrors what the PM-failing live query
+    would render under v2 (no duration) vs the fix. Confirms the
+    user-facing line transitions from 'count=N' to 'duration=Xh Ym'."""
+    items = [
+        _summarize_bucket(
+            date(2026, 5, 22),
+            "sleep",
+            _PerMetricBucket(
+                durations_min=[420.0],  # 7h 0m
+                row_count=8,
+            ),
+        ),
+        _summarize_bucket(
+            date(2026, 5, 22),
+            "oxygen_saturation",
+            _PerMetricBucket(
+                values=[0.97],
+                units=["count"],
+                row_count=1,
+            ),
+        ),
+    ]
+    block = format_wearable_summary_block(items)
+    # Sleep: hours/minutes, NOT raw minute count
+    assert "duration=7h 0m" in block
+    # SpO2: percent, NOT fraction
+    assert "%" in block
+    assert "avg=0.9" not in block
+    # And no leaking "count=" for sleep (which was the v2 bug)
+    assert "sleep: count=8" not in block
 
 
 def test_no_phi_constants_in_module():

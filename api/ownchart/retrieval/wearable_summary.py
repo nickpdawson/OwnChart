@@ -117,12 +117,17 @@ _METRIC_PATTERNS: tuple[tuple[str, str], ...] = (
 
 
 # How each metric_type aggregates per day.
-#   ``avg``    — mean of the parsed scalar values
-#   ``sum``    — sum of values (cumulative)
-#   ``count``  — count of rows (no value parse)
-#   ``count_with_duration`` — count of rows + sum of "X min" if parseable
+#   ``avg``                       — mean of the parsed scalar values
+#   ``sum``                       — sum of values (cumulative)
+#   ``count``                     — count of rows (no value parse)
+#   ``count_with_duration``       — count of rows + sum of "X min"
+#   ``duration_from_timestamps``  — sum of (date_end - date_start) per
+#                                   segment in minutes. Apple HK
+#                                   sleep rows carry no value/unit in
+#                                   the label; the segment span is
+#                                   the only reliable duration source.
 _METRIC_AGGREGATION: dict[str, str] = {
-    "sleep": "count_with_duration",
+    "sleep": "duration_from_timestamps",
     "workout": "count_with_duration",
     "heart_rate_variability": "avg",
     "resting_heart_rate": "avg",
@@ -138,6 +143,20 @@ _METRIC_AGGREGATION: dict[str, str] = {
     "flights": "sum",
     "stand_time": "sum",
     "exercise_time": "sum",
+}
+
+
+# Display scaling — for metrics where Apple HK stores a fraction
+# (0.0–1.0) but the human-readable form is a percent. The summary
+# formatter multiplies the aggregate by the factor and overrides
+# the unit display. Add metrics here, NOT in the aggregation step —
+# the underlying min/max/avg arithmetic must stay in source units
+# so downstream consumers can re-derive.
+_DISPLAY_SCALE: dict[str, tuple[float, str]] = {
+    # Apple HK SpO2 is stored as a 0.0–1.0 fraction; users read it
+    # as a percent. avg=0.972 → avg=97.2%. Caught 2026-05-22 from
+    # the model's own "0.9% is a unit-display quirk" callout.
+    "oxygen_saturation": (100.0, "%"),
 }
 
 
@@ -327,10 +346,18 @@ async def summarize_wearable_window(
     # Pull all wearable rows in window. Cap is generous because we
     # collapse to one row per (day, metric); the raw count can be
     # high without exploding the prompt.
+    #
+    # date_end is included so duration-from-timestamps works for
+    # sleep + workout segments — Apple HK sleep rows have no
+    # duration string in the label, so (date_end - date_start) is
+    # the only reliable source. Caught 2026-05-22 PM after the
+    # model surfaced "sleep: count=N rows are sleep-sample counts,
+    # not hours".
     stmt = (
         select(
             ExtractedFact.label,
             ExtractedFact.date_start,
+            ExtractedFact.date_end,
             ExtractedFact.extraction_method,
         )
         .where(ExtractedFact.person_record_id == person_record_id)
@@ -349,7 +376,7 @@ async def summarize_wearable_window(
     rows_per_metric_in: dict[str, int] = defaultdict(int)
     rows_classified_total = 0
     rows_unclassified = 0
-    for label, dt, _em in rows:
+    for label, dt, dt_end, _em in rows:
         if dt is None:
             continue
         metric = classify_metric(label or "")
@@ -368,11 +395,20 @@ async def summarize_wearable_window(
             b.values.append(v)
             if unit:
                 b.units.append(unit)
-        # Workout label durations live inline ("X min").
-        if metric in ("workout", "sleep"):
-            d = parse_duration_minutes(label or "")
-            if d is not None:
-                b.durations_min.append(d)
+        # Duration: prefer (date_end - date_start) — works for
+        # Apple HK sleep + workout segments where the label has
+        # no duration. Fall back to label parsing ("X min") for
+        # Auto Export workout summary lines.
+        if metric in ("sleep", "workout"):
+            ts_minutes: float | None = None
+            if dt_end is not None:
+                delta = (dt_end - dt).total_seconds() / 60.0
+                if delta > 0:
+                    ts_minutes = delta
+            if ts_minutes is None:
+                ts_minutes = parse_duration_minutes(label or "")
+            if ts_minutes is not None:
+                b.durations_min.append(ts_minutes)
 
     summaries = [
         _summarize_bucket(day, metric, b)
@@ -432,21 +468,60 @@ def format_wearable_summary_block(
     return "\n".join(lines)
 
 
+def _format_hours_minutes(total_minutes: float) -> str:
+    """Render a minute count as "Xh Ym" — friendlier than "432 min"
+    for sleep totals. Rounds to nearest minute."""
+    total = max(0, int(round(total_minutes)))
+    h, m = divmod(total, 60)
+    if h == 0:
+        return f"{m}m"
+    return f"{h}h {m}m"
+
+
+def _scaled_value_and_unit(
+    metric: str, value: float, unit: str | None,
+) -> tuple[float, str]:
+    """Apply ``_DISPLAY_SCALE`` for metrics whose storage form is
+    not the human-readable form (Apple HK SpO2: 0.0–1.0 → 0–100%).
+    Returns the scaled value + display unit (which may override
+    the stored unit string)."""
+    scale = _DISPLAY_SCALE.get(metric)
+    if scale is None:
+        return value, (unit or "")
+    factor, display_unit = scale
+    return value * factor, display_unit
+
+
 def _summary_value_text(s: WearableDaySummary) -> str:
     """One-line text for a (day, metric) summary. Picks the
     aggregation that matches the metric's semantics."""
-    unit = f" {s.unit}" if s.unit else ""
     parts: list[str] = []
     if s.aggregation == "avg" and s.avg is not None:
-        parts.append(f"avg={s.avg:.1f}{unit}")
+        avg_v, unit = _scaled_value_and_unit(s.metric, s.avg, s.unit)
+        unit_s = f" {unit}" if unit else ""
+        parts.append(f"avg={avg_v:.1f}{unit_s}")
         if s.min is not None and s.max is not None and s.min != s.max:
-            parts.append(f"min={s.min:.1f}, max={s.max:.1f}")
+            min_v, _ = _scaled_value_and_unit(s.metric, s.min, s.unit)
+            max_v, _ = _scaled_value_and_unit(s.metric, s.max, s.unit)
+            parts.append(f"min={min_v:.1f}, max={max_v:.1f}")
     elif s.aggregation == "sum" and s.sum is not None:
-        parts.append(f"total={s.sum:.1f}{unit}")
+        sum_v, unit = _scaled_value_and_unit(s.metric, s.sum, s.unit)
+        unit_s = f" {unit}" if unit else ""
+        parts.append(f"total={sum_v:.1f}{unit_s}")
+    elif s.aggregation == "duration_from_timestamps":
+        # Sleep — render as "duration=7h 12m" from summed segment
+        # spans. Skip the sample count; it isn't user-meaningful
+        # for sleep (Apple HK emits many short stage rows per night).
+        if s.duration_min_sum is not None and s.duration_min_sum > 0:
+            parts.append(f"duration={_format_hours_minutes(s.duration_min_sum)}")
+        else:
+            # No usable timestamps — surface the gap honestly.
+            parts.append(f"segments={s.row_count} (no durations)")
     elif s.aggregation == "count_with_duration":
         if s.duration_min_sum is not None and s.duration_min_sum > 0:
             parts.append(
-                f"count={s.row_count}, duration={s.duration_min_sum:.0f} min"
+                f"count={s.row_count}, "
+                f"duration={_format_hours_minutes(s.duration_min_sum)}"
             )
         else:
             parts.append(f"count={s.row_count}")
