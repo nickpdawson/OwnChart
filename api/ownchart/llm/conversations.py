@@ -31,6 +31,10 @@ from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
 from ..models.topic import Topic
 from ..models.user import User
+from ..retrieval.calendar_life_context import (
+    fetch_calendar_life_context,
+    format_calendar_context_block,
+)
 from ..retrieval.topics import search_facts
 from ..settings.registry import effective as setting_effective
 from .anthropic_client import call_with_tool
@@ -678,6 +682,18 @@ async def add_user_message_and_reply(
         person_record_id=conv_record_id,
     )
 
+    # FU-CAL-CONVERSATIONS-INTEGRATION (2026-05-22) — pull projected
+    # calendar life-context for this record. The projector enforces
+    # the two-elevation floor (privacy_mode + llm_full_details_consent)
+    # per source; per-source history_window_back clamps how far back
+    # events are exposed. Same retrieval contract as /api/ask, just
+    # now in the user-facing Chat path.
+    calendar_items: list[dict[str, Any]] = []
+    if conv_record_id is not None:
+        calendar_items = await fetch_calendar_life_context(
+            db, person_record_id=conv_record_id,
+        )
+
     # Load recent history (this conversation only) for prompt context.
     history = list((await db.execute(
         select(ConversationMessage)
@@ -744,6 +760,36 @@ async def add_user_message_and_reply(
                     "tier_rank": _TIER_RANK.get(tier, 4),
                 }
     prompt = get_registry().get("general_ask")
+    fact_block = _evidence_block(facts, fact_source_meta)
+    calendar_block = format_calendar_context_block(calendar_items)
+    evidence_block = fact_block + calendar_block
+
+    # Count-only retrieval-shape telemetry per PM directive
+    # (FU-CAL-CONVERSATIONS-INTEGRATION 2026-05-22). Mirrors the
+    # ask_retrieval_shape event on /api/ask. NEVER log titles,
+    # event ids, fact ids, prompt body, or answer text — only the
+    # counts and char-lengths below.
+    fact_type_counts: dict[str, int] = {}
+    extraction_method_counts: dict[str, int] = {}
+    for f in facts:
+        fact_type_counts[f.fact_type] = fact_type_counts.get(f.fact_type, 0) + 1
+        em = f.extraction_method or "(none)"
+        extraction_method_counts[em] = extraction_method_counts.get(em, 0) + 1
+    log.info(
+        "conversations_retrieval_shape",
+        conversation_id=str(conv.id),
+        person_record_id=str(conv_record_id) if conv_record_id else None,
+        scope_type=(conv.scope or {}).get("type"),
+        fact_count=len(facts),
+        fact_type_counts=fact_type_counts,
+        extraction_method_counts=extraction_method_counts,
+        calendar_item_count=len(calendar_items),
+        fact_block_chars=len(fact_block),
+        calendar_block_chars=len(calendar_block),
+        context_block_chars=len(evidence_block),
+        calendar_block_present=len(calendar_block) > 0,
+    )
+
     result = await call_with_tool(
         db,
         user,
@@ -752,7 +798,7 @@ async def add_user_message_and_reply(
             "question": content,
             "scope_description": _scope_description(conv.scope or {}),
             "evidence_count": str(len(facts)),
-            "evidence_block": _evidence_block(facts, fact_source_meta),
+            "evidence_block": evidence_block,
             "history_block": _history_block(history),
             "needs_title": "yes" if not conv.title else "no",
         },

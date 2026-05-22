@@ -253,7 +253,28 @@ _FACT_TYPE_SYNONYMS: dict[str, tuple[str, ...]] = {
         "encounter", "encounters",
         "visit", "visits",
     ),
-    "observation": ("observation", "observations", "vital", "vitals"),
+    "observation": (
+        "observation", "observations", "vital", "vitals",
+        # FU-ASK-RECENT-WEARABLE (Beta 1, 2026-05-22) — wearable
+        # vocabulary expansion. The user's natural language for
+        # HealthKit / Auto Export data is "sleep", "HRV", "heart rate",
+        # "training", "workout", "steps", "activity" — none of these
+        # mapped to the observation bucket before, so a wearable
+        # question never triggered the category-aware pass and
+        # search_facts returned 40 random samples ordered by trigram
+        # similarity. Phrases-with-spaces ("resting heart rate",
+        # "heart rate variability") are matched whole by the
+        # multi-word branch of _detect_category_fact_types.
+        "sleep", "sleeping", "slept",
+        "hrv", "heart rate variability",
+        "heart rate", "resting heart rate", "resting hr",
+        "rhr", "pulse",
+        "workout", "workouts", "training", "trained", "exercise",
+        "exercises", "exercising",
+        "steps", "step count",
+        "activity", "activities",
+        "calories", "energy",
+    ),
     "lab_result": ("lab", "labs", "labwork", "bloodwork"),
     "imaging_study": ("imaging", "scan", "scans", "xray", "x-ray", "mri", "ct"),
     "provider_relationship": ("provider", "providers", "doctor", "doctors", "physician", "physicians"),
