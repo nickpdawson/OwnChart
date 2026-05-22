@@ -289,7 +289,44 @@ class _PerMetricBucket:
     values: list[float] = field(default_factory=list)
     units: list[str] = field(default_factory=list)
     durations_min: list[float] = field(default_factory=list)
+    # (start, end) intervals for sleep + workout duration dedupe
+    # (FU-SLEEP-SEGMENT-DEDUP 2026-05-22). Apple HK writes the same
+    # sleep night from multiple sources (Apple Watch + iPhone +
+    # third-party apps) AND splits each night into InBed vs
+    # AsleepCore/REM/Deep stage rows that all overlap. Summing
+    # raw durations gave 220h "sleep" per day. Intervals are
+    # union-merged before summing so the same wall-clock window
+    # only counts once.
+    intervals: list[tuple[datetime, datetime]] = field(default_factory=list)
     row_count: int = 0
+
+
+def _merge_intervals_minutes(
+    intervals: list[tuple[datetime, datetime]],
+) -> float:
+    """Union-merge overlapping or touching intervals; return total
+    minutes of the merged set.
+
+    Sort by start time, sweep forward, extending the current span
+    whenever the next interval starts at-or-before the current
+    end. Identical intervals collapse to one. Touching intervals
+    (``cur_end == next_start``) merge — Apple HK occasionally
+    splits a sleep window at the second boundary.
+    """
+    if not intervals:
+        return 0.0
+    sorted_iv = sorted(intervals, key=lambda x: x[0])
+    cur_start, cur_end = sorted_iv[0]
+    merged_seconds = 0.0
+    for start, end in sorted_iv[1:]:
+        if start <= cur_end:
+            if end > cur_end:
+                cur_end = end
+        else:
+            merged_seconds += (cur_end - cur_start).total_seconds()
+            cur_start, cur_end = start, end
+    merged_seconds += (cur_end - cur_start).total_seconds()
+    return merged_seconds / 60.0
 
 
 @dataclass
@@ -323,8 +360,15 @@ def _summarize_bucket(
         s.max = max(bucket.values)
         s.avg = sum(bucket.values) / len(bucket.values)
         s.sum = sum(bucket.values)
-    if bucket.durations_min:
-        s.duration_min_sum = sum(bucket.durations_min)
+    # Duration: union-merge timestamp intervals (sleep + workout),
+    # then add any label-only durations (Auto Export workout
+    # summary lines). When neither source is populated,
+    # duration_min_sum stays None and the renderer falls back to
+    # row count.
+    if bucket.intervals or bucket.durations_min:
+        merged = _merge_intervals_minutes(bucket.intervals)
+        labeled = sum(bucket.durations_min)
+        s.duration_min_sum = merged + labeled
     return s
 
 
@@ -397,18 +441,21 @@ async def summarize_wearable_window(
                 b.units.append(unit)
         # Duration: prefer (date_end - date_start) — works for
         # Apple HK sleep + workout segments where the label has
-        # no duration. Fall back to label parsing ("X min") for
-        # Auto Export workout summary lines.
+        # no duration. Collect as (start, end) intervals so the
+        # summary step can union-merge them (FU-SLEEP-SEGMENT-DEDUP):
+        # the same sleep night can be written by 4+ sources × 4
+        # sleep stages and summing raw durations multiplies the
+        # real span. Fall back to label parsing ("X min") for
+        # Auto Export workout summary lines that don't have a
+        # date_end — those are already non-overlapping per-session
+        # summaries and are added as-is.
         if metric in ("sleep", "workout"):
-            ts_minutes: float | None = None
-            if dt_end is not None:
-                delta = (dt_end - dt).total_seconds() / 60.0
-                if delta > 0:
-                    ts_minutes = delta
-            if ts_minutes is None:
+            if dt_end is not None and dt_end > dt:
+                b.intervals.append((dt, dt_end))
+            else:
                 ts_minutes = parse_duration_minutes(label or "")
-            if ts_minutes is not None:
-                b.durations_min.append(ts_minutes)
+                if ts_minutes is not None:
+                    b.durations_min.append(ts_minutes)
 
     summaries = [
         _summarize_bucket(day, metric, b)

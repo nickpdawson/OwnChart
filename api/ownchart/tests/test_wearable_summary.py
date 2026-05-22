@@ -18,6 +18,7 @@ import pytest
 from ownchart.retrieval.wearable_summary import (
     WearableDaySummary,
     _METRIC_AGGREGATION,
+    _merge_intervals_minutes,
     _summarize_bucket,
     _PerMetricBucket,
     classify_metric,
@@ -454,23 +455,29 @@ def test_summarize_window_pulls_date_end_in_select():
         "SELECT — without it, sleep duration can't be computed."
     )
     # And the loop must actually use it.
-    assert "dt_end" in src or "date_end" in src
-    # The (dt_end - dt) computation in minutes must appear.
-    assert "(dt_end - dt).total_seconds() / 60" in src
+    assert "dt_end" in src
+    # FU-SLEEP-SEGMENT-DEDUP: timestamps become (start, end)
+    # intervals that the summary step merges before summing.
+    assert "b.intervals.append((dt, dt_end))" in src
 
 
-def test_summarize_window_prefers_timestamp_duration_over_label():
+def test_summarize_window_prefers_timestamp_intervals_over_label():
     """Static-source pin: when both date_end and label-parsed
-    duration exist, the timestamp duration wins (more reliable).
-    A label-only fallback covers Auto Export workout summary
-    lines that don't have date_end."""
+    duration exist, the timestamp interval wins (more reliable
+    AND mergeable). A label-only fallback covers Auto Export
+    workout summary lines that don't have date_end."""
     import inspect
     from ownchart.retrieval import wearable_summary as mod
     src = inspect.getsource(mod.summarize_wearable_window)
-    # Verify the fallback structure: timestamp first, label as
-    # fallback when timestamp is None.
-    assert "if ts_minutes is None:" in src
-    assert "parse_duration_minutes(label or" in src
+    # Timestamp branch comes first.
+    ts_idx = src.find("b.intervals.append((dt, dt_end))")
+    assert ts_idx > 0, "interval append branch missing"
+    # Label fallback comes after, inside an else.
+    fallback_idx = src.find("parse_duration_minutes(label or", ts_idx)
+    assert fallback_idx > ts_idx, (
+        "label-parsed fallback must come AFTER the interval branch "
+        "so timestamps win when available."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +593,247 @@ def test_format_block_for_pm_failing_question_renders_sleep_hours():
     assert "avg=0.9" not in block
     # And no leaking "count=" for sleep (which was the v2 bug)
     assert "sleep: count=8" not in block
+
+
+# ---------------------------------------------------------------------------
+# FU-SLEEP-SEGMENT-DEDUP (2026-05-22): interval union-merge.
+#
+# Apple HK writes sleep nights from multiple sources (Apple Watch +
+# iPhone Health + third-party apps) AND splits each night into
+# InBed vs AsleepCore/REM/Deep stage rows. Summing raw durations
+# multiplies the real span (live test surfaced 220h sleep/day).
+#
+# Interval-merge collapses overlapping or touching intervals so
+# the same wall-clock window only counts once.
+
+
+_T = datetime  # alias for brevity in fixtures
+_TZ = timezone.utc
+
+
+def _i(start_hr: float, end_hr: float, day: date | None = None) -> tuple[_T, _T]:
+    """Build an interval on a fixed test date for readability.
+    Hours can be fractional (e.g. 1.5 = 1:30). Uses 2026-05-20."""
+    day = day or date(2026, 5, 20)
+    def _hr_to_dt(hr: float) -> _T:
+        h = int(hr)
+        m = int(round((hr - h) * 60))
+        return _T(day.year, day.month, day.day, h, m, tzinfo=_TZ)
+    return _hr_to_dt(start_hr), _hr_to_dt(end_hr)
+
+
+# Empty / single-interval baselines
+
+
+def test_merge_empty_list_returns_zero():
+    assert _merge_intervals_minutes([]) == 0.0
+
+
+def test_merge_single_interval_returns_its_length():
+    iv = _i(0.0, 1.0)  # 1 hour
+    assert _merge_intervals_minutes([iv]) == pytest.approx(60.0)
+
+
+# PM-required: identical intervals count once
+
+
+def test_identical_intervals_collapse_to_one():
+    """Same interval reported by 2 sources must not double-count."""
+    a = _i(0.0, 8.0)  # 12am-8am
+    b = _i(0.0, 8.0)  # exact duplicate
+    assert _merge_intervals_minutes([a, b]) == pytest.approx(480.0)
+
+
+def test_three_identical_intervals_still_one_span():
+    iv = _i(1.0, 2.0)
+    assert _merge_intervals_minutes([iv, iv, iv]) == pytest.approx(60.0)
+
+
+# PM-required: overlapping intervals merge
+
+
+def test_overlapping_intervals_merge_to_union_span():
+    """12am-3am + 2am-5am → union 12am-5am = 5h, not 6h."""
+    a = _i(0.0, 3.0)  # 3h
+    b = _i(2.0, 5.0)  # 3h, overlaps the last hour
+    out = _merge_intervals_minutes([a, b])
+    assert out == pytest.approx(300.0)  # 5h
+
+
+def test_partially_overlapping_three_segments():
+    """0-2, 1-3, 2-4 → union 0-4 = 4h, not 6h."""
+    out = _merge_intervals_minutes([_i(0.0, 2.0), _i(1.0, 3.0), _i(2.0, 4.0)])
+    assert out == pytest.approx(240.0)
+
+
+def test_touching_intervals_merge():
+    """End-to-end touching intervals (1:00-2:00, 2:00-3:00) treat
+    as one span (2h). Apple HK occasionally splits a window at
+    the second boundary."""
+    out = _merge_intervals_minutes([_i(1.0, 2.0), _i(2.0, 3.0)])
+    assert out == pytest.approx(120.0)
+
+
+# PM-required: non-overlapping intervals sum
+
+
+def test_non_overlapping_intervals_sum():
+    """Separate naps don't merge."""
+    out = _merge_intervals_minutes([_i(1.0, 2.0), _i(4.0, 5.0)])
+    assert out == pytest.approx(120.0)  # 2h total, two distinct hours
+
+
+def test_unsorted_input_is_sorted_internally():
+    """Caller can pass intervals in any order; merge sorts by
+    start time before sweeping."""
+    out = _merge_intervals_minutes([_i(4.0, 5.0), _i(0.0, 2.0), _i(1.0, 3.0)])
+    # Union = 0-3 + 4-5 = 4h
+    assert out == pytest.approx(240.0)
+
+
+# PM-required: synthetic multi-source/stage night still yields
+# the real sleep span, not a multiplied duration.
+
+
+def test_realistic_sleep_night_with_4_sources_x_4_stages():
+    """Synthetic night that mirrors the live bug:
+       - Apple Watch writes InBed + AsleepCore + AsleepREM + AsleepDeep
+       - iPhone Health writes the same 4 stages
+       - AutoSleep writes one full-night InBed
+       - SleepCycle writes one full-night InBed
+       Total = ~10 rows × full overlap. Real night = 8h (0am-8am).
+    """
+    full = _i(0.0, 8.0)
+    core1 = _i(0.0, 2.0)
+    rem1 = _i(2.0, 3.0)
+    deep1 = _i(3.0, 4.5)
+    core2 = _i(4.5, 8.0)
+    intervals = [
+        # Apple Watch
+        full, core1, rem1, deep1, core2,
+        # iPhone Health (identical breakdown)
+        full, core1, rem1, deep1, core2,
+        # AutoSleep + SleepCycle (full-night)
+        full, full,
+    ]
+    out = _merge_intervals_minutes(intervals)
+    assert out == pytest.approx(480.0)  # exactly 8h, not 8h × multiplier
+
+
+# PM-required: plausible single-source case remains unchanged.
+
+
+def test_single_source_segmented_night_sums_to_actual_span():
+    """One source breaks the night into 5 non-overlapping stages
+    that tile the full 7.5h window. Merged span = 7.5h."""
+    intervals = [
+        _i(0.0, 1.5),   # AsleepCore
+        _i(1.5, 2.5),   # REM
+        _i(2.5, 4.0),   # Deep
+        _i(4.0, 5.0),   # REM
+        _i(5.0, 7.5),   # Core
+    ]
+    out = _merge_intervals_minutes(intervals)
+    assert out == pytest.approx(450.0)  # 7.5h
+
+
+def test_single_full_night_interval_unchanged():
+    """Simplest case — one row, one interval. Merge passes
+    through unchanged."""
+    out = _merge_intervals_minutes([_i(22.0, 23.0)])
+    assert out == pytest.approx(60.0)
+
+
+# End-to-end through _summarize_bucket + formatter
+
+
+def test_summarize_bucket_consumes_intervals_for_sleep():
+    """_summarize_bucket combines bucket.intervals (merged) +
+    bucket.durations_min (label-parsed sum) into duration_min_sum."""
+    iv1 = _i(0.0, 8.0)
+    iv2 = _i(0.0, 8.0)  # duplicate, must dedupe
+    b = _PerMetricBucket(intervals=[iv1, iv2], row_count=2)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    # Merged = 8h = 480m
+    assert s.duration_min_sum == pytest.approx(480.0)
+
+
+def test_summarize_bucket_combines_intervals_and_label_durations():
+    """When BOTH intervals and label durations are present (the
+    cross-adapter case — native HK intervals + Auto Export label
+    minutes), the total = merged_intervals_minutes + sum(label)."""
+    iv = _i(0.0, 1.0)  # 60 min via timestamp
+    b = _PerMetricBucket(
+        intervals=[iv],
+        durations_min=[15.0],  # 15-min walk from Auto Export label
+        row_count=2,
+    )
+    s = _summarize_bucket(date(2026, 5, 22), "workout", b)
+    assert s.duration_min_sum == pytest.approx(75.0)
+
+
+def test_format_block_renders_deduped_sleep_total_as_hours_minutes():
+    """End-to-end: PM-failing live shape — 220h "sleep" caused by
+    overlap stacking. After dedupe, a synthetic 8h night with
+    10× overlap should render as 'duration=8h 0m', not '80h 0m'."""
+    full = _i(0.0, 8.0)
+    intervals = [full] * 10  # 10 copies — 4 sources × 2.5 stage avg
+    b = _PerMetricBucket(intervals=intervals, row_count=10)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    block = format_wearable_summary_block([s])
+    assert "duration=8h 0m" in block
+    # The pre-dedup multiplied form must NOT appear.
+    assert "duration=80h" not in block
+
+
+def test_workout_overlap_merged_too():
+    """PM scope: same interval-merge applies to workout. If
+    Strava and Apple Watch both log the same 6am-7am run, merge
+    to 1h not 2h."""
+    strava = _i(6.0, 7.0)
+    watch = _i(6.0 + 1/60.0, 6.0 + 58/60.0)  # 6:01-6:58
+    b = _PerMetricBucket(intervals=[strava, watch], row_count=2)
+    s = _summarize_bucket(date(2026, 5, 22), "workout", b)
+    # Merged = 6:00-7:00 = 60 min (strava envelopes watch).
+    assert s.duration_min_sum == pytest.approx(60.0)
+
+
+def test_non_overlapping_workouts_sum_normally():
+    """Two distinct workouts on the same day shouldn't dedupe."""
+    morning = _i(6.0, 7.0)
+    evening = _i(17.0, 18.0)
+    b = _PerMetricBucket(intervals=[morning, evening], row_count=2)
+    s = _summarize_bucket(date(2026, 5, 22), "workout", b)
+    assert s.duration_min_sum == pytest.approx(120.0)
+
+
+def test_summarize_bucket_no_intervals_no_durations_stays_none():
+    """Bucket with no timestamps and no label durations →
+    duration_min_sum stays None (renderer falls back to sample
+    count). Defensive — confirms we don't accidentally emit 0.0
+    as a fake duration."""
+    b = _PerMetricBucket(row_count=3)
+    s = _summarize_bucket(date(2026, 5, 22), "sleep", b)
+    assert s.duration_min_sum is None
+
+
+# Static-source pin on the loop
+
+
+def test_summarize_window_appends_intervals_not_durations_for_sleep_workout():
+    """Static-source check: when both date_start and date_end are
+    present for a sleep/workout row, the loop must append to
+    b.intervals (so the dedupe step can merge), NOT to
+    b.durations_min (which is summed unchanged)."""
+    import inspect
+    from ownchart.retrieval import wearable_summary as mod
+    src = inspect.getsource(mod.summarize_wearable_window)
+    assert "b.intervals.append((dt, dt_end))" in src, (
+        "summarize_wearable_window must collect intervals (not "
+        "pre-summed durations) for sleep/workout when timestamps "
+        "exist — otherwise the dedupe in _summarize_bucket can't "
+        "merge them."
+    )
 
 
 def test_no_phi_constants_in_module():
