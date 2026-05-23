@@ -157,32 +157,58 @@ _DEFAULT_SCOPES = "openid fhirUser launch/patient patient/*.read"
 # ModMed (Modernizing Medicine) — Drummond-certified FHIR R4 API,
 # per-practice fhir_base (NOT multi-tenant like Athena), specialty-
 # focused EHR (derm / ophth / ortho / GI / plastic / urology).
+# Standalone Patient launch flow with PKCE S256.
 #
-# PM correction 2026-05-23 (pre-first-connect): ModMed's portal docs
-# specify SMART v2-shape scopes for Standalone Patient launch, NOT
-# the v1 shape we'd used by default. Two specific corrections:
+# Scope shape (PM correction 2026-05-23 round 2, after reading the
+# actual ModMed FHIR vendor dashboard for Nick's registered app):
 #
-#   1. `online_access` (not `offline_access`). ModMed's published
-#      Standalone Patient scope list uses online_access. Refresh
-#      tokens (offline_access) are only available if the ModMed app
-#      registration has been explicitly approved for them — Nick's
-#      hasn't, so requesting offline_access pre-approval would fail
-#      access_denied at the authorize endpoint.
+#   - SMART v2 `.rs` permission suffix (read+search), NOT v1 `.read`.
+#   - `online_access` (not `offline_access`). Refresh tokens require
+#     a separate ModMed app-registration approval Nick's app doesn't
+#     have today; requesting `offline_access` returns access_denied.
+#   - **Explicit 23-resource list, NOT the wildcard `patient/*.rs`.**
+#     ModMed's vendor dashboard shows 23 individual `patient/<R>.rs`
+#     scopes selected on Nick's app. The wildcard form is not in the
+#     selected set — most EHRs that approve explicit resources
+#     reject the wildcard even when individual resources are granted.
+#   - **No `fhirUser`.** Available on the ModMed app catalog but
+#     NOT selected on this registration; requesting it pre-approval
+#     would fail `invalid_scope`. (Standalone Patient launch returns
+#     a `patient` context anyway — fhirUser would only add WHO is
+#     signed in, useful but optional.)
 #
-#   2. `patient/*.rs` (not `patient/*.read`). The `.rs` (read+search)
-#      v2 permission suffix is what ModMed's portal documents;
-#      `patient/*.read` is the v1 form which ModMed appears to reject.
+# If ModMed adds approval for fhirUser / offline_access later,
+# update this constant and the matching tests in test_modmed_scopes.
 #
-# Drummond cert constrains them to USCDI shapes, so this scope set
-# should cover Patient, Condition, AllergyIntolerance, MedicationRequest,
-# Observation, Procedure, Immunization, DiagnosticReport, DocumentReference,
-# CarePlan, CareTeam, Goal, Encounter, Provenance.
-#
-# If first-connect still fails with the v2 wildcard, swap to an
-# explicit per-resource list (`patient/Condition.rs patient/Procedure.rs ...`)
-# and update memory/reference_modmed_smart_quirks.md.
-_MODMED_DEFAULT_SCOPES = (
-    "openid fhirUser launch/patient online_access patient/*.rs"
+# memory/reference_modmed_smart_quirks.md is the long-form notes.
+_MODMED_PATIENT_RESOURCES: tuple[str, ...] = (
+    "Patient",
+    "AllergyIntolerance",
+    "CarePlan",
+    "CareTeam",
+    "Condition",
+    "Coverage",
+    "Device",
+    "DiagnosticReport",
+    "DocumentReference",
+    "Encounter",
+    "Goal",
+    "Immunization",
+    "Location",
+    "Medication",
+    "MedicationRequest",
+    "Observation",
+    "Organization",
+    "Practitioner",
+    "PractitionerRole",
+    "Procedure",
+    "Provenance",
+    "RelatedPerson",
+    "ServiceRequest",
+)
+_MODMED_DEFAULT_SCOPES = " ".join(
+    ["launch/patient", "online_access", "openid"]
+    + [f"patient/{r}.rs" for r in _MODMED_PATIENT_RESOURCES]
 )
 
 

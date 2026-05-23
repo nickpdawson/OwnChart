@@ -1,51 +1,86 @@
 """ModMed SMART scope contract — PM correction 2026-05-23.
 
-Pre-first-connect: ModMed's portal docs specify SMART v2-shape
-scopes for the Standalone Patient launch flow, not the v1 shape we
-had been defaulting to. This file pins the corrected scope string
-so a future refactor that "tidies" the scope list back to v1 fails
-CI before reaching ModMed's authorize endpoint and getting silently
-rejected.
+The scope string is built from the actual ModMed FHIR vendor
+dashboard for Nick's registered app: 3 standard scopes + 23
+explicit `patient/<Resource>.rs` resource scopes. ModMed's
+registration does NOT include the wildcard `patient/*.rs`, does
+NOT include `offline_access`, and does NOT include `fhirUser` on
+this app's selected-scopes list.
 
-Pinned invariants (per PM directive):
-  - online_access is the refresh-token scope ModMed actually grants
-    on Standalone Patient. offline_access is gated separately and
-    only valid when explicitly approved on the app registration.
-  - patient/*.rs is the v2 wildcard. patient/*.read is the v1 form
-    which ModMed rejects.
+Pinned invariants:
+  - online_access is the refresh-token-bearing scope ModMed grants
+    on Standalone Patient (offline_access requires separate
+    approval Nick's app doesn't have).
+  - SMART v2 `.rs` permission suffix, never v1 `.read`.
+  - Explicit resource list — wildcard rejected by ModMed even when
+    individual resources are selected.
+  - fhirUser absent — not selected on the registration, requesting
+    it pre-approval would fail invalid_scope.
 """
 
 from __future__ import annotations
 
 from ownchart.routes.connectors import (
     _MODMED_DEFAULT_SCOPES,
+    _MODMED_PATIENT_RESOURCES,
     _default_scopes_for,
 )
 
 
 def test_modmed_default_scopes_includes_online_access():
-    """ModMed grants refresh tokens via `online_access` on Standalone
-    Patient. `offline_access` is only valid when separately approved."""
     assert "online_access" in _default_scopes_for("modmed")
 
 
-def test_modmed_default_scopes_includes_v2_wildcard_rs():
-    """ModMed's portal docs publish `patient/*.rs` (v2 read+search),
-    not `patient/*.read` (v1). Pinning so we don't silently regress."""
-    assert "patient/*.rs" in _default_scopes_for("modmed")
+def test_modmed_default_scopes_includes_explicit_patient_resources():
+    """Every resource on Nick's ModMed registration must appear as
+    `patient/<R>.rs` in the scope string. Pinning the full list so
+    a future tidy-up that drops one silently fails CI."""
+    scopes = _default_scopes_for("modmed")
+    for r in _MODMED_PATIENT_RESOURCES:
+        assert f"patient/{r}.rs" in scopes, f"missing patient/{r}.rs"
+
+
+def test_modmed_default_scopes_includes_core_uscdi_resources():
+    """Direct read of the most-likely-needed clinical resources, so a
+    future refactor that reorders the tuple still passes through the
+    USCDI must-haves."""
+    scopes = _default_scopes_for("modmed")
+    for r in (
+        "Patient",
+        "Condition",
+        "AllergyIntolerance",
+        "MedicationRequest",
+        "Observation",
+        "Procedure",
+        "Immunization",
+        "DiagnosticReport",
+        "DocumentReference",
+        "Encounter",
+    ):
+        assert f"patient/{r}.rs" in scopes
+
+
+def test_modmed_default_scopes_does_not_include_wildcard():
+    """ModMed's vendor dashboard for Nick's app shows 23 explicit
+    resource scopes selected, not the wildcard. Most EHRs that
+    approve explicit resources reject the wildcard form."""
+    assert "patient/*.rs" not in _default_scopes_for("modmed")
+    assert "patient/*.read" not in _default_scopes_for("modmed")
 
 
 def test_modmed_default_scopes_does_not_include_offline_access():
-    """Counter-pin: `offline_access` would fail the authorize-endpoint
-    check unless the ModMed app is explicitly approved for refresh
-    tokens. Nick's app is not, so omitting it is correct as default."""
+    """offline_access requires separate ModMed app approval Nick's
+    app doesn't have today — would fail access_denied. online_access
+    is the documented Standalone Patient default."""
     assert "offline_access" not in _default_scopes_for("modmed")
 
 
-def test_modmed_default_scopes_does_not_include_v1_wildcard_read():
-    """Counter-pin: `patient/*.read` is the v1 form ModMed rejects.
-    A revert to that string would silently break first-connect."""
-    assert "patient/*.read" not in _default_scopes_for("modmed")
+def test_modmed_default_scopes_does_not_include_fhirUser():
+    """fhirUser is available on the ModMed app catalog but NOT
+    selected on Nick's registration; requesting it pre-approval
+    would fail invalid_scope at the authorize endpoint. Standalone
+    Patient launch returns the patient context regardless."""
+    assert "fhirUser" not in _default_scopes_for("modmed")
 
 
 def test_modmed_scope_constant_matches_resolved_string():
@@ -55,31 +90,33 @@ def test_modmed_scope_constant_matches_resolved_string():
     assert _default_scopes_for("modmed") == _MODMED_DEFAULT_SCOPES
 
 
-def test_modmed_scope_string_carries_openid_and_fhirUser_and_launch():
-    """The non-ModMed-specific SMART preamble must still be present
-    so the authorize request is a well-formed SMART-on-FHIR launch."""
+def test_modmed_scope_string_carries_openid_and_launch_patient():
+    """The SMART preamble must still be present so the authorize
+    request is a well-formed SMART-on-FHIR launch — even after we
+    dropped fhirUser, the launch context scope is required."""
     scopes = _default_scopes_for("modmed")
     assert "openid" in scopes
-    assert "fhirUser" in scopes
     assert "launch/patient" in scopes
+
+
+def test_modmed_resource_list_has_23_entries():
+    """Lock the count so a future PR can't silently add a non-
+    approved resource (which would fail the OAuth request)."""
+    assert len(_MODMED_PATIENT_RESOURCES) == 23
+    # And no duplicates.
+    assert len(set(_MODMED_PATIENT_RESOURCES)) == 23
 
 
 def test_other_vendors_unchanged_by_modmed_correction():
     """Pin that fixing ModMed didn't smear v2 syntax onto Epic's or
-    Athena's default scope strings — those have their own correct
-    shapes and must remain untouched."""
+    the default vendor scope strings."""
     epic = _default_scopes_for("epic")
-    # Epic uses v1 patient/*.read; .rs would be wrong for Epic.
     assert "patient/*.read" in epic
     assert "patient/*.rs" not in epic
 
 
 def test_unknown_vendor_falls_back_to_default():
-    """Belt: a brand-new vendor string flows through the default
-    (v1 wildcard read) branch, not the ModMed branch. Pinning so a
-    future case-label tweak doesn't accidentally make ModMed the
-    default."""
     out = _default_scopes_for("brand-new-ehr")
     assert "patient/*.read" in out
     assert "patient/*.rs" not in out
-    assert "offline_access" not in out  # default has no offline_access
+    assert "offline_access" not in out
