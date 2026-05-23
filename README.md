@@ -301,6 +301,14 @@ Documentation is organized into a few layers. Some of these are works in progres
 - [Risk, privacy, legal — plain English](./user-docs/RISK.md) — read this before pointing OwnChart at your own record.
 - [What's shipped vs roadmap](./user-docs/SHIPPED_VS_ROADMAP.md) — the honesty contract for the alpha.
 
+**Inviting family or caregivers.** OwnChart is closed to public
+signup by default. The first registration becomes the instance
+owner; after that, the owner issues single-use invites from
+**Settings → Records → New invite**. Invites scope to either an
+existing record (with a role) or "create their own new record"
+(invitee becomes owner). The owner copies the invite URL out of
+band — no outbound email in 0.1. See [INSTALL.md](./user-docs/INSTALL.md) → "First user / admin" for the full flow.
+
 ### Installing and operating
 
 - [Install guide](./user-docs/INSTALL.md) — Docker Compose deploy, env vars, reverse proxy, first-run setup.

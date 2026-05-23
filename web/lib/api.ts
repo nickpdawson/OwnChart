@@ -29,6 +29,76 @@ export type Me = {
   active_record?: ActiveRecord | null;
 };
 
+// --- FU-MULTITENANT-ONBOARDING -------------------------------------------
+
+export type InviteStatus = "active" | "accepted" | "revoked" | "expired";
+export type InviteTargetKind = "existing_record" | "new_record";
+export type InviteRole = "viewer" | "caregiver" | "owner";
+export type InviteExpiryPreset = "24h" | "7d" | "30d";
+
+export type Invitation = {
+  id: string;
+  invited_email: string;
+  target_kind: InviteTargetKind;
+  target_person_record_id: string | null;
+  target_display_name: string | null;
+  proposed_record_name: string | null;
+  role: InviteRole;
+  expires_at: string;
+  created_at: string;
+  created_by_user_id: string;
+  accepted_at: string | null;
+  accepted_by_user_id: string | null;
+  revoked_at: string | null;
+  status: InviteStatus;
+};
+
+export type InvitationCreated = Invitation & {
+  invite_url: string;
+};
+
+export type InvitationPreview = {
+  invited_email: string;
+  role: InviteRole;
+  target_kind: InviteTargetKind;
+  target_display_name: string | null;
+  proposed_record_name: string | null;
+  expires_at: string;
+};
+
+export async function listInvitations(): Promise<Invitation[]> {
+  const r = await fetch(`${INTERNAL_API}/api/invitations`, {
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (r.status === 401 || r.status === 403) return [];
+  if (!r.ok) throw new Error(`listInvitations failed: ${r.status}`);
+  return (await r.json()) as Invitation[];
+}
+
+export async function getInvitationPreview(
+  token: string,
+): Promise<{ preview: InvitationPreview | null; error: string | null }> {
+  // Server-side fetch from the /invite/[token] page. No auth.
+  const r = await fetch(
+    `${INTERNAL_API}/api/invitations/preview?token=${encodeURIComponent(token)}`,
+    { cache: "no-store" },
+  );
+  if (r.status === 410) {
+    return {
+      preview: null,
+      error: "This invite is no longer available.",
+    };
+  }
+  if (!r.ok) {
+    return {
+      preview: null,
+      error: `Could not load invite (${r.status}).`,
+    };
+  }
+  return { preview: (await r.json()) as InvitationPreview, error: null };
+}
+
 async function withSessionHeaders(): Promise<HeadersInit> {
   const cookieStore = await cookies();
   const token = cookieStore.get("ownchart_session")?.value;

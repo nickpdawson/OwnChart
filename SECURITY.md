@@ -92,6 +92,20 @@ Role model (schema present in v0.1b; full UI maturing through 0.1b → 0.2):
 
 Bootstrap behavior is configurable: by default the first user to create an account on a fresh instance becomes Owner; self-registration can then be closed.
 
+### Invitations (FU-MULTITENANT-ONBOARDING)
+
+Once the first owner exists, new accounts require an invitation by default. The invite system has the following posture:
+
+- Tokens are 256 bits of randomness from `secrets.token_urlsafe(32)`.
+- The raw token is delivered once in the create response (the `invite_url`). Closing the modal makes it unrecoverable; the DB stores only an Argon2id hash and an 8-character indexed lookup prefix.
+- Tokens are single-use. The register route takes a row-level lock (`SELECT ... FOR UPDATE`) before marking `accepted_at`, so a double-accept race fails cleanly on the second caller.
+- Tokens expire on a per-invite TTL (24h / 7d / 30d, owner picks at creation).
+- Registration with an invite token requires the registration email to match the invite's `invited_email` case-insensitively — the invite binds the new account to a specific address.
+- Terminal states (expired / accepted / revoked) all return the same 410 shape on the preview endpoint so an attacker cannot probe which terminal state an invite is in.
+- Three audit events are emitted for the lifecycle: `invitation_created`, `invitation_accepted`, `membership_created`. The invited email is SHA-256-hashed in the audit row so the audit log is not a PII-mining surface on its own.
+- There is no outbound email in 0.1. The owner copies the URL out of band (SMS, encrypted message, in person). If you need email delivery you can wire SMTP yourself, but it's not part of the supported posture.
+- There is no invite-creation rate limit. Self-hosted single-owner posture; revisit when shared-instance posture lands.
+
 Roadmap:
 
 - **Authentik OIDC** as the recommended SSO front-end for households or caregivers.

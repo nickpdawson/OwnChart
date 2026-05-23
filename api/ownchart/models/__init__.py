@@ -24,6 +24,7 @@ from .healthkit_cursor import HealthKitCursor
 from .extracted_fact import ExtractedFact
 from .extraction_job import ExtractionJob
 from .health_event import HealthEvent
+from .invitation import Invitation
 from .llm_provider_credential import LlmProviderCredential
 from .membership import MEMBERSHIP_ROLES, Membership, role_rank
 from .model_run import ModelRun
@@ -69,6 +70,7 @@ __all__ = [
     "ExtractedFact",
     "ExtractionJob",
     "HealthEvent",
+    "Invitation",
     "LlmProviderCredential",
     "MEMBERSHIP_ROLES",
     "Membership",

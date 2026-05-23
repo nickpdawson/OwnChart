@@ -36,6 +36,7 @@ from .routes import (
     healthkit_sync,
     home_ai,
     instance,
+    invitations,
     llm_providers,
     sensemaking,
     settings as settings_routes,
@@ -245,3 +246,4 @@ app.include_router(episodes.router, prefix="/api/episodes", tags=["episodes"])
 app.include_router(home_ai.router, prefix="/api/home", tags=["home"])
 app.include_router(llm_providers.router, prefix="/api/llm-providers", tags=["llm-providers"])
 app.include_router(instance.router, prefix="/api/instance", tags=["instance"])
+app.include_router(invitations.router, prefix="/api/invitations", tags=["invitations"])

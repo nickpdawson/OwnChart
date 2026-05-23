@@ -99,6 +99,7 @@ Optional but useful:
 | `OWNCHART_EPIC_CLIENT_ID` / `_SANDBOX` | Set once you register an Epic patient app. See [EPIC_SETUP.md](./EPIC_SETUP.md). |
 | `OWNCHART_ATHENA_CLIENT_ID` | See [ATHENA_SETUP.md](./ATHENA_SETUP.md). |
 | `OWNCHART_MODMED_CLIENT_ID` | See [MODMED_SETUP.md](./MODMED_SETUP.md). |
+| `OWNCHART_GOOGLE_CALENDAR_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` | Enable Google Calendar connect in Settings -> Calendar. This uses a Google OAuth Web client, not an API key. See [GOOGLE_CALENDAR_SETUP.md](./GOOGLE_CALENDAR_SETUP.md). |
 | `OWNCHART_DEBUG_PAYLOADS=true` | Logs raw request/response bodies. PHI risk. Off by default. |
 
 ### 3. Set the public base URL
@@ -147,24 +148,55 @@ curl -sf http://localhost:8800/healthz && echo OK
 
 ### 5. First user / admin
 
-OwnChart is single-tenant in 0.1 alpha. The account-creation gate is
-**"is there any user yet?"**:
+OwnChart's account-creation model is **"first registration creates
+the owner; everyone else needs an invite."**
 
 - On a fresh DB, the **first** call to `POST /api/auth/register`
-  succeeds and creates the owner.
+  succeeds. The new account is flagged `is_instance_admin=true`,
+  gets a personal `person_record`, and an `owner` membership on
+  that record — all in one transaction. This is the bootstrap
+  path; no invite token is required and no separate setup step.
 - Once any user exists, subsequent calls to `/api/auth/register`
-  return **403**. There is no toggle to reopen registration in
-  alpha. The `auth.allow_self_registration` field in
-  `config.example.yaml` is parsed but is **not read by any route**
-  today — leave it at its default.
-- Multi-user / caregiver / household support lands in Beta 1; see
-  [SHIPPED_VS_ROADMAP.md](./SHIPPED_VS_ROADMAP.md).
+  **require a valid `invite_token`** by default. Public
+  unauthenticated registration is closed unless an operator
+  explicitly opens it (see the `auth.allow_self_registration`
+  knob below).
+- Invites are owner-issued, single-use, hashed at rest, and
+  expire after 24h / 7d / 30d (owner picks at creation). The
+  owner copies the resulting URL out of band — there is no
+  outbound email in 0.1.
+- Multi-user / caregiver / household support is the Beta 1 use
+  case the invite flow enables. See [SHIPPED_VS_ROADMAP.md](./SHIPPED_VS_ROADMAP.md).
 
-To create the owner account, visit
+**Creating the owner account.** Visit
 `https://your-instance.example.com/` (or `http://localhost:8800/`
 for a no-proxy local trial — set `OWNCHART_ENV=dev` in `.env` so the
 session cookie isn't `Secure`-required) and click **First time?
 Create the owner account.** on the login page.
+
+**Inviting a family member or caregiver.** Sign in as an owner.
+Go to **Settings → Records → New invite**. Pick:
+
+- the invitee's email,
+- whether they're joining one of your existing records (you pick
+  the role — viewer / caregiver / owner) or creating their own
+  new record (role locks to owner),
+- expiry window.
+
+Click **Create invite** and you'll see a URL once. Copy it and
+send it to the invitee. The URL contains a token that lets them
+register one new account against this invite; after that, the
+URL stops working. If they don't accept before the expiry, or
+you change your mind, click **Revoke** on the invite row.
+
+**`auth.allow_self_registration`.** This knob in `config.yaml`
+controls behavior of `POST /api/auth/register` calls that arrive
+**without** an invite token, after the first user exists. Default
+is `false`: register without invite → 403. If you set it to
+`true`, registration without an invite is accepted, but the new
+user lands with zero memberships and is routed to a "no records —
+ask admin" recovery screen. That's almost never what you want; the
+invite flow above is the recommended path.
 
 ## Backups
 

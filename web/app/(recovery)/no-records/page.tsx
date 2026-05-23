@@ -35,13 +35,14 @@ export default async function NoRecordsPage() {
         <p className="font-medium text-ink">How to get access</p>
         <ul className="mt-2 list-disc pl-5 text-muted">
           <li>
-            If you self-host this instance, sign in as the admin and
-            create a record for yourself, or restore the original
-            membership.
+            Ask the person who hosts this OwnChart instance to send you
+            an invite. They can issue one from Settings → Records →
+            New invite.
           </li>
           <li>
-            If someone else hosts this instance for you, ask them to
-            re-add your account to the record.
+            If you self-host this instance, sign in as the admin and
+            either invite yourself onto a record or restore the
+            original owner membership.
           </li>
         </ul>
       </div>

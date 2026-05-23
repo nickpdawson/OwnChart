@@ -1,4 +1,6 @@
+import hashlib
 import uuid
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -17,7 +19,15 @@ from ..core.auth_context import (
 )
 from ..core.config import get_settings
 from ..core.db import get_session
-from ..core.security import hash_password, sign_session, verify_password
+from ..core.security import (
+    hash_password,
+    invite_lookup_prefix,
+    sign_session,
+    verify_invite_token,
+    verify_password,
+)
+from ..models.audit_event import AuditEvent
+from ..models.invitation import Invitation
 from ..models.membership import Membership
 from ..models.person_record import PersonRecord
 from ..models.user import User
@@ -32,7 +42,28 @@ class LoginRequest(BaseModel):
 
 
 class RegisterRequest(LoginRequest):
-    pass
+    """Self-registration request.
+
+    FU-MULTITENANT-ONBOARDING (2026-05-22) adds `invite_token`.
+    The register route now accepts in three modes:
+
+      1. **First user, fresh DB.** No invite token needed. New user
+         is flagged `is_instance_admin=True`, given a self
+         `person_record`, and an owner `Membership` — all in one
+         transaction.
+      2. **Subsequent user with a valid invite token.** Token is
+         consumed (`accepted_at` set under row-level lock); the
+         resulting `Membership` is created with the invite's role,
+         and a new `person_record` is created if the invite was a
+         "create your own record" shape.
+      3. **Subsequent user, no invite, `allow_self_registration=true`.**
+         User is created with zero memberships and routed to
+         `/no-records` recovery by the web layout.
+
+    Anything else (subsequent user, no invite, default
+    `allow_self_registration=false`) is 403.
+    """
+    invite_token: str | None = None
 
 
 class MembershipOut(BaseModel):
@@ -140,6 +171,146 @@ from ..core.device_auth import (  # noqa: E402
 )
 
 
+async def _bootstrap_self_record(
+    db: AsyncSession, user: User, *, granted_via: str,
+) -> PersonRecord:
+    """Create the user's self-record + owner membership inline.
+
+    Mirrors migration 0028's logic at runtime. Used for the
+    first-user path AND for the invite-accept path when
+    `create_new_record=True`. The two-phase nature here (set
+    `user.default_person_record_id` AFTER the record exists) is
+    needed because the FK constraint requires the record row
+    first.
+    """
+    now = datetime.now(timezone.utc)
+    record = PersonRecord(
+        display_name="Me",
+        is_self=True,
+        created_by_user_id=user.id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(record)
+    await db.flush()  # need record.id before membership FK
+    membership = Membership(
+        user_id=user.id,
+        person_record_id=record.id,
+        role="owner",
+        accepted_at=now,
+        created_at=now,
+    )
+    db.add(membership)
+    user.default_person_record_id = record.id
+    db.add(AuditEvent(
+        user_id=user.id,
+        person_record_id=record.id,
+        event_type="membership_created",
+        subject_type="membership",
+        subject_id=str(membership.id),
+        detail={
+            "role": "owner",
+            "granted_via": granted_via,
+        },
+    ))
+    return record
+
+
+def _classify_invite_for_accept(
+    invite: Invitation | None,
+    invitee_email: str,
+    *,
+    now: datetime,
+) -> Literal["ok", "not_found", "expired", "accepted", "revoked", "email_mismatch"]:
+    """Pure-function classifier for an attempted accept.
+
+    Separated from `_consume_invite` so the decision tree can be
+    pinned in unit tests without a DB. The 410-vs-403 mapping is
+    the caller's responsibility (route layer).
+    """
+    if invite is None:
+        return "not_found"
+    if invite.accepted_at is not None:
+        return "accepted"
+    if invite.revoked_at is not None:
+        return "revoked"
+    if invite.expires_at <= now:
+        return "expired"
+    if invitee_email.lower().strip() != invite.invited_email.lower().strip():
+        return "email_mismatch"
+    return "ok"
+
+
+async def _consume_invite(
+    db: AsyncSession,
+    *,
+    raw_token: str,
+    invitee_email: str,
+) -> Invitation:
+    """Look up + validate an invite token.
+
+    Returns the invite row (caller marks it accepted). Uses
+    `SELECT ... FOR UPDATE` to prevent a race on double-accept.
+    Raises HTTPException on any non-success path; mapping from
+    classifier verdicts to status codes is here:
+
+      not_found / expired / accepted / revoked → 410 invitation_unavailable
+      email_mismatch                           → 403 invite_email_mismatch
+
+    The 410 cluster gets the same response shape so we don't leak
+    which terminal state the invite is in (e.g. an attacker can't
+    learn that a token "exists but was used" vs "doesn't exist").
+    """
+    if not raw_token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "invite_required",
+                "message": (
+                    "Self-registration is closed. A valid invite is "
+                    "required to register a new account."
+                ),
+            },
+        )
+    prefix = invite_lookup_prefix(raw_token)
+    # FOR UPDATE keeps a concurrent acceptor blocked until commit.
+    rows = (await db.execute(
+        select(Invitation)
+        .where(Invitation.token_lookup_prefix == prefix)
+        .with_for_update()
+    )).scalars().all()
+    invite: Invitation | None = None
+    for cand in rows:
+        if verify_invite_token(raw_token, cand.token_hash):
+            invite = cand
+            break
+
+    verdict = _classify_invite_for_accept(
+        invite, invitee_email, now=datetime.now(timezone.utc),
+    )
+    if verdict == "ok":
+        return invite  # type: ignore[return-value]
+    if verdict == "email_mismatch":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "invite_email_mismatch",
+                "message": (
+                    "The email on this invite doesn't match the email "
+                    "you're trying to register with."
+                ),
+            },
+        )
+    # Everything else collapses to 410 with a single shape.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={
+            "code": "invitation_unavailable",
+            "message": "This invite is no longer available.",
+        },
+    )
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
     body: RegisterRequest,
@@ -148,39 +319,45 @@ async def register(
 ) -> MeResponse:
     """Self-registration endpoint.
 
-    Two gates, per PM A-6 (2026-05-17):
+    Three modes (FU-MULTITENANT-ONBOARDING, 2026-05-22):
 
-      1. **Fresh DB** (no users yet) — accept unconditionally and
-         flag the new user as `is_instance_admin=True`. This is the
-         "first user creates owner" path; matches today's behavior
-         and is independent of the `allow_self_registration` flag.
-      2. **Any user already exists** — gate by
-         `auth.allow_self_registration` from `infra/config.yaml`
-         (default `false`). When `true`, family members can
-         register their own logins; new accounts get no
-         auto-membership (admin/owner adds them via the membership
-         flow once `/api/person-records/members` lands).
+      1. **First user, fresh DB.** Creates user with
+         `is_instance_admin=True` + their self-record + owner
+         membership in a single transaction. Invite token is
+         ignored on this path — bootstrap is bootstrap.
+      2. **Subsequent user, valid invite token.** Consumes the
+         invite under a row-level lock. Creates user; creates
+         membership on the target (existing or freshly-created)
+         record at the invite's role.
+      3. **Subsequent user, no invite,
+         `auth.allow_self_registration=true`.** Creates user with
+         zero memberships. Web layout redirects to `/no-records`
+         so they can ask the admin to issue an invite.
 
-    The flag wire-up resolves the docs-site M01 blocker:
-    `auth.allow_self_registration` was declared but unread until
-    now. PM resolution promotes it from dead config to live gate.
+    All other cases return 403.
     """
     existing_first = (
         await db.execute(select(User).limit(1))
     ).scalars().first()
     is_first_user = existing_first is None
 
-    if not is_first_user:
-        # Subsequent signups need the operator to have opted in.
+    invite: Invitation | None = None
+    if not is_first_user and body.invite_token:
+        invite = await _consume_invite(
+            db, raw_token=body.invite_token, invitee_email=body.email,
+        )
+    elif not is_first_user:
         cfg = get_app_config()
         if not cfg.auth.allow_self_registration:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "Self-registration is closed on this instance. "
-                    "Ask your admin to add you, or set "
-                    "auth.allow_self_registration in config.yaml."
-                ),
+                detail={
+                    "code": "invite_required",
+                    "message": (
+                        "Self-registration is closed on this instance. "
+                        "An invite is required to register a new account."
+                    ),
+                },
             )
 
     user = User(
@@ -189,10 +366,116 @@ async def register(
         is_instance_admin=is_first_user,
     )
     db.add(user)
+    await db.flush()  # need user.id for downstream FKs
+
+    if is_first_user:
+        await _bootstrap_self_record(
+            db, user, granted_via="first_owner",
+        )
+    elif invite is not None:
+        now = datetime.now(timezone.utc)
+        if invite.create_new_record:
+            # Create a new record + owner membership for the new user.
+            display_name = (
+                invite.proposed_record_name
+                or body.email.split("@")[0]
+                or "Me"
+            )
+            record = PersonRecord(
+                display_name=display_name,
+                is_self=True,
+                created_by_user_id=user.id,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(record)
+            await db.flush()
+            membership = Membership(
+                user_id=user.id,
+                person_record_id=record.id,
+                role="owner",
+                invited_by_user_id=invite.created_by_user_id,
+                invited_at=invite.created_at,
+                accepted_at=now,
+                created_at=now,
+            )
+            db.add(membership)
+            user.default_person_record_id = record.id
+            db.add(AuditEvent(
+                user_id=user.id,
+                person_record_id=record.id,
+                event_type="membership_created",
+                subject_type="membership",
+                subject_id=str(membership.id),
+                detail={
+                    "role": "owner",
+                    "granted_via": "invitation",
+                    "invitation_id": str(invite.id),
+                },
+            ))
+        else:
+            # Existing record — create membership at the invite's role.
+            assert invite.target_person_record_id is not None
+            membership = Membership(
+                user_id=user.id,
+                person_record_id=invite.target_person_record_id,
+                role=invite.role,
+                invited_by_user_id=invite.created_by_user_id,
+                invited_at=invite.created_at,
+                accepted_at=now,
+                created_at=now,
+            )
+            db.add(membership)
+            user.default_person_record_id = invite.target_person_record_id
+            db.add(AuditEvent(
+                user_id=user.id,
+                person_record_id=invite.target_person_record_id,
+                event_type="membership_created",
+                subject_type="membership",
+                subject_id=str(membership.id),
+                detail={
+                    "role": invite.role,
+                    "granted_via": "invitation",
+                    "invitation_id": str(invite.id),
+                },
+            ))
+
+        invite.accepted_at = now
+        invite.accepted_by_user_id = user.id
+        email_hash = hashlib.sha256(
+            invite.invited_email.encode()
+        ).hexdigest()
+        db.add(AuditEvent(
+            user_id=user.id,
+            person_record_id=(
+                user.default_person_record_id
+            ),
+            event_type="invitation_accepted",
+            subject_type="invitation",
+            subject_id=str(invite.id),
+            detail={
+                "invited_email_hash": email_hash,
+                "role": invite.role,
+                "target_kind": (
+                    "new_record" if invite.create_new_record
+                    else "existing_record"
+                ),
+            },
+        ))
+
     await db.commit()
     await db.refresh(user)
     _set_session_cookie(response, str(user.id))
-    return MeResponse(id=str(user.id), email=user.email, phi_consent_granted=user.phi_consent_granted)
+    return MeResponse(
+        id=str(user.id),
+        email=user.email,
+        phi_consent_granted=user.phi_consent_granted,
+        is_instance_admin=user.is_instance_admin,
+        default_person_record_id=(
+            str(user.default_person_record_id)
+            if user.default_person_record_id else None
+        ),
+    )
 
 
 @router.post("/login")
