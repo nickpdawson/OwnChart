@@ -85,13 +85,14 @@ export default async function ConnectorsPage({
             {available.length > 0 && (
               <section className="mt-12">
                 <h2 className="font-serif text-xl">
-                  Available providers ({available.length})
+                  Provider catalog on this instance ({available.length})
                 </h2>
                 <p className="mt-1 text-sm text-muted">
-                  Providers configured on this instance that you
-                  haven&rsquo;t authenticated to yet. Click{" "}
-                  <em>Connect</em> to start the OAuth flow with your own
-                  patient-portal credentials.
+                  These are EHR portals the instance operator has
+                  configured. They are <strong>not your data</strong>{" "}
+                  &mdash; just endpoints you may authenticate against
+                  with your own patient-portal credentials. Click{" "}
+                  <em>Connect</em> on a row to start the OAuth flow.
                 </p>
                 <ul className="mt-3 space-y-3">
                   {available.map((c) => (
