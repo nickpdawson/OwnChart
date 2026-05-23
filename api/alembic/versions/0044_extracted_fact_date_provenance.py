@@ -42,10 +42,23 @@ Per Section C audit:
   - The schema is otherwise already correct (date_start vs acquired_at
     were never collapsed). These two columns add the missing
     classification layer rather than restructuring the date model.
-  - Backfill assumes existing non-NULL date_start rows are 'explicit'.
-    This may misclassify UVA-bug rows that came in via recordedDate
-    pre-refactor; PM-approved forward-only posture (users correct via
-    UserAssertion or via the deferred FU-FHIR-REINGEST-WITH-DATE-PROVENANCE).
+  - **NO blanket backfill.** Pre-refactor rows stay with
+    date_provenance=NULL even when date_start is non-NULL. The 153
+    existing FHIR Conditions on Nick's instance are exactly the
+    bug class — marking them 'explicit' would lock the UVA lie in
+    (a Condition dated 2026-05-09 from recordedDate would forever
+    look like an explicit occurrence date). Surfaces that filter on
+    date_provenance='explicit' (Home banner, Discover clustering,
+    long-gap detection) therefore stop using legacy-unclassified
+    rows as anchors the moment Phase 1 ships. Existing rows can be
+    corrected by:
+      - the user, via the existing UserAssertion canonical_date_*
+        flow (surfaces as date_provenance='user_canonical' on
+        FactDetail/FactContext);
+      - the deferred FU-FHIR-REINGEST-WITH-DATE-PROVENANCE script,
+        which re-runs the post-Phase-1 _date_for() against
+        already-stored raw FHIR payloads (no EHR re-pull).
+    PM-approved 2026-05-23.
 
 Composite index added on (person_record_id, date_provenance, date_start)
 to keep Home / Discover / Timeline queries filtering by provenance
@@ -91,14 +104,18 @@ def upgrade() -> None:
         "'resolved','inactive','remission')",
     )
 
-    # Forward-only backfill: pre-existing rows with a non-NULL date
-    # are presumed 'explicit'. PM-approved: do not retroactively
-    # classify the UVA-bug rows; the deferred reingest FU handles
-    # them when it lands.
-    op.execute(
-        "UPDATE extracted_facts SET date_provenance = 'explicit' "
-        "WHERE date_start IS NOT NULL"
-    )
+    # NO BLANKET BACKFILL. Pre-existing rows stay date_provenance=NULL
+    # even if date_start is non-NULL. The 153 existing FHIR Conditions
+    # are the UVA bug class; treating them as 'explicit' would mark
+    # the lie permanent. Surfaces filtering on date_provenance='explicit'
+    # (Home banner, Discover clustering, long-gap detection) will
+    # therefore exclude legacy rows the moment Phase 1 ships, which
+    # is the desired safety posture. Existing rows are correctable via
+    # the existing UserAssertion canonical_date_* flow or via the
+    # deferred FU-FHIR-REINGEST-WITH-DATE-PROVENANCE script. The
+    # absence of a backfill is load-bearing — see
+    # test_section_c_migration_no_blanket_backfill for the regression
+    # pin.
 
     # Composite index for the per-record provenance-filtered ORDER BY
     # date_start queries Home / Discover / Timeline issue on every load.
