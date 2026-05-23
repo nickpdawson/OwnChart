@@ -18,6 +18,16 @@ Each OwnChart deployment registers its own app with each EHR vendor whose data i
 | **NextGen** | Mid-sized ambulatory practices, FQHCs, community health centers, behavioral health | [NEXTGEN_SETUP.md](./NEXTGEN_SETUP.md) | Self-service portal |
 | **Oracle Health (Cerner)** | Health systems on Oracle Health Millennium (former Cerner customers): VA, DoD, Intermountain, Banner, Atrium, etc. | [CERNER_SETUP.md](./CERNER_SETUP.md) | Self-service sandbox + per-site production rollout |
 
+## Calendar setup guides
+
+Calendar integrations use the same self-hosted principle: the
+operator configures the instance-level OAuth client, and users connect
+their own accounts in the web UI.
+
+| Source | Audience focus | Guide | Notes |
+|---|---|---|---|
+| **Google Calendar** | Users with one or more Google calendars under a Google account | [GOOGLE_CALENDAR_SETUP.md](./GOOGLE_CALENDAR_SETUP.md) | Requires a Google OAuth Web client, not an API key |
+
 ## Vendors not yet covered
 
 Open PR-worthy gaps:
@@ -33,6 +43,9 @@ If you've completed registration with a vendor not yet covered, please open a PR
 ## What you'll need before starting (any vendor)
 
 - An OwnChart instance running somewhere with a **publicly reachable HTTPS URL for the OAuth callback** at `https://your-instance.example.com/api/connectors/callback`. The rest of OwnChart can stay private — only the callback needs to terminate publicly. Cloudflare Tunnel, Tailscale Funnel, ngrok, or a real reverse proxy on a real domain all work.
+- For Google Calendar specifically, the OAuth callback is
+  `https://your-instance.example.com/settings/calendar/google/callback`;
+  see [GOOGLE_CALENDAR_SETUP.md](./GOOGLE_CALENDAR_SETUP.md).
 - A stable email address for the vendor developer portal — ideally not your personal medical-record email; use a dedicated one if you want a clean separation.
 - A privacy-policy URL you control. The OwnChart public site has a model one at <https://www.ownchart.me/privacy> you can adapt; serve yours at `https://your-instance.example.com/privacy`.
 - A terms-of-service URL you control (same logic).
