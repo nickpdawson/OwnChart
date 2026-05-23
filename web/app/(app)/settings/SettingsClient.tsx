@@ -94,6 +94,23 @@ export function SettingsClient({
           would dwarf the rest of Settings; keep it on its own. */}
       <section>
         <h2 className="text-xs uppercase tracking-widest text-muted">
+          Export &amp; Portability
+        </h2>
+        <p className="mt-1 max-w-2xl text-sm text-muted">
+          Download a copy of this record&rsquo;s data &mdash;
+          machine-readable JSON, human-readable TXT, or both. PHI;
+          links expire after 72 hours.
+        </p>
+        <a
+          href="/settings/export"
+          className="mt-3 inline-block rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/10"
+        >
+          Manage exports &rarr;
+        </a>
+      </section>
+
+      <section>
+        <h2 className="text-xs uppercase tracking-widest text-muted">
           Records
         </h2>
         <p className="mt-1 max-w-2xl text-sm text-muted">

@@ -27,7 +27,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TimestampMixin, new_uuid
@@ -35,6 +35,13 @@ from .base import Base, TimestampMixin, new_uuid
 
 JOB_STATUSES: tuple[str, ...] = ("pending", "running", "completed", "failed")
 REQUESTED_FORMATS: tuple[str, ...] = ("ownchart_json", "txt", "all")
+
+# Section D — domain filter values. "calendar" includes both
+# calendar_sources and (non-tombstoned) calendar_events. AI summaries
+# / Conversations are NOT yet wired into the snapshot — the UI shows
+# the option as "coming soon" until the matching backend ships.
+EXPORT_DOMAINS: tuple[str, ...] = ("clinical", "body_signals", "calendar")
+EXPORT_DATE_RANGES: tuple[str, ...] = ("all", "last_90d", "last_1y", "custom")
 
 
 class ExportJob(Base, TimestampMixin):
@@ -66,3 +73,14 @@ class ExportJob(Base, TimestampMixin):
     error_message: Mapped[str | None] = mapped_column(Text)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Section D — request-time filter envelope. Pre-Section-D jobs have
+    # filters=NULL, treated as "no filters, full record." Shape:
+    #   {
+    #     "date_range_kind": "all" | "last_90d" | "last_1y" | "custom",
+    #     "date_range_start": iso8601 | null,
+    #     "date_range_end":   iso8601 | null,
+    #     "domains": ["clinical", "body_signals", "calendar"],
+    #   }
+    # See exports/snapshot.py for how the runner consumes it.
+    filters: Mapped[dict | None] = mapped_column(JSONB)

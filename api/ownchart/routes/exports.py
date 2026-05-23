@@ -69,8 +69,28 @@ log = logging.getLogger("ownchart.routes.exports")
 # IO shapes
 
 
+class ExportFilters(BaseModel):
+    """Section D — request-time filter envelope.
+
+    `domains` is a non-empty subset of {clinical, body_signals,
+    calendar}. The UI shows AI summaries as "coming soon" since
+    the backend doesn't surface conversations into the snapshot
+    yet; if the option is ever wired we'll add the value here.
+
+    `date_range_kind = 'custom'` requires `date_range_start`; the
+    end defaults to now() at snapshot time when omitted.
+    """
+    date_range_kind: Literal["all", "last_90d", "last_1y", "custom"] = "all"
+    date_range_start: datetime | None = None
+    date_range_end: datetime | None = None
+    domains: list[Literal["clinical", "body_signals", "calendar"]] = Field(
+        default_factory=lambda: ["clinical", "body_signals", "calendar"],
+    )
+
+
 class CreateExportRequest(BaseModel):
     requested_format: Literal["ownchart_json", "txt", "all"] = "all"
+    filters: ExportFilters = Field(default_factory=ExportFilters)
 
 
 class ExportFileOut(BaseModel):
@@ -91,6 +111,10 @@ class ExportJobOut(BaseModel):
     expires_at: datetime | None
     error_message: str | None
     files: list[ExportFileOut] = Field(default_factory=list)
+    # Section D — echo the filter envelope so the UI can render
+    # "From the last 90 days, clinical + body signals" next to each
+    # job. None for pre-Section-D rows.
+    filters: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +143,25 @@ def _job_to_out(
             )
             for f in files
         ],
+        filters=job.filters,
     )
+
+
+def _filters_to_jsonb(f: "ExportFilters") -> dict:
+    """Pydantic → JSON-serializable dict for ExportJob.filters. Keeps
+    the datetime → isoformat conversion explicit so the runner sees a
+    deterministic shape regardless of how Pydantic v2 chose to dump."""
+    out: dict[str, object] = {
+        "date_range_kind": f.date_range_kind,
+        "date_range_start": (
+            f.date_range_start.isoformat() if f.date_range_start else None
+        ),
+        "date_range_end": (
+            f.date_range_end.isoformat() if f.date_range_end else None
+        ),
+        "domains": list(f.domains),
+    }
+    return out
 
 
 async def _emit_audit(
@@ -181,6 +223,7 @@ async def create_export(
                           surfaces 500 with bounded detail)
     """
     now = datetime.now(timezone.utc)
+    filters_jsonb = _filters_to_jsonb(body.filters)
     job = ExportJob(
         id=uuid.uuid4(),
         person_record_id=ctx.active_record_id,
@@ -188,6 +231,7 @@ async def create_export(
         requested_at=now,
         requested_format=body.requested_format,
         status="pending",
+        filters=filters_jsonb,
     )
     db.add(job)
     await db.flush()  # establish job.id
@@ -198,7 +242,10 @@ async def create_export(
         user_id=ctx.user.id,
         person_record_id=ctx.active_record_id,
         subject_id=job.id,
-        detail={"requested_format": body.requested_format},
+        detail={
+            "requested_format": body.requested_format,
+            "filters": filters_jsonb,
+        },
         request=request,
     )
 

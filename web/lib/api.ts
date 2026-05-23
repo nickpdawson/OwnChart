@@ -1346,3 +1346,55 @@ export async function exchangeGoogleCallback(
   }
   return (await r.json()) as GoogleCallbackResponse;
 }
+
+
+// --- Section D: Export / Portability -------------------------------------
+
+export type ExportStatus = "pending" | "running" | "completed" | "failed";
+export type ExportFormat = "ownchart_json" | "txt" | "all";
+export type ExportFileType = "ownchart_json" | "txt";
+export type ExportDateRangeKind = "all" | "last_90d" | "last_1y" | "custom";
+export type ExportDomain = "clinical" | "body_signals" | "calendar";
+
+export type ExportFiltersIn = {
+  date_range_kind: ExportDateRangeKind;
+  date_range_start?: string | null;
+  date_range_end?: string | null;
+  domains: ExportDomain[];
+};
+
+export type ExportFile = {
+  id: string;
+  file_type: ExportFileType;
+  byte_size: number | null;
+  sha256: string | null;
+};
+
+export type ExportJob = {
+  id: string;
+  requested_format: ExportFormat;
+  status: ExportStatus;
+  requested_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  failed_at: string | null;
+  expires_at: string | null;
+  error_message: string | null;
+  files: ExportFile[];
+  filters: ExportFiltersIn | null;
+};
+
+export type CreateExportBody = {
+  requested_format: ExportFormat;
+  filters?: ExportFiltersIn;
+};
+
+export async function listExports(): Promise<ExportJob[]> {
+  const r = await fetch(`${INTERNAL_API}/api/exports`, {
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (r.status === 401 || r.status === 403) return [];
+  if (!r.ok) throw new Error(`listExports failed: ${r.status}`);
+  return (await r.json()) as ExportJob[];
+}

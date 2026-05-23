@@ -21,12 +21,124 @@ the JSON-on-disk cache (when we add one in M03+).
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+# ---------------------------------------------------------------------------
+# Section D — request-time filter envelope. Pure-function resolver
+# below converts the on-job JSONB into a concrete date window + a
+# domain set the SQL queries apply.
+
+# Auto-export + native HealthKit are the two extraction_method values
+# that produce "body signals / measured health data" facts. Anything
+# else is treated as clinical for the domain filter. CCDA, vision,
+# FHIR resources, manual notes — all clinical.
+_BODY_SIGNAL_METHODS = frozenset({"health_auto_export", "native_healthkit"})
+
+
+@dataclass(frozen=True)
+class ResolvedFilters:
+    """Resolved snapshot filter envelope. Output of `resolve_filters`,
+    consumed by `build_export_snapshot`.
+
+    `date_start` / `date_end` are inclusive UTC bounds; either may be
+    None meaning "no bound on that end." `include_clinical` etc.
+    drive which collections are pulled into the snapshot at all.
+    """
+    date_start: datetime | None
+    date_end: datetime | None
+    include_clinical: bool
+    include_body_signals: bool
+    include_calendar: bool
+
+
+def resolve_filters(
+    raw: dict | None,
+    *,
+    now: datetime | None = None,
+) -> ResolvedFilters:
+    """Convert the on-job filter envelope into concrete window + flags.
+
+    Pure-function — tested separately from the DB-touching builder.
+    `raw=None` (pre-Section-D job, or unfiltered request) yields the
+    full-record default: no date bounds, all three domains included.
+
+    Validation:
+      - date_range_kind must be one of {'all', 'last_90d', 'last_1y',
+        'custom'}; anything else collapses to 'all' (defensive — the
+        Pydantic Literal on CreateExportRequest already rejects bad
+        values upstream, but the runner may load a corrupted JSON
+        from a future hand-written job).
+      - For 'custom', date_range_start is honored; date_range_end
+        defaults to `now` if absent. If start > end, the window is
+        swapped so the snapshot doesn't return zero rows.
+    """
+    now_dt = now or datetime.now(timezone.utc)
+    if not isinstance(raw, dict):
+        return ResolvedFilters(
+            date_start=None,
+            date_end=None,
+            include_clinical=True,
+            include_body_signals=True,
+            include_calendar=True,
+        )
+
+    kind = raw.get("date_range_kind") or "all"
+    if kind not in ("all", "last_90d", "last_1y", "custom"):
+        kind = "all"
+
+    date_start: datetime | None = None
+    date_end: datetime | None = None
+    if kind == "last_90d":
+        date_start = now_dt - timedelta(days=90)
+    elif kind == "last_1y":
+        date_start = now_dt - timedelta(days=365)
+    elif kind == "custom":
+        rs = raw.get("date_range_start")
+        re_ = raw.get("date_range_end")
+        date_start = _parse_iso(rs)
+        date_end = _parse_iso(re_) or now_dt
+        if date_start is not None and date_end is not None and date_start > date_end:
+            date_start, date_end = date_end, date_start
+
+    domains_raw = raw.get("domains")
+    if not isinstance(domains_raw, list) or not domains_raw:
+        domains = {"clinical", "body_signals", "calendar"}
+    else:
+        domains = {str(d) for d in domains_raw}
+
+    return ResolvedFilters(
+        date_start=date_start,
+        date_end=date_end,
+        include_clinical="clinical" in domains,
+        include_body_signals="body_signals" in domains,
+        include_calendar="calendar" in domains,
+    )
+
+
+def _parse_iso(v: object) -> datetime | None:
+    if not isinstance(v, str):
+        return None
+    try:
+        out = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # Treat naive timestamps as UTC so downstream comparisons are sane.
+    if out.tzinfo is None:
+        out = out.replace(tzinfo=timezone.utc)
+    return out
+
+
+def fact_method_is_body_signal(extraction_method: str | None) -> bool:
+    """Pure helper for the domain filter. Exposed so tests can pin the
+    membership without re-importing the private set."""
+    return (extraction_method or "") in _BODY_SIGNAL_METHODS
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +250,7 @@ async def build_export_snapshot(
     *,
     person_record_id: uuid.UUID,
     now: datetime | None = None,
+    filters: dict | None = None,
 ) -> ExportSnapshot:
     """Gather all record-scoped data for ``person_record_id`` into a
     snapshot. Read-only — no DB writes. Filters every collection by
@@ -149,6 +262,18 @@ async def build_export_snapshot(
     concept existed) would similarly be excluded; today none of the
     other models have a tombstone column, so the only filter needed
     here is the calendar one.
+
+    Section D Phase 1 — ``filters`` is the request-time envelope
+    persisted on the ExportJob row. None means "no filters, full
+    record" (the pre-Section-D default). When supplied:
+
+      - date_range_kind drives a date_start window on ExtractedFact
+        + CalendarEvent (sources are NOT date-filtered; an export
+        with no dated facts in window still wants to be honest about
+        what was ingested).
+      - domains={'clinical','body_signals','calendar'} drives which
+        collections are pulled. Omitted domains yield empty lists,
+        not missing keys, so JSON shape stays stable.
     """
     from datetime import timezone as _tz
 
@@ -158,35 +283,79 @@ async def build_export_snapshot(
     from ..models.person_record import PersonRecord
     from ..models.source_document import SourceDocument
 
+    f = resolve_filters(filters, now=now)
+
     record = (await db.execute(
         select(PersonRecord).where(PersonRecord.id == person_record_id)
     )).scalar_one()
 
+    # Sources are always pulled — they're the provenance for any fact
+    # the user kept, regardless of the domain filter. Skipping them
+    # would make the JSON misleading about where the data came from.
     sources = (await db.execute(
         select(SourceDocument)
         .where(SourceDocument.person_record_id == person_record_id)
         .order_by(SourceDocument.created_at.asc())
     )).scalars().all()
 
-    facts = (await db.execute(
-        select(ExtractedFact)
-        .where(ExtractedFact.person_record_id == person_record_id)
-        .order_by(ExtractedFact.date_start.asc().nullslast(),
-                  ExtractedFact.created_at.asc())
-    )).scalars().all()
+    # Facts: apply date window + domain filter.
+    facts: list = []
+    if f.include_clinical or f.include_body_signals:
+        fact_q = (
+            select(ExtractedFact)
+            .where(ExtractedFact.person_record_id == person_record_id)
+            .order_by(ExtractedFact.date_start.asc().nullslast(),
+                      ExtractedFact.created_at.asc())
+        )
+        if f.date_start is not None:
+            # Inclusive: keep facts whose date_start >= window start.
+            # Also keep NULL date_start when filtering by 'all' (no
+            # window). NULL-date facts are excluded from windowed
+            # filters since we can't honestly place them in the range.
+            fact_q = fact_q.where(ExtractedFact.date_start >= f.date_start)
+        if f.date_end is not None:
+            fact_q = fact_q.where(ExtractedFact.date_start <= f.date_end)
+        # Domain filter at the SQL layer when only one domain is on;
+        # both-on means no method filter at all (cheaper than IN).
+        if f.include_clinical and not f.include_body_signals:
+            fact_q = fact_q.where(
+                ~ExtractedFact.extraction_method.in_(_BODY_SIGNAL_METHODS)
+            )
+        elif f.include_body_signals and not f.include_clinical:
+            fact_q = fact_q.where(
+                ExtractedFact.extraction_method.in_(_BODY_SIGNAL_METHODS)
+            )
+        facts = list((await db.execute(fact_q)).scalars().all())
 
-    cal_sources = (await db.execute(
-        select(CalendarSource)
-        .where(CalendarSource.person_record_id == person_record_id)
-        .order_by(CalendarSource.connected_at.asc())
-    )).scalars().all()
+    # Calendar sources + events only when domain is on.
+    if f.include_calendar:
+        cal_sources_q = (
+            select(CalendarSource)
+            .where(CalendarSource.person_record_id == person_record_id)
+            .order_by(CalendarSource.connected_at.asc())
+        )
+        cal_sources = list(
+            (await db.execute(cal_sources_q)).scalars().all()
+        )
 
-    cal_events = (await db.execute(
-        select(CalendarEvent)
-        .where(CalendarEvent.person_record_id == person_record_id)
-        .where(CalendarEvent.tombstoned_at.is_(None))
-        .order_by(CalendarEvent.start_at.asc())
-    )).scalars().all()
+        cal_events_q = (
+            select(CalendarEvent)
+            .where(CalendarEvent.person_record_id == person_record_id)
+            .where(CalendarEvent.tombstoned_at.is_(None))
+            .order_by(CalendarEvent.start_at.asc())
+        )
+        if f.date_start is not None:
+            cal_events_q = cal_events_q.where(
+                CalendarEvent.start_at >= f.date_start
+            )
+        if f.date_end is not None:
+            cal_events_q = cal_events_q.where(
+                CalendarEvent.start_at <= f.date_end
+            )
+        cal_events = list((await db.execute(cal_events_q)).scalars().all())
+    else:
+        cal_sources = []
+        cal_events = []
 
     return ExportSnapshot(
         generated_at=(now or datetime.now(_tz.utc)),

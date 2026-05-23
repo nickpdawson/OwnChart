@@ -85,7 +85,10 @@ async def run_export_job(
 
     try:
         snapshot = await build_export_snapshot(
-            db, person_record_id=job.person_record_id, now=now_dt,
+            db,
+            person_record_id=job.person_record_id,
+            now=now_dt,
+            filters=job.filters,
         )
 
         out_dir = _job_dir(data_dir, job.id)
