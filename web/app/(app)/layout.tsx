@@ -14,7 +14,16 @@ import { FactContextSheet } from "./FactContextSheet";
 // Vault, Connections, Review, and Audit are support systems and
 // drop below a small visual divider. Dossiers are *lenses* over the
 // global timeline, not the marquee — they sit after Discover.
-const NAV: ReadonlyArray<{ href: Route; label: string }> = [
+// Top-level nav. Order reflects docs/06's IA.
+//
+// P0 fix (2026-05-23): the Audit log entry is gated to instance
+// admins because the underlying /api/audit/* routes 403 for any
+// other role; pre-fix the link was visible to everyone and clicking
+// it surfaced an unhandled Next.js error boundary (digest 865374892).
+// We filter the NAV based on `me.is_instance_admin` below.
+type NavItem = { href: Route; label: string; adminOnly?: boolean };
+
+const NAV: ReadonlyArray<NavItem> = [
   { href: "/dashboard", label: "Home" },
   { href: "/chat", label: "Chat" },
   { href: "/timeline", label: "Timeline" },
@@ -24,7 +33,7 @@ const NAV: ReadonlyArray<{ href: Route; label: string }> = [
   { href: "/sources", label: "Evidence vault" },
   { href: "/connectors", label: "EHR connections" },
   { href: "/review", label: "Review inbox" },
-  { href: "/audit", label: "Audit log" },
+  { href: "/audit", label: "Audit log", adminOnly: true },
   { href: "/settings", label: "Settings" },
 ] as const;
 
@@ -56,9 +65,13 @@ export default async function AppLayout({
   ]);
   const topicLinks = topics.map((t) => ({ id: t.id, slug: t.slug, name: t.name }));
 
+  // Filter admin-only nav items unless the caller is the instance admin.
+  const isAdmin = me.is_instance_admin === true;
+  const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
+
   return (
     <AppShell
-      nav={NAV}
+      nav={visibleNav}
       topics={topicLinks}
       activeRecord={me.active_record}
       memberships={memberships}

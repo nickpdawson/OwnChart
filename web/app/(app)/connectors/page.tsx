@@ -46,22 +46,63 @@ export default async function ConnectorsPage({
         <AddProvider />
       </section>
 
-      <section className="mt-12">
-        <h2 className="font-serif text-xl">
-          Your connectors {connectors.length > 0 ? `(${connectors.length})` : ""}
-        </h2>
-        {connectors.length === 0 ? (
-          <p className="mt-3 text-muted">
-            No connectors yet. Use the search above to add your first provider.
-          </p>
-        ) : (
-          <ul className="mt-3 space-y-3">
-            {connectors.map((c) => (
-              <ConnectorRow key={c.id} c={c} />
-            ))}
-          </ul>
-        )}
-      </section>
+      {/* P0 fix (2026-05-23): "Your connectors" must be record-scoped
+          authenticated connections only — not the global ProviderConnector
+          catalog. Pre-fix, a fresh Test User on a fresh record saw every
+          provider Nick had registered listed under "Your connectors,"
+          which conflated catalog rows with this user's actual portal
+          authentications. The route already returns `connection: null`
+          for catalog rows the active user/record hasn't authenticated to;
+          we split here so the rendering matches the semantic. Catalog
+          rows the user has NOT yet authenticated to surface under
+          "Available providers" so they're still reachable for a connect
+          click after AddProvider creates them.
+       */}
+      {(() => {
+        const yours = connectors.filter((c) => c.connection !== null);
+        const available = connectors.filter((c) => c.connection === null);
+        return (
+          <>
+            <section className="mt-12">
+              <h2 className="font-serif text-xl">
+                Your connectors {yours.length > 0 ? `(${yours.length})` : ""}
+              </h2>
+              {yours.length === 0 ? (
+                <p className="mt-3 text-muted">
+                  No connectors yet. Use the search above to add your
+                  first provider, then click <em>Connect</em> on it
+                  below to authenticate.
+                </p>
+              ) : (
+                <ul className="mt-3 space-y-3">
+                  {yours.map((c) => (
+                    <ConnectorRow key={c.id} c={c} />
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            {available.length > 0 && (
+              <section className="mt-12">
+                <h2 className="font-serif text-xl">
+                  Available providers ({available.length})
+                </h2>
+                <p className="mt-1 text-sm text-muted">
+                  Providers configured on this instance that you
+                  haven&rsquo;t authenticated to yet. Click{" "}
+                  <em>Connect</em> to start the OAuth flow with your own
+                  patient-portal credentials.
+                </p>
+                <ul className="mt-3 space-y-3">
+                  {available.map((c) => (
+                    <ConnectorRow key={c.id} c={c} />
+                  ))}
+                </ul>
+              </section>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }
