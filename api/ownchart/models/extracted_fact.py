@@ -45,6 +45,35 @@ class ExtractedFact(Base, TimestampMixin):
     # day | month | year | decade | unknown
     date_precision: Mapped[str | None] = mapped_column(String(16))
 
+    # Section C Phase 1 — how confident we are that `date_start` is
+    # the event's *occurrence* date vs. a documentation/import date.
+    #
+    #   'explicit'             source carried an explicit occurrence
+    #                          date (FHIR onset/performed/effective,
+    #                          CCDA effectiveTime, vision date_start,
+    #                          auto-export payload date)
+    #   'encounter_proximate'  date inherited from a linked Encounter;
+    #                          display adds "from this visit"
+    #   'issued_approximate'   Observation/DiagnosticReport with no
+    #                          effective[x] fell back to `issued`
+    #   'user_canonical'       a UserAssertion overrode the date
+    #   NULL                   no date at all; UI shows "Undated
+    #                          history" group, Chat says "mentioned in
+    #                          a {YYYY} record."
+    #
+    # Display surfaces (Home banner, Discover clustering) filter to
+    # 'explicit' to avoid surfacing import-date artifacts as recent
+    # events. See migration 0044 and `routes/connectors.py::_date_for`.
+    date_provenance: Mapped[str | None] = mapped_column(String(32))
+
+    # Section C Phase 1 — FHIR Condition lifecycle mirror. Set from
+    # `Condition.clinicalStatus.coding.code` at ingest:
+    # 'resolved' | 'inactive' | 'remission' | NULL.
+    # Display surfaces add a small low-contrast pill; the fact stays
+    # retrievable for "history of …" queries — these are real history,
+    # not source-only noise.
+    historical_status: Mapped[str | None] = mapped_column(String(16))
+
     body_site: Mapped[str | None] = mapped_column(String(128))
     laterality: Mapped[str | None] = mapped_column(String(16))     # left | right | bilateral
 

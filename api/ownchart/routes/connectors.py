@@ -794,32 +794,119 @@ def _parse_iso(v: object) -> datetime | None:
         return None
 
 
-def _date_for(resource: dict) -> tuple[datetime | None, str | None]:
-    # Singular dateTime fields, in priority order. The order matters when a
-    # resource has both — e.g. DiagnosticReport.effectiveDateTime should beat
-    # DiagnosticReport.issued because the former is the clinical event date.
+def _date_for(
+    resource: dict,
+) -> tuple[datetime | None, str | None, str | None]:
+    """Resolve `(date, precision, provenance)` for a FHIR resource.
+
+    Section C Phase 1 — the resolver no longer treats documentation
+    timestamps as event dates. Specifically:
+
+      - Condition's `recordedDate` / `assertedDate` are REMOVED from
+        the event-date priority list. They're "when noted in chart,"
+        not "when the condition started." A Condition with only
+        recordedDate now returns (None, None, None) and the resulting
+        ExtractedFact has `date_start=NULL` so display surfaces can
+        place it in the "Undated history" group rather than backdate
+        it to the import day. UVA bug class.
+
+      - Observation / DiagnosticReport `issued` is kept as a
+        last-resort fallback but tagged `provenance='issued_approximate'`
+        so the UI surfaces "approximate" instead of treating it as
+        canonical.
+
+      - Everything else returns `provenance='explicit'`.
+
+    Caller is responsible for the encounter fallback (see
+    `_date_for_with_fallback`), which tags `provenance='encounter_proximate'`.
+    """
+    # Explicit occurrence-date fields. Order matters when a resource
+    # has more than one — `effectiveDateTime` beats `issued` because
+    # the former is the clinical event time.
     for fld in (
         "effectiveDateTime",
         "performedDateTime",
         "occurrenceDateTime",
         "onsetDateTime",
         "authoredOn",
-        "recordedDate",        # Condition uses this
-        "assertedDate",        # Condition (legacy)
-        "issued",              # DiagnosticReport / Observation fallback
     ):
         d = _parse_iso(resource.get(fld))
         if d is not None:
-            return d, "day"
-    # Period-shaped fields. Procedure uses performedPeriod, Encounter uses
-    # period, Observation/DiagnosticReport may use effectivePeriod.
+            return d, "day", "explicit"
+
+    # Period-shaped explicit fields.
     for pf in ("performedPeriod", "effectivePeriod", "occurrencePeriod", "period"):
         period = resource.get(pf)
         if isinstance(period, dict):
             d = _parse_iso(period.get("start") or period.get("end"))
             if d is not None:
-                return d, "day"
-    return None, None
+                return d, "day", "explicit"
+
+    # Last-resort: `issued` is "when the report was authored," not
+    # "when the observation was taken." Often within hours for fresh
+    # results, but for old records re-issued in a new system it can be
+    # off by years. Mark approximate so the UI can soften the claim.
+    issued = _parse_iso(resource.get("issued"))
+    if issued is not None:
+        return issued, "day", "issued_approximate"
+
+    return None, None, None
+
+
+# FHIR Condition.clinicalStatus / verificationStatus terminology. See
+# https://www.hl7.org/fhir/condition.html for the value sets. We only
+# consume the ones that change OwnChart's display posture.
+_HISTORICAL_CLINICAL_STATUSES = frozenset({"resolved", "inactive", "remission"})
+_SKIP_VERIFICATION_STATUSES = frozenset({"refuted", "entered-in-error"})
+
+
+def _condition_status_codes(resource: dict) -> tuple[str | None, str | None]:
+    """Pull (clinicalStatus.code, verificationStatus.code) from a
+    FHIR Condition resource. Returns `(None, None)` for any non-Condition
+    or missing-field shape — caller checks `resourceType` separately.
+
+    FHIR shape:
+
+        {
+          "clinicalStatus": {
+            "coding": [{"system": "...", "code": "resolved", "display": "..."}]
+          },
+          "verificationStatus": {
+            "coding": [{"system": "...", "code": "refuted", ...}]
+          }
+        }
+    """
+    def _first_code(cc: dict | None) -> str | None:
+        if not isinstance(cc, dict):
+            return None
+        for cod in (cc.get("coding") or []):
+            if isinstance(cod, dict):
+                code = cod.get("code")
+                if isinstance(code, str) and code.strip():
+                    return code.strip().lower()
+        return None
+    return (
+        _first_code(resource.get("clinicalStatus")),
+        _first_code(resource.get("verificationStatus")),
+    )
+
+
+def _classify_condition_lifecycle(
+    resource: dict,
+) -> tuple[str | None, bool]:
+    """Return `(historical_status, should_skip)` for a Condition resource.
+
+      - historical_status: 'resolved' | 'inactive' | 'remission' | None
+      - should_skip: True when `verificationStatus IN ('refuted',
+        'entered-in-error')` — the caller drops the fact entirely.
+
+    Pure-function; testable without the full ingest pipeline.
+    """
+    clin, verif = _condition_status_codes(resource)
+    if verif in _SKIP_VERIFICATION_STATUSES:
+        return None, True
+    historical = clin if clin in _HISTORICAL_CLINICAL_STATUSES else None
+    return historical, False
 
 
 _ENCOUNTER_REF_RE = re.compile(r"^Encounter/(.+)$")
@@ -830,14 +917,18 @@ def _build_encounter_date_index(snap_fhir: dict[str, list[dict]]) -> dict[str, t
 
     Used so resources that reference an Encounter but lack their own date
     (observed on at least one EHR: Procedure.performedDateTime missing, but the
-    parent Encounter has period.start) can fall back cleanly.
+    parent Encounter has period.start) can fall back cleanly. Section C
+    Phase 1 tags every fallback-derived fact with
+    `date_provenance='encounter_proximate'` so the UI surfaces "from
+    this visit" rather than presenting the encounter date as the
+    procedure's canonical date.
     """
     out: dict[str, tuple[datetime, str]] = {}
     for enc in snap_fhir.get("Encounter", []) or []:
         eid = enc.get("id")
         if not isinstance(eid, str):
             continue
-        d, p = _date_for(enc)
+        d, p, _prov = _date_for(enc)
         if d is not None:
             out[eid] = (d, p or "day")
     return out
@@ -862,15 +953,21 @@ def _encounter_id_from(resource: dict) -> str | None:
 
 def _date_for_with_fallback(
     resource: dict, encounter_dates: dict[str, tuple[datetime, str]]
-) -> tuple[datetime | None, str | None]:
-    """Resource's own date; if missing, fall back to its linked Encounter."""
-    d, p = _date_for(resource)
+) -> tuple[datetime | None, str | None, str | None]:
+    """Resource's own date; if missing, fall back to its linked Encounter.
+
+    Returns `(date, precision, provenance)`. When the encounter
+    fallback path fires, provenance is 'encounter_proximate' — the
+    display layer renders these with a "from this visit" qualifier.
+    """
+    d, p, prov = _date_for(resource)
     if d is not None:
-        return d, p
+        return d, p, prov
     eid = _encounter_id_from(resource)
     if eid and eid in encounter_dates:
-        return encounter_dates[eid]
-    return None, None
+        ed, ep = encounter_dates[eid]
+        return ed, ep, "encounter_proximate"
+    return None, None, None
 
 
 @router.post("/{conn_id}/sync")
@@ -990,11 +1087,25 @@ async def sync_connection(
     encounter_dates = _build_encounter_date_index(snap.fhir)
     fact_count = 0
     fallback_dated = 0
+    skipped_refuted = 0
+    historical_marked = 0
     for rt, resources in snap.fhir.items():
         fact_type = _FHIR_TO_CLAIM.get(rt)
         if not fact_type:
             continue
         for res in resources:
+            # Section C Phase 1: drop refuted / entered-in-error
+            # Conditions BEFORE creating an anchor. These are the EHR's
+            # own corrections; honor them silently — the patient
+            # shouldn't see "this was once suspected but disconfirmed."
+            historical_status: str | None = None
+            if rt == "Condition":
+                historical_status, should_skip = _classify_condition_lifecycle(res)
+                if should_skip:
+                    skipped_refuted += 1
+                    continue
+                if historical_status is not None:
+                    historical_marked += 1
             anchor = EvidenceAnchor(
                 source_document_id=src.id,
                 person_record_id=dest_record_id,
@@ -1004,9 +1115,9 @@ async def sync_connection(
             )
             db.add(anchor)
             await db.flush()
-            own_date, _ = _date_for(res)
-            ds, dp = _date_for_with_fallback(res, encounter_dates)
-            if ds is not None and own_date is None:
+            _, _, own_prov = _date_for(res)
+            ds, dp, prov = _date_for_with_fallback(res, encounter_dates)
+            if ds is not None and own_prov is None:
                 fallback_dated += 1
             label = _label_for(res)
             db.add(
@@ -1018,6 +1129,12 @@ async def sync_connection(
                     date_start=ds,
                     date_end=None,
                     date_precision=dp,
+                    # Section C Phase 1 — record where this date came
+                    # from so display surfaces can soften the claim
+                    # (or drop it from cluster-defining queries) when
+                    # it's not an explicit occurrence date.
+                    date_provenance=prov,
+                    historical_status=historical_status,
                     confidence=85,  # FHIR is structured + provider-attested; high baseline
                     review_state=review_state_for_fhir(label),
                     evidence_anchor_ids=[anchor.id],
@@ -1027,6 +1144,34 @@ async def sync_connection(
             fact_count += 1
     if fallback_dated:
         log.info("encounter_date_fallback_applied", count=fallback_dated)
+    if skipped_refuted:
+        log.info(
+            "fhir_refuted_facts_skipped",
+            count=skipped_refuted,
+            source_id=str(src.id),
+            source_label=connector.name,
+        )
+        # Per Section C confirmation: emit a count-only audit event so
+        # "why don't I see my X diagnosis?" is answerable.
+        from ..models.audit_event import AuditEvent
+        db.add(AuditEvent(
+            user_id=user.id,
+            person_record_id=dest_record_id,
+            event_type="fhir_refuted_facts_skipped",
+            subject_type="source_document",
+            subject_id=str(src.id),
+            detail={
+                "count": skipped_refuted,
+                "source_label": connector.name,
+                "ehr_vendor": connector.ehr_vendor,
+            },
+        ))
+    if historical_marked:
+        log.info(
+            "fhir_historical_conditions_marked",
+            count=historical_marked,
+            source_id=str(src.id),
+        )
 
     # ----------------------------------------------------------------------
     # Attachments — DocumentReference + DiagnosticReport binary content

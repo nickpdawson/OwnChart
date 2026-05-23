@@ -278,6 +278,13 @@ function FactContextBody({
         {data.what_this_is}
       </p>
 
+      <DateProvenanceLine
+        factId={data.id}
+        dateProvenance={data.date_provenance ?? null}
+        dateStart={data.date_start}
+        historicalStatus={data.historical_status ?? null}
+      />
+
       {data.why_needs_review_text && (
         <p className="mt-3 rounded-lg border border-caution/30 bg-caution/5 p-3 text-sm italic text-caution">
           {data.why_needs_review_text}
@@ -565,5 +572,67 @@ function SignificanceControls({
         <p className="mt-2 text-xs text-caution">Couldn&apos;t update: {error}</p>
       )}
     </section>
+  );
+}
+
+
+// Section C Phase 1 — surfaces the date provenance line on the
+// fact-context sidesheet. One short sentence per case, plus an
+// always-available "Correct this date" link that drops into the
+// existing UserAssertion correction surface (no new endpoint).
+//
+// Cases:
+//   NULL date            → "Date unknown — mentioned in this record"
+//   explicit             → no badge (the date itself is sufficient)
+//   encounter_proximate  → "Documented during this visit"
+//   issued_approximate   → "Approximate (report-issued date)"
+//   user_canonical       → "You confirmed this date"
+//
+// historical_status renders a small low-contrast pill next to the
+// label per PM confirmation #4. Resolved/inactive/remission stay
+// retrievable; we don't grey out the row.
+
+function DateProvenanceLine({
+  factId,
+  dateProvenance,
+  dateStart,
+  historicalStatus,
+}: {
+  factId: string;
+  dateProvenance: string | null;
+  dateStart: string | null;
+  historicalStatus: string | null;
+}) {
+  const correctUrl = `/?fact=${factId}#correct-date`;
+  let copy: string | null = null;
+  if (dateStart === null) {
+    copy = "Date unknown — mentioned in this record. Add a date if you remember when.";
+  } else if (dateProvenance === "encounter_proximate") {
+    copy = "Date inherited from the linked visit — not an explicit occurrence date.";
+  } else if (dateProvenance === "issued_approximate") {
+    copy = "Approximate — date is the report-issued timestamp.";
+  } else if (dateProvenance === "user_canonical") {
+    copy = "You confirmed this date.";
+  }
+  if (!copy && !historicalStatus) return null;
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      {copy && (
+        <p className="rounded-md border border-muted/15 bg-bg/40 px-3 py-1.5 text-xs text-muted">
+          {copy}{" "}
+          <a
+            href={correctUrl}
+            className="underline decoration-dotted underline-offset-2 hover:text-ink"
+          >
+            Correct this date
+          </a>
+        </p>
+      )}
+      {historicalStatus && (
+        <span className="rounded-md border border-muted/20 bg-bg/40 px-2 py-0.5 text-[10px] uppercase tracking-widest text-muted">
+          {historicalStatus}
+        </span>
+      )}
+    </div>
   );
 }

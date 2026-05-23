@@ -54,7 +54,7 @@ export default async function InviteAcceptPage({ params }: PageProps) {
   return (
     <div>
       <p className="text-sm uppercase tracking-widest text-muted">OwnChart</p>
-      <h1 className="mt-3 font-serif text-3xl">You're invited</h1>
+      <h1 className="mt-3 font-serif text-3xl">You&rsquo;re invited</h1>
       <div className="mt-6 rounded-md border border-muted/15 bg-surface p-4 text-sm">
         <dl className="grid grid-cols-1 gap-2 sm:grid-cols-[7rem_1fr]">
           <dt className="text-muted">Email</dt>

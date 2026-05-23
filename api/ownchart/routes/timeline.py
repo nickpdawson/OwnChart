@@ -150,11 +150,38 @@ class TimelineBucket(BaseModel):
         return self.clinical.event_count + self.wearable.fact_count + self.source.document_count
 
 
+class UndatedHistoryItem(BaseModel):
+    """One NULL-date fact summarized for the "Undated history" group.
+
+    Section C Phase 1. These are facts the FHIR ingest could not pin
+    to a real occurrence date (typical case: a Condition with only a
+    `recordedDate`, which we now drop from the event-date priority
+    list). Before Phase 1 these were silently excluded from the
+    Timeline query; they now surface in this group so the user knows
+    they exist and can correct the date.
+    """
+    fact_id: str
+    fact_type: str
+    label: str
+    display_label: str | None = None
+    source_label: str | None = None
+
+
+class UndatedHistoryGroup(BaseModel):
+    """Bucket-equivalent for NULL-date facts. Rendered as a
+    collapsed-by-default section above (or after) the dated buckets."""
+    total: int
+    items: list[UndatedHistoryItem]
+
+
 class TimelineResponse(BaseModel):
     grain: Grain
     range_start: datetime
     range_end: datetime
     buckets: list[TimelineBucket]
+    # Section C Phase 1 — facts with date_start IS NULL. Empty group
+    # (total=0) when no such facts exist; the UI hides the section.
+    undated_history: UndatedHistoryGroup = UndatedHistoryGroup(total=0, items=[])
 
 
 def _bucket_label(start: datetime, grain: Grain) -> str:
@@ -660,11 +687,55 @@ async def get_timeline(
             )
         )
 
+    # Section C Phase 1 — surface NULL-date facts as their own group
+    # rather than silently dropping them. Capped at 50 items for
+    # response economy; the count is total. Excludes wearable methods
+    # (high-volume, low-signal) and source_only review states.
+    undated_rows = list((await db.execute(
+        select(
+            ExtractedFact.id,
+            ExtractedFact.fact_type,
+            ExtractedFact.label,
+            ExtractedFact.display_label,
+            ExtractedFact.evidence_anchor_ids,
+        )
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
+        .where(ExtractedFact.date_start.is_(None))
+        .where(ExtractedFact.extraction_method.notin_(WEARABLE_METHODS))
+        .where(ExtractedFact.review_state.notin_(("source_only", "rejected")))
+        .order_by(ExtractedFact.label.asc())
+        .limit(50)
+    )).all())
+    undated_total = (await db.execute(
+        select(func.count())
+        .select_from(ExtractedFact)
+        .where(ExtractedFact.person_record_id == ctx.active_record_id)
+        .where(ExtractedFact.date_start.is_(None))
+        .where(ExtractedFact.extraction_method.notin_(WEARABLE_METHODS))
+        .where(ExtractedFact.review_state.notin_(("source_only", "rejected")))
+    )).scalar_one()
+    undated_items = [
+        UndatedHistoryItem(
+            fact_id=str(r.id),
+            fact_type=r.fact_type,
+            label=r.label,
+            display_label=r.display_label,
+            source_label=anchor_to_source_label.get(
+                (r.evidence_anchor_ids or [None])[0]
+            ) if r.evidence_anchor_ids else None,
+        )
+        for r in undated_rows
+    ]
+
     return TimelineResponse(
         grain=grain,
         range_start=from_,
         range_end=to_,
         buckets=out,
+        undated_history=UndatedHistoryGroup(
+            total=int(undated_total),
+            items=undated_items,
+        ),
     )
 
 

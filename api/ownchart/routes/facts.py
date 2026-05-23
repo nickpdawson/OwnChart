@@ -64,6 +64,15 @@ class FactDetail(BaseModel):
     # always wins over llm/heuristic/default.
     significance: str | None = None
     significance_source: str | None = None
+    # Section C Phase 1 — surfaces drive different copy depending on
+    # how the date was derived. 'explicit' = source carried an
+    # occurrence date; 'encounter_proximate' = inherited from a linked
+    # visit; 'issued_approximate' = from a report-issued timestamp;
+    # 'user_canonical' = user-overridden; NULL = no date at all.
+    date_provenance: str | None = None
+    # FHIR Condition lifecycle: 'resolved' / 'inactive' / 'remission'.
+    # Small low-contrast pill in the UI; fact stays retrievable.
+    historical_status: str | None = None
 
 
 class CorrectionRequest(BaseModel):
@@ -112,6 +121,14 @@ def _detail(
         display_label_method=c.display_label_method,
         significance=c.significance,
         significance_source=c.significance_source,
+        # Section C Phase 1 — if the user has confirmed a canonical
+        # date via UserAssertion, surface as 'user_canonical' over
+        # the stored extraction provenance.
+        date_provenance=(
+            "user_canonical" if (ua and ua.canonical_date_start)
+            else c.date_provenance
+        ),
+        historical_status=c.historical_status,
     )
 
 
@@ -322,6 +339,12 @@ class FactContext(BaseModel):
     display_label: str | None = None
     description: str | None
     date_start: datetime | None
+    # Section C Phase 1 — drives the date-line copy in the sidesheet
+    # (no badge for 'explicit'; "from this visit" for
+    # encounter_proximate; "approximate" for issued_approximate;
+    # "you confirmed this" for user_canonical; "date unknown" for NULL).
+    date_provenance: str | None = None
+    historical_status: str | None = None
     review_state: str
     extraction_method: str
     confidence: int | None
@@ -627,6 +650,17 @@ async def get_fact_context(
         if anchor is not None:
             page_number = anchor.page_number
 
+    # Section C Phase 1 — surface user_canonical provenance when the
+    # user has overridden the date via UserAssertion. Single bonus
+    # query; small + cached by SQLAlchemy identity map if /detail
+    # was hit on the same fact.
+    ua_for_prov = await _latest_assertion(db, c.id)
+    effective_prov = (
+        "user_canonical"
+        if (ua_for_prov and ua_for_prov.canonical_date_start)
+        else c.date_provenance
+    )
+
     return FactContext(
         id=str(c.id),
         fact_type=c.fact_type,
@@ -634,6 +668,8 @@ async def get_fact_context(
         display_label=c.display_label,
         description=c.description,
         date_start=c.date_start,
+        date_provenance=effective_prov,
+        historical_status=c.historical_status,
         review_state=c.review_state,
         extraction_method=c.extraction_method,
         confidence=c.confidence,

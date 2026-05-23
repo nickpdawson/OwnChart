@@ -130,10 +130,16 @@ async def get_home_ai_partner(
     # the loader to render the YAML against it.
     # ---------------------------------------------------------------
 
+    # Section C Phase 1: filter to date_provenance='explicit' so a
+    # 2026-imported Condition with only a `recordedDate` cannot become
+    # the "most recent major event" banner anchor. encounter_proximate
+    # and issued_approximate facts can still surface in dossiers /
+    # Chat — they just don't drive the Home banner.
     most_recent_major = (await db.execute(
         select(ExtractedFact)
         .where(ExtractedFact.person_record_id == ctx.active_record_id)
         .where(ExtractedFact.date_start.isnot(None))
+        .where(ExtractedFact.date_provenance == "explicit")
         .where(ExtractedFact.significance.in_(
             ("major_event", "major_procedure")
         ))

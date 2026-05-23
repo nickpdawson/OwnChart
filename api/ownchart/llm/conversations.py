@@ -596,6 +596,34 @@ def _evidence_block(
             f" quality={quality}"
         )
         body = f"  label: {label}"
+        # Section C Phase 1 — include date provenance so the LLM
+        # doesn't claim "happened in 2026" for a fact whose date is
+        # only an encounter-proximate or report-issued timestamp.
+        prov = getattr(f, "date_provenance", None)
+        if f.date_start is None:
+            body += (
+                "\n  date_note: no explicit occurrence date in source — "
+                "phrase as 'mentioned in this record'."
+            )
+        elif prov == "encounter_proximate":
+            body += (
+                "\n  date_note: date inherited from the linked visit, "
+                "not the resource itself — phrase as 'documented during a "
+                f"{date} visit'."
+            )
+        elif prov == "issued_approximate":
+            body += (
+                "\n  date_note: date is the report-issued timestamp, "
+                "approximate; the underlying observation may pre-date it."
+            )
+        elif prov == "user_canonical":
+            body += "\n  date_note: user-confirmed date."
+        hist = getattr(f, "historical_status", None)
+        if hist:
+            body += (
+                f"\n  status: this Condition is marked {hist} in the "
+                "source — treat as history, not active."
+            )
         if src_label or src_file:
             body += f"\n  source: {src_label or '?'} · {src_file or '?'}"
         if f.description:

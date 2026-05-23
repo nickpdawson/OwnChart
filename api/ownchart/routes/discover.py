@@ -99,11 +99,19 @@ async def _dense_periods(
     If the trimmed mean is < 5, baseline is too sparse to detect
     density meaningfully — skip entirely.
     """
+    # Section C Phase 1: cluster only on date_provenance='explicit'
+    # facts. Encounter-proximate and issued-approximate dates are
+    # often the same date for a whole sync (UVA: every undated
+    # Condition lands on recordedDate=2026-05-09), which would
+    # synthesize a fake "dense year" out of an import event. Those
+    # facts still appear elsewhere (Timeline groups, dossiers, Chat)
+    # — they just don't drive the year-cluster signal.
     bucket = func.date_trunc("year", ExtractedFact.date_start)
     rows = (await db.execute(
         select(bucket.label("yr"), func.count().label("n"))
         .where(ExtractedFact.person_record_id == person_record_id)
         .where(ExtractedFact.date_start.isnot(None))
+        .where(ExtractedFact.date_provenance == "explicit")
         .where(ExtractedFact.extraction_method.notin_(WEARABLE_METHODS))
         .group_by("yr")
     )).all()
@@ -174,10 +182,14 @@ async def _long_gaps(
     weren't in the system. So we walk consecutive distinct dated
     fact dates and emit gaps between adjacent ones.
     """
+    # Section C Phase 1: only explicit dates anchor a gap. A wall of
+    # encounter_proximate facts dated to the import day would otherwise
+    # mask a real multi-year gap.
     rows = (await db.execute(
         select(ExtractedFact.date_start)
         .where(ExtractedFact.person_record_id == person_record_id)
         .where(ExtractedFact.date_start.isnot(None))
+        .where(ExtractedFact.date_provenance == "explicit")
         .where(ExtractedFact.extraction_method.notin_(WEARABLE_METHODS))
         .order_by(ExtractedFact.date_start.asc())
     )).all()
@@ -262,6 +274,13 @@ async def _connected_episodes(
         )
         .where(ExtractedFact.person_record_id == person_record_id)
         .where(ExtractedFact.date_start.isnot(None))
+        # Section C Phase 1: an episode is "facts that all happened
+        # in the same real care event," not "facts that all got
+        # imported on the same day." Only explicit dates define the
+        # cluster anchor — encounter_proximate / issued_approximate /
+        # NULL-prov facts can still be in the underlying source but
+        # they don't fabricate a connected episode by themselves.
+        .where(ExtractedFact.date_provenance == "explicit")
         .where(ExtractedFact.fact_type.in_(
             ("procedure", "condition", "encounter", "medication", "observation")
         ))

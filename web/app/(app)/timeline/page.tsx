@@ -1,6 +1,7 @@
 import { getTimeline } from "@/lib/api";
 import { BucketCard } from "./BucketCard";
 import { LifeStrip } from "./LifeStrip";
+import { UndatedHistoryCard } from "./UndatedHistoryCard";
 
 export const dynamic = "force-dynamic";
 
@@ -71,6 +72,9 @@ export default async function TimelinePage() {
               <BucketCard key={b.start} bucket={b} />
             ))}
           </ul>
+          {tl.undated_history && tl.undated_history.total > 0 && (
+            <UndatedHistoryCard group={tl.undated_history} />
+          )}
         </>
       )}
     </div>

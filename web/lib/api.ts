@@ -167,6 +167,14 @@ export type TopicSummary = {
   ignored_aliases?: string[];
 };
 
+export type FactDateProvenance =
+  | "explicit"
+  | "encounter_proximate"
+  | "issued_approximate"
+  | "user_canonical";
+
+export type FactHistoricalStatus = "resolved" | "inactive" | "remission";
+
 export type FactReadout = {
   id: string;
   fact_type: string;
@@ -178,6 +186,13 @@ export type FactReadout = {
   date_start: string | null;
   date_end: string | null;
   date_precision: string | null;
+  // Section C Phase 1 — how the date was derived. UI uses this for
+  // copy ("from this visit" / "approximate" / "you confirmed this")
+  // and Home/Discover filter to 'explicit' to avoid surfacing
+  // import-date artifacts as recent events. Optional in the type so
+  // pre-Phase-1 backends parse cleanly.
+  date_provenance?: FactDateProvenance | null;
+  historical_status?: FactHistoricalStatus | null;
   confidence: number | null;
   review_state: string;
   extraction_method: string;
@@ -386,6 +401,9 @@ export type FactContext = {
   display_label: string | null;
   description: string | null;
   date_start: string | null;
+  // Section C Phase 1.
+  date_provenance?: FactDateProvenance | null;
+  historical_status?: FactHistoricalStatus | null;
   review_state: string;
   extraction_method: string;
   confidence: number | null;
@@ -614,11 +632,29 @@ export type TimelineBucket = {
   narrative: BucketNarrative | null;
 };
 
+export type UndatedHistoryItem = {
+  fact_id: string;
+  fact_type: string;
+  label: string;
+  display_label: string | null;
+  source_label: string | null;
+};
+
+export type UndatedHistoryGroup = {
+  total: number;
+  items: UndatedHistoryItem[];
+};
+
 export type TimelineResponse = {
   grain: TimelineGrain;
   range_start: string;
   range_end: string;
   buckets: TimelineBucket[];
+  // Section C Phase 1 — facts the FHIR ingest could not pin to an
+  // explicit occurrence date (typical: Condition with only a
+  // recordedDate). Surfaced as a collapsed group instead of being
+  // silently dropped.
+  undated_history?: UndatedHistoryGroup;
 };
 
 export async function getTimeline(opts?: {
