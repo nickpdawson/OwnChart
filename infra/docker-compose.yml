@@ -78,6 +78,11 @@ services:
       # Public client (PKCE), no secret needed. Read by
       # connectors.py::_client_id_env_for("modmed").
       OWNCHART_MODMED_CLIENT_ID: ${OWNCHART_MODMED_CLIENT_ID:-}
+      # Cerner / Oracle Health Millennium: public client (PKCE
+      # S256, no client secret). Per-tenant fhir_base under
+      # fhir-myrecord.cerner.com/r4/<tenant>/. Read by
+      # connectors.py::_client_id_env_for("cerner").
+      OWNCHART_CERNER_CLIENT_ID: ${OWNCHART_CERNER_CLIENT_ID:-}
       # Google Calendar OAuth (Beta 1 calendar lane,
       # FU-CAL-GOOGLE-OAUTH). Operator-only secrets: set in
       # infra/.env on the host. When unset, the connect-start
