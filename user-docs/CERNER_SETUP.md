@@ -14,8 +14,13 @@ For 2026, **FHIR R4 (Ignite APIs)** is the recommended path for new integrations
 
 ## Step 1 — Create a CernerCare account
 
-1. Go to <https://code.cerner.com>.
-2. Sign up for a **CernerCare** account if you don't already have one. (The "CernerCare" branding may be replaced by Oracle SSO in the future, but at present this is the credential that gates the developer console.)
+1. Go to <https://code-console.cerner.com> (the self-registration
+   UI; the marketing site at <https://code.cerner.com> redirects
+   here). Older docs may still link to `code.cerner.com` directly.
+2. Sign up for a **CernerCare** account if you don't already have
+   one. (The "CernerCare" branding may be replaced by Oracle SSO
+   in the future, but at present this is the credential that gates
+   the developer console.)
 3. Verify your email.
 
 ## Step 2 — Open the code Console
@@ -46,12 +51,43 @@ Registration fields in code Console:
 |---|---|
 | App name | `OwnChart` (or your fork's name) |
 | Launch type | Standalone |
-| Audience | Patient |
+| App type | **Patient** (not Provider, not System) |
 | Redirect URI | `https://your-instance.example.com/api/connectors/callback` |
-| Client type | Public client with PKCE |
+| Launch URI | `https://your-instance.example.com` |
+| Client type | **Public client with PKCE — no client secret.** Oracle Health issues PKCE-only public clients for Patient apps; if your registration tries to issue a `client_secret`, you've picked the wrong app type. |
 | SMART version | R4 (Ignite APIs) |
 | Scopes | `openid fhirUser launch/patient patient/*.read` |
 | Description | "Self-hosted platform for patients to maintain a canonical health record for their own personal use." |
+
+**No client secret.** A Patient app on Oracle Health is a public
+client. If the code Console offers you a client secret to copy,
+re-check that you selected **Patient** for app type. Do not paste,
+store, or set a `client_secret` env var for Cerner — there is no
+`OWNCHART_CERNER_CLIENT_SECRET`, and you should not invent one.
+
+## Finding a production FHIR base URL — endpoint directory
+
+For sandbox testing the FHIR base is the per-tenant URL the code
+Console shows on your app detail page. For **production**, every
+Oracle Health customer hosts its own FHIR endpoint at its own base
+URL, and the only authoritative source for those URLs is the
+**Oracle Millennium patient R4 endpoint directory** (Oracle's
+published per-site list). Search the directory for the health
+system the patient actually uses, copy the FHIR R4 base URL,
+verify it with `/.well-known/smart-configuration` (see Step 4),
+and use that exact URL — including the trailing slash — in
+`connectors.seed.yaml`.
+
+Concrete example. Centra Health (a real Oracle Health customer in
+Lynchburg, VA) publishes:
+
+```
+https://fhir-myrecord.cerner.com/r4/ab208292-75a1-4788-9fc7-1e9a40a7eee3/
+```
+
+That tenant UUID (`ab208292-…`) is unique to Centra; every other
+site has its own. The host (`fhir-myrecord.cerner.com`) and the
+`/r4/` path are constant across Oracle Health customers.
 
 ## Step 4 — Sandbox testing
 
@@ -62,6 +98,18 @@ https://fhir-myrecord.cerner.com/r4/<sandbox-tenant-id>/
 ```
 
 (The exact tenant ID appears in your code Console app detail page.)
+
+Before any OAuth round-trip, verify the FHIR base resolves to a
+real SMART-on-FHIR endpoint by fetching its discovery document:
+
+```sh
+curl -sf https://fhir-myrecord.cerner.com/r4/<tenant-id>/.well-known/smart-configuration
+```
+
+You should get a JSON object with `authorization_endpoint`,
+`token_endpoint`, `capabilities`, and a list of supported `scopes`.
+If you get HTML back (a login page, a marketing page, a 404),
+you've pasted the wrong URL — see the troubleshooting matrix below.
 
 Validate:
 
@@ -80,7 +128,12 @@ OWNCHART_CERNER_CLIENT_ID=<production client id>
 OWNCHART_CERNER_CLIENT_ID_SANDBOX=<sandbox client id>
 ```
 
-Note: Oracle Health typically issues **PKCE-only public clients** for patient apps. No `client_secret`. If your registration came out as a confidential client, double-check that with code Console — patient-facing apps should be public.
+Note: Oracle Health issues **PKCE-only public clients** for Patient
+apps. There is **no `client_secret`**. Do not set
+`OWNCHART_CERNER_CLIENT_SECRET` — it doesn't exist as an env var
+because there is nothing to put in it. If your registration came
+out as a confidential client, you registered as the wrong app type
+(Provider or System instead of Patient); re-register.
 
 Add to `infra/connectors.seed.yaml`:
 
@@ -146,6 +199,10 @@ Each row becomes a separate "Connect ..." button in the OwnChart UI.
 | Token exchange 401 | Sandbox `client_id` against a production base URL (or vice versa) | Match env var to FHIR base |
 | Sandbox works, production returns empty bundles | Patient not enrolled in that hospital's patient portal | Patient enrolls in MyChart-equivalent for that hospital |
 | `fhirUser` returns null after auth | Standalone launch didn't bind a patient context | Confirm `launch/patient` is in your registered scopes |
+| `/.well-known/smart-configuration` returns **HTML** instead of JSON | You pasted a **patient portal URL** (or some other web page) into `fhir_base`, not the actual FHIR R4 base URL | Look the site up in the Oracle Millennium patient R4 endpoint directory; the correct base has the `https://fhir-myrecord.cerner.com/r4/<tenant-id>/` shape. Re-verify the discovery URL returns JSON. |
+| The SMART login page loads, the patient enters their credentials, login fails | Almost always a vendor-side **patient / firm / app entitlement** problem — the patient is not enrolled for FHIR access at that site, the site has not whitelisted your `client_id`, or the patient's account is not provisioned for the patient portal. **Not an OwnChart bug.** | Ask the hospital's patient-portal team to confirm (a) the patient is enrolled, (b) your `client_id` is whitelisted on their Millennium instance, and (c) Patient API access is enabled for that account. |
+| `client_secret` field appears in the OAuth flow | You registered as Provider or System, not **Patient**. Patient apps are public clients (PKCE only). | Re-register the app in code Console with **App type: Patient**; there should be no client secret offered. |
+| Support ticket includes a copy-pasted browser URL after sign-in | Don't paste full SMART/OAuth callback URLs into tickets — they carry `code`, `state`, and `session_code` query-string values that are scoped credentials. | Redact everything after `?` before pasting. Share the response status + error code/message text, not the URL. |
 
 ## Open items / known unknowns
 
