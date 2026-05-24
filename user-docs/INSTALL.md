@@ -99,6 +99,7 @@ Optional but useful:
 | `OWNCHART_EPIC_CLIENT_ID` / `_SANDBOX` | Set once you register an Epic patient app. See [EPIC_SETUP.md](./EPIC_SETUP.md). |
 | `OWNCHART_ATHENA_CLIENT_ID` | See [ATHENA_SETUP.md](./ATHENA_SETUP.md). |
 | `OWNCHART_MODMED_CLIENT_ID` | See [MODMED_SETUP.md](./MODMED_SETUP.md). |
+| `OWNCHART_CERNER_CLIENT_ID` | Set once you register an Oracle Health (Cerner) Patient app at <https://code-console.cerner.com>. Public client (PKCE), no secret. See [CERNER_SETUP.md](./CERNER_SETUP.md). |
 | `OWNCHART_GOOGLE_CALENDAR_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI` | Enable Google Calendar connect in Settings -> Calendar. This uses a Google OAuth Web client, not an API key. See [GOOGLE_CALENDAR_SETUP.md](./GOOGLE_CALENDAR_SETUP.md). |
 | `OWNCHART_DEBUG_PAYLOADS=true` | Logs raw request/response bodies. PHI risk. Off by default. |
 
