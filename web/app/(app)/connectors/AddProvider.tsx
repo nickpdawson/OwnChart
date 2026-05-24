@@ -4,10 +4,18 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { DirectoryEntry } from "@/lib/api";
 
-type Mode = "search" | "athena" | "modmed" | "manual";
+type Mode = "search" | "athena" | "modmed" | "cerner" | "manual";
 
 const ATHENA_FHIR_BASE_PROD = "https://api.platform.athenahealth.com/fhir/r4/";
 const ATHENA_FHIR_BASE_PREVIEW = "https://api.preview.platform.athenahealth.com/fhir/r4/";
+
+// Centra Health (Lynchburg, VA) — the PM-named Beta 1 Cerner smoke
+// target. Surfaced as a quick-add chip on the Cerner tab so Nick
+// doesn't have to search for it. Real users on other Cerner
+// tenants use the directory search instead.
+const CENTRA_HEALTH_FHIR_BASE =
+  "https://fhir-myrecord.cerner.com/r4/ab208292-75a1-4788-9fc7-1e9a40a7eee3/";
+const CENTRA_HEALTH_NAME = "Centra Health, Inc.";
 
 export function AddProvider() {
   const router = useRouter();
@@ -34,6 +42,19 @@ export function AddProvider() {
   // or from ModMed's FHIR vendor dashboard.
   const [modmedName, setModmedName] = useState("");
   const [modmedUrl, setModmedUrl] = useState("");
+
+  // cerner / Oracle Health Millennium fields. Per-tenant fhir_base
+  // under fhir-myrecord.cerner.com/r4/<tenant>/. The Cerner tab
+  // searches Oracle's public millennium_patient_r4_endpoints.json
+  // (proxied via /api/connectors/directory/search?vendor=cerner)
+  // and offers a quick-add chip for the Centra Health Beta 1 smoke
+  // target. A manual paste fallback handles tenants Oracle's
+  // published Bundle hasn't indexed yet.
+  const [cernerQuery, setCernerQuery] = useState("");
+  const [cernerResults, setCernerResults] = useState<DirectoryEntry[] | null>(null);
+  const [cernerSearching, setCernerSearching] = useState(false);
+  const [cernerManualName, setCernerManualName] = useState("");
+  const [cernerManualUrl, setCernerManualUrl] = useState("");
 
   async function search(e?: React.FormEvent) {
     e?.preventDefault();
@@ -112,6 +133,64 @@ export function AddProvider() {
     setManualUrl("");
   }
 
+  async function searchCerner(e?: React.FormEvent) {
+    e?.preventDefault();
+    setError(null);
+    setCernerSearching(true);
+    setCernerResults(null);
+    try {
+      const url =
+        `/api/connectors/directory/search?q=${encodeURIComponent(cernerQuery)}` +
+        `&vendor=cerner&limit=25`;
+      const r = await fetch(url, { credentials: "include", cache: "no-store" });
+      if (!r.ok) {
+        let detail = "";
+        try {
+          const j = await r.json();
+          detail = j?.detail ? ` — ${j.detail}` : "";
+        } catch {
+          /* ignore */
+        }
+        setError(`Search failed (HTTP ${r.status})${detail}`);
+        return;
+      }
+      setCernerResults((await r.json()) as DirectoryEntry[]);
+    } finally {
+      setCernerSearching(false);
+    }
+  }
+
+  async function quickAddCentraHealth() {
+    await add({
+      name: CENTRA_HEALTH_NAME,
+      fhir_base: CENTRA_HEALTH_FHIR_BASE,
+      ehr_vendor: "cerner",
+    });
+  }
+
+  async function addCernerManual(e: React.FormEvent) {
+    e.preventDefault();
+    const name = cernerManualName.trim();
+    const url = cernerManualUrl.trim();
+    if (!name) {
+      setError("Health system / hospital name is required.");
+      return;
+    }
+    if (!url) {
+      setError("Cerner FHIR base URL is required.");
+      return;
+    }
+    if (!/^https:\/\//i.test(url)) {
+      setError(
+        "FHIR base URL should start with https://. (Backend validation is authoritative; this is a hint.)",
+      );
+      return;
+    }
+    await add({ name, fhir_base: url, ehr_vendor: "cerner" });
+    setCernerManualName("");
+    setCernerManualUrl("");
+  }
+
   async function addModmed(e: React.FormEvent) {
     e.preventDefault();
     const name = modmedName.trim();
@@ -158,6 +237,7 @@ export function AddProvider() {
         <TabButton id="search" label="Search Epic directory" />
         <TabButton id="athena" label="athenahealth" />
         <TabButton id="modmed" label="ModMed / EMA" />
+        <TabButton id="cerner" label="Cerner / Oracle Health" />
         <TabButton id="manual" label="Paste FHIR URL" />
       </div>
 
@@ -331,6 +411,153 @@ export function AddProvider() {
             {adding ? "Adding…" : "Add ModMed connector"}
           </button>
         </form>
+      )}
+
+      {mode === "cerner" && (
+        <div className="pt-4">
+          <p className="text-xs text-muted">
+            Oracle Health Millennium (formerly Cerner) hosts your
+            records under a per-tenant URL on{" "}
+            <code>fhir-myrecord.cerner.com</code>. Search Oracle&rsquo;s
+            published Millennium patient R4 endpoint directory for
+            your health system, or paste your tenant URL directly
+            below.
+          </p>
+
+          {/* Quick-add: Centra Health (Lynchburg, VA) is the Beta 1
+              smoke target Nick named. Surfacing as a chip so the
+              user doesn't have to type or search. */}
+          <div className="mt-3 rounded-md border border-muted/10 bg-bg/40 p-3 text-sm">
+            <p className="text-xs uppercase tracking-widest text-muted">
+              Quick add
+            </p>
+            <div className="mt-2 flex flex-wrap items-baseline justify-between gap-2">
+              <div className="min-w-0">
+                <p className="truncate">{CENTRA_HEALTH_NAME}</p>
+                <p className="break-all text-xs text-muted">
+                  {CENTRA_HEALTH_FHIR_BASE}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={quickAddCentraHealth}
+                disabled={adding === CENTRA_HEALTH_NAME}
+                className="shrink-0 rounded-md bg-accent px-2.5 py-1 text-xs text-surface disabled:opacity-50"
+              >
+                {adding === CENTRA_HEALTH_NAME ? "Adding…" : "Add"}
+              </button>
+            </div>
+          </div>
+
+          {/* Search Oracle's published directory by name / alias. */}
+          <form onSubmit={searchCerner} className="mt-4 flex flex-wrap gap-2">
+            <input
+              type="text"
+              value={cernerQuery}
+              onChange={(e) => setCernerQuery(e.target.value)}
+              placeholder='Health system name (e.g. "Centra", "Adventist")'
+              className="flex-1 min-w-[12rem] rounded-md border border-muted/30 bg-bg px-3 py-2 text-sm"
+            />
+            <button
+              type="submit"
+              disabled={cernerSearching}
+              className="rounded-lg bg-accent px-3 py-2 text-sm text-surface disabled:opacity-50"
+            >
+              {cernerSearching ? "Searching…" : "Search"}
+            </button>
+          </form>
+
+          {error && <p className="mt-3 text-sm text-caution">{error}</p>}
+
+          {cernerResults && (
+            <ul className="mt-4 max-h-96 space-y-1 overflow-auto rounded-md border border-muted/10">
+              {cernerResults.length === 0 ? (
+                <li className="px-3 py-2 text-sm text-muted">
+                  No matches in Oracle&rsquo;s published directory. If
+                  you know your tenant URL, use the manual paste below.
+                </li>
+              ) : (
+                cernerResults.map((r) => (
+                  <li
+                    key={`${r.name}|${r.fhir_base}`}
+                    className="flex flex-wrap items-baseline justify-between gap-2 border-b border-muted/10 px-3 py-2 last:border-b-0"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm">{r.name}</p>
+                      <p className="break-all text-xs text-muted">{r.fhir_base}</p>
+                    </div>
+                    <button
+                      onClick={() =>
+                        add({
+                          name: r.name,
+                          fhir_base: r.fhir_base,
+                          ehr_vendor: "cerner",
+                        })
+                      }
+                      disabled={adding === r.name}
+                      className="rounded-md bg-accent px-2.5 py-1 text-xs text-surface disabled:opacity-50"
+                    >
+                      {adding === r.name ? "Adding…" : "Add"}
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
+          )}
+
+          {/* Manual paste fallback — for tenants not yet in Oracle's
+              published directory, or when the user already knows the
+              tenant URL. */}
+          <details className="mt-6 rounded-md border border-muted/15 bg-surface p-3">
+            <summary className="cursor-pointer text-sm font-medium text-ink">
+              Paste a Cerner tenant URL directly
+            </summary>
+            <form onSubmit={addCernerManual} className="mt-3 grid gap-3">
+              <p className="text-xs text-muted">
+                Use this if your health system isn&rsquo;t in
+                Oracle&rsquo;s directory yet, or you already have the
+                tenant URL from your patient portal&rsquo;s SMART
+                configuration.
+              </p>
+              <label className="text-sm">
+                Health system name
+                <input
+                  type="text"
+                  value={cernerManualName}
+                  onChange={(e) => setCernerManualName(e.target.value)}
+                  placeholder="e.g. Your Health System"
+                  className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+                />
+              </label>
+              <label className="text-sm">
+                Cerner FHIR base URL
+                <input
+                  type="url"
+                  value={cernerManualUrl}
+                  onChange={(e) => setCernerManualUrl(e.target.value)}
+                  placeholder="https://fhir-myrecord.cerner.com/r4/<tenant-id>/"
+                  className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={adding !== null}
+                className="justify-self-start rounded-lg bg-accent px-4 py-2 text-sm text-surface disabled:opacity-50"
+              >
+                {adding ? "Adding…" : "Add Cerner connector"}
+              </button>
+            </form>
+          </details>
+
+          <p className="mt-3 text-xs text-muted">
+            On Connect, you&rsquo;ll be redirected to
+            <code> authorization.cerner.com</code>. Sign in with your{" "}
+            <strong>patient-portal credentials</strong> for that
+            health system. The Cerner client ID is operator config
+            via the <code>OWNCHART_CERNER_CLIENT_ID</code> env var;
+            you don&rsquo;t enter it here.
+          </p>
+        </div>
       )}
 
       {mode === "manual" && (

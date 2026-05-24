@@ -212,12 +212,63 @@ _MODMED_DEFAULT_SCOPES = " ".join(
 )
 
 
+# Cerner / Oracle Health Millennium — per-tenant fhir_base under
+# `https://fhir-myrecord.cerner.com/r4/<tenant-id>/`. Public client
+# (no client secret), PKCE S256 mandatory, SMART v1 endpoints
+# advertised by the tenant's `/.well-known/smart-configuration`.
+# Centra Health's SMART config (the smoke target) lists explicit
+# per-resource scopes — wildcards aren't honored, same posture as
+# ModMed. We mirror the 25 patient resources Centra's app exposes;
+# this is also a reasonable USCDI-aligned default for any other
+# Cerner tenant in Beta 1. Operators with non-standard tenants can
+# override via the per-connector `scopes` column.
+#
+# fhirUser IS included for Cerner: their app registrations grant
+# the OIDC fhirUser claim by default, unlike ModMed where it's a
+# separate approval. Beta 1 does NOT request offline_access (PM
+# directive — only request it if Nick confirms the registration
+# has refresh-token approval).
+_CERNER_PATIENT_RESOURCES: tuple[str, ...] = (
+    "Patient",
+    "AllergyIntolerance",
+    "CarePlan",
+    "CareTeam",
+    "Condition",
+    "Coverage",
+    "Device",
+    "DiagnosticReport",
+    "DocumentReference",
+    "Encounter",
+    "FamilyMemberHistory",
+    "Goal",
+    "Immunization",
+    "MedicationAdministration",
+    "MedicationDispense",
+    "MedicationRequest",
+    "Observation",
+    "Person",
+    "Procedure",
+    "Provenance",
+    "Questionnaire",
+    "QuestionnaireResponse",
+    "RelatedPerson",
+    "ServiceRequest",
+    "Specimen",
+)
+_CERNER_DEFAULT_SCOPES = " ".join(
+    ["openid", "fhirUser", "launch/patient", "online_access"]
+    + [f"patient/{r}.rs" for r in _CERNER_PATIENT_RESOURCES]
+)
+
+
 def _default_scopes_for(ehr_vendor: str | None) -> str:
     v = (ehr_vendor or "").lower()
     if v == "athena":
         return _ATHENA_DEFAULT_SCOPES
     if v == "modmed":
         return _MODMED_DEFAULT_SCOPES
+    if v == "cerner":
+        return _CERNER_DEFAULT_SCOPES
     return _DEFAULT_SCOPES
 
 
@@ -293,6 +344,9 @@ async def list_connectors(
 # ---------------------------------------------------------------------------
 
 
+_DIRECTORY_VENDORS_SUPPORTED: tuple[str, ...] = ("epic", "cerner")
+
+
 @router.get("/directory/search")
 async def directory_search(
     q: str = Query(default="", description="Substring/keyword query (e.g. 'stanford')"),
@@ -302,14 +356,21 @@ async def directory_search(
 ) -> list[DirectoryEntryReadout]:
     """Search a vendor's published FHIR endpoint directory.
 
-    Today: Epic only. Athena/Cerner directories aren't open enough to
-    mirror cleanly; for those vendors, the user pastes a fhir_base URL
-    via POST /api/connectors directly.
+    Supported vendors (Beta 1):
+      - epic   — Epic's open R4 endpoint HTML page
+      - cerner — Oracle Health Millennium's patient R4 endpoint
+        Bundle (oracle-samples/ignite-endpoints on GitHub)
+
+    Other vendors (e.g. Athena) don't publish a clean directory; for
+    those the user pastes a fhir_base URL via POST /api/connectors.
     """
-    if vendor != "epic":
+    if vendor not in _DIRECTORY_VENDORS_SUPPORTED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Directory search isn't available for {vendor} yet. Use POST /api/connectors with a known fhir_base.",
+            detail=(
+                f"Directory search isn't available for {vendor} yet. "
+                "Use POST /api/connectors with a known fhir_base."
+            ),
         )
     entries = await provider_directory.get_directory(vendor)
     matches = provider_directory.search(entries, q, limit=limit)
