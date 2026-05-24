@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { DirectoryEntry } from "@/lib/api";
 
-type Mode = "search" | "athena" | "manual";
+type Mode = "search" | "athena" | "modmed" | "manual";
 
 const ATHENA_FHIR_BASE_PROD = "https://api.platform.athenahealth.com/fhir/r4/";
 const ATHENA_FHIR_BASE_PREVIEW = "https://api.preview.platform.athenahealth.com/fhir/r4/";
@@ -27,6 +27,13 @@ export function AddProvider() {
   // athena fields
   const [athenaName, setAthenaName] = useState("");
   const [athenaEnv, setAthenaEnv] = useState<"production" | "preview">("production");
+
+  // modmed fields — ModMed (also branded as EMA, Electronic Medical
+  // Assistant) is per-practice; there's no shared multi-tenant base
+  // URL like Athena. The user gets the fhir_base from their practice
+  // or from ModMed's FHIR vendor dashboard.
+  const [modmedName, setModmedName] = useState("");
+  const [modmedUrl, setModmedUrl] = useState("");
 
   async function search(e?: React.FormEvent) {
     e?.preventDefault();
@@ -105,6 +112,29 @@ export function AddProvider() {
     setManualUrl("");
   }
 
+  async function addModmed(e: React.FormEvent) {
+    e.preventDefault();
+    const name = modmedName.trim();
+    const url = modmedUrl.trim();
+    if (!name) {
+      setError("Practice name is required.");
+      return;
+    }
+    if (!url) {
+      setError("ModMed FHIR base URL is required.");
+      return;
+    }
+    if (!/^https:\/\//i.test(url)) {
+      setError(
+        "FHIR base URL should start with https://. (Backend validation is authoritative; this is a hint.)",
+      );
+      return;
+    }
+    await add({ name, fhir_base: url, ehr_vendor: "modmed" });
+    setModmedName("");
+    setModmedUrl("");
+  }
+
   function TabButton({ id, label }: { id: Mode; label: string }) {
     return (
       <button
@@ -127,6 +157,7 @@ export function AddProvider() {
       <div className="flex flex-wrap gap-1 border-b border-muted/10">
         <TabButton id="search" label="Search Epic directory" />
         <TabButton id="athena" label="athenahealth" />
+        <TabButton id="modmed" label="ModMed / EMA" />
         <TabButton id="manual" label="Paste FHIR URL" />
       </div>
 
@@ -246,6 +277,58 @@ export function AddProvider() {
             className="justify-self-start rounded-lg bg-accent px-4 py-2 text-sm text-surface disabled:opacity-50"
           >
             {adding ? "Adding…" : "Add athenahealth connector"}
+          </button>
+        </form>
+      )}
+
+      {mode === "modmed" && (
+        <form onSubmit={addModmed} className="grid gap-3 pt-4">
+          <p className="text-xs text-muted">
+            ModMed (also branded <strong>EMA</strong>, Electronic Medical
+            Assistant) is a per-practice EHR &mdash; every practice gets
+            its own FHIR base URL. You&rsquo;ll need the FHIR base URL
+            from your practice or from the ModMed FHIR vendor dashboard
+            that the operator of this OwnChart instance set up.
+          </p>
+          <label className="text-sm">
+            Practice name
+            <input
+              type="text"
+              value={modmedName}
+              onChange={(e) => setModmedName(e.target.value)}
+              placeholder="e.g. Bridger Orthopedic & Sports Medicine"
+              className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+            />
+          </label>
+          <label className="text-sm">
+            ModMed FHIR base URL
+            <input
+              type="url"
+              value={modmedUrl}
+              onChange={(e) => setModmedUrl(e.target.value)}
+              placeholder="https://stage.ema-api.com/ema-dev/firm/<practice>/ema/fhir/v2/"
+              className="mt-1 w-full rounded-md border border-muted/30 bg-bg px-3 py-2"
+            />
+          </label>
+          <p className="text-xs text-muted">
+            On Connect, you&rsquo;ll be redirected to ModMed&rsquo;s
+            login screen. Sign in with the{" "}
+            <strong>patient-portal credentials</strong> your practice
+            gave you (the same ones you use to view your records on
+            their patient app) &mdash; not developer credentials.
+          </p>
+          <p className="text-xs text-muted">
+            The ModMed client ID is configured by the OwnChart operator
+            via the <code>OWNCHART_MODMED_CLIENT_ID</code> environment
+            variable; you don&rsquo;t enter it here.
+          </p>
+          {error && <p className="text-sm text-caution">{error}</p>}
+          <button
+            type="submit"
+            disabled={adding !== null}
+            className="justify-self-start rounded-lg bg-accent px-4 py-2 text-sm text-surface disabled:opacity-50"
+          >
+            {adding ? "Adding…" : "Add ModMed connector"}
           </button>
         </form>
       )}
