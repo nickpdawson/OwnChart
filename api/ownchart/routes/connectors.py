@@ -381,12 +381,40 @@ async def delete_connector(
     ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> None:
-    """Delete a connector if no user has an active connection on it.
+    """Delete a catalog connector row.
 
-    Disabling (vs deleting) is via the `enabled` flag in the seed yaml or
-    a future UI toggle — but actual deletion (e.g. removing a typo'd
-    connector) goes here.
+    Beta 1 patch (2026-05-24, PM #214 promotion): tightened to
+    instance-admin-only. ProviderConnector is instance-global
+    (visible under "Provider catalog on this instance" for every
+    user on the host); allowing any caregiver/owner to delete
+    operator-curated rows is too broad in the multi-tenant posture.
+    Creator-scoped delete (allow the user who Added a row to
+    Remove it) requires a `created_by_user_id` column on
+    ProviderConnector, which doesn't exist today — filed as a
+    follow-up after this Beta 1 patch lands.
+
+    Refuses to delete a connector with active ProviderConnection
+    rows (409); the caller must Disconnect first. That guard
+    pre-existed and is the reason the route stays at 204-no-content
+    on success — no PHI ever touches the response.
+
+    Log shape: slug + user_id only. No client_id, no tokens, no
+    patient names. Body is empty (204). Audit trail of who deleted
+    what stays in the structured log for post-incident review.
     """
+    if not ctx.user.is_instance_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "not_instance_admin",
+                "message": (
+                    "Only an instance admin can remove provider "
+                    "catalog rows. Ask the person who hosts this "
+                    "OwnChart if you need a row removed."
+                ),
+            },
+        )
+
     # Resolve by id or by slug.
     target: ProviderConnector | None = None
     try:
@@ -406,11 +434,19 @@ async def delete_connector(
     if has_conn is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Connector has at least one connection. Disconnect first, then retry.",
+            detail={
+                "code": "has_active_connection",
+                "message": (
+                    "Someone has connected this provider. Disconnect "
+                    "active connections first."
+                ),
+            },
         )
     await db.delete(target)
     await db.commit()
-    log.info("connector_deleted", slug=target.slug, user_id=str(ctx.user.id))
+    log.info(
+        "connector_deleted", slug=target.slug, user_id=str(ctx.user.id),
+    )
 
 
 @router.post("/{slug}/connect")

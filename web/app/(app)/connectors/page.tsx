@@ -1,4 +1,4 @@
-import { listConnectors } from "@/lib/api";
+import { getMe, listConnectors } from "@/lib/api";
 import { AddProvider } from "./AddProvider";
 import { ConnectorRow } from "./ConnectorRow";
 
@@ -12,7 +12,15 @@ export default async function ConnectorsPage({
   searchParams: SearchParams;
 }) {
   const sp = await searchParams;
-  const connectors = await listConnectors();
+  const [connectors, me] = await Promise.all([
+    listConnectors(),
+    getMe(),
+  ]);
+  // PM #214 Beta 1 patch: only instance admins can Remove catalog
+  // rows from "Provider catalog on this instance." Pass the flag
+  // down so the button is rendered only when the backend will
+  // honor it; the route still enforces the gate authoritatively.
+  const isInstanceAdmin = me?.is_instance_admin === true;
 
   return (
     <div className="max-w-4xl">
@@ -76,7 +84,11 @@ export default async function ConnectorsPage({
               ) : (
                 <ul className="mt-3 space-y-3">
                   {yours.map((c) => (
-                    <ConnectorRow key={c.id} c={c} />
+                    <ConnectorRow
+                      key={c.id}
+                      c={c}
+                      isInstanceAdmin={isInstanceAdmin}
+                    />
                   ))}
                 </ul>
               )}
@@ -93,10 +105,22 @@ export default async function ConnectorsPage({
                   &mdash; just endpoints you may authenticate against
                   with your own patient-portal credentials. Click{" "}
                   <em>Connect</em> on a row to start the OAuth flow.
+                  {isInstanceAdmin && (
+                    <>
+                      {" "}
+                      As an instance admin you can also <em>Remove</em>{" "}
+                      a row you added by mistake before anyone has
+                      connected to it.
+                    </>
+                  )}
                 </p>
                 <ul className="mt-3 space-y-3">
                   {available.map((c) => (
-                    <ConnectorRow key={c.id} c={c} />
+                    <ConnectorRow
+                      key={c.id}
+                      c={c}
+                      isInstanceAdmin={isInstanceAdmin}
+                    />
                   ))}
                 </ul>
               </section>

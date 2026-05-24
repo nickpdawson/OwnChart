@@ -18,9 +18,20 @@ function totalResources(counts: Record<string, number> | null): number {
   return Object.values(counts).reduce((a, b) => a + b, 0);
 }
 
-export function ConnectorRow({ c }: { c: ConnectorSummary }) {
+export function ConnectorRow({
+  c,
+  isInstanceAdmin = false,
+}: {
+  c: ConnectorSummary;
+  // PM #214 Beta 1 patch: only instance admins see the Remove
+  // button on unconnected catalog rows. Default false keeps
+  // non-admin callers behavior-compatible.
+  isInstanceAdmin?: boolean;
+}) {
   const router = useRouter();
-  const [busy, setBusy] = useState<"connect" | "sync" | "disconnect" | null>(null);
+  const [busy, setBusy] = useState<
+    "connect" | "sync" | "disconnect" | "remove" | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<string | null>(null);
 
@@ -104,6 +115,54 @@ export function ConnectorRow({ c }: { c: ConnectorSummary }) {
     }
   }
 
+  async function remove() {
+    // PM #214 Beta 1 patch — remove a typo'd / wrong-URL catalog
+    // row. Backend gates this to is_instance_admin; the button is
+    // only rendered for admins, but the route is authoritative.
+    if (c.connection) return;
+    if (
+      !confirm(
+        "Remove this provider endpoint from the instance catalog? " +
+          "This only removes the endpoint row. It does not disconnect " +
+          "any patient portal account.",
+      )
+    ) {
+      return;
+    }
+    setBusy("remove");
+    setError(null);
+    try {
+      const r = await fetch(`/api/connectors/${c.slug}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (r.status === 204) {
+        router.refresh();
+        return;
+      }
+      if (r.status === 409) {
+        setError(
+          "Someone has connected this provider. Disconnect active " +
+            "connections first.",
+        );
+        return;
+      }
+      if (r.status === 403) {
+        setError(
+          "Only an instance admin can remove provider catalog rows.",
+        );
+        return;
+      }
+      if (r.status === 404) {
+        setError("Provider not found (it may already have been removed).");
+        return;
+      }
+      setError(`Remove failed (HTTP ${r.status})`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const connected = c.connection && c.connection.status === "connected";
   const tokenCount = totalResources(c.connection?.cached_resource_counts ?? null);
 
@@ -141,13 +200,25 @@ export function ConnectorRow({ c }: { c: ConnectorSummary }) {
               </button>
             </>
           ) : (
-            <button
-              onClick={startConnect}
-              disabled={busy !== null || !c.has_client_id || !c.enabled}
-              className="inline-flex min-h-[44px] w-full items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm text-surface disabled:opacity-50 sm:w-auto"
-            >
-              {busy === "connect" ? "Opening…" : "Connect"}
-            </button>
+            <>
+              <button
+                onClick={startConnect}
+                disabled={busy !== null || !c.has_client_id || !c.enabled}
+                className="inline-flex min-h-[44px] flex-1 items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm text-surface disabled:opacity-50 sm:flex-initial"
+              >
+                {busy === "connect" ? "Opening…" : "Connect"}
+              </button>
+              {isInstanceAdmin && (
+                <button
+                  onClick={remove}
+                  disabled={busy !== null}
+                  className="inline-flex min-h-[44px] items-center justify-center rounded-lg border border-muted/30 px-3 py-2.5 text-sm text-muted hover:border-warning/60 hover:text-warning disabled:opacity-50"
+                  title="Remove this provider endpoint from the instance catalog"
+                >
+                  {busy === "remove" ? "…" : "Remove"}
+                </button>
+              )}
+            </>
           )}
         </div>
       </div>
