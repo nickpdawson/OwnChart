@@ -206,3 +206,56 @@ def test_facts_handler_signatures_include_auth_context():
             f"{fn.__name__} must declare exactly one "
             f"`AuthContext` parameter; got {ctx_params}."
         )
+
+
+# ---------------------------------------------------------------------------
+# UserAssertion person_record_id regression (M02 Slice 1).
+#
+# The user_assertions table got person_record_id NOT NULL via the Slice 1
+# migration set, but the SQLAlchemy model wasn't updated to map it. Both
+# PATCH /api/facts/{id} and POST /api/facts/bulk constructed UserAssertion
+# rows without the column, so SQLAlchemy silently omitted it from the
+# INSERT and asyncpg.NotNullViolationError landed on first user click
+# (Confirm/Not important/Duplicate/Wrong/Edit). Same fix shape as the
+# earlier FU-EXTRACT-PERIMETER-MISS round — pin the model column + the
+# stamp at every insert site so a future refactor can't silently drop it.
+
+
+def test_user_assertion_model_declares_person_record_id():
+    from ownchart.models.user_assertion import UserAssertion
+    cols = {c.name for c in UserAssertion.__table__.columns}
+    assert "person_record_id" in cols, (
+        "UserAssertion model missing person_record_id; SQLAlchemy will "
+        "omit it from INSERT and hit the NOT NULL constraint."
+    )
+    col = UserAssertion.__table__.c.person_record_id
+    assert col.nullable is False, (
+        "person_record_id must be NOT NULL on the model to match the DB "
+        "constraint set by the Slice 1 migration set."
+    )
+
+
+def test_correct_fact_route_stamps_person_record_id():
+    """PATCH /api/facts/{id} must pass person_record_id=ctx.active_record_id
+    to the UserAssertion constructor."""
+    import inspect
+    from ownchart.routes.facts import correct_fact
+    src = inspect.getsource(correct_fact)
+    assert "person_record_id=ctx.active_record_id" in src, (
+        "correct_fact must stamp person_record_id=ctx.active_record_id on "
+        "the UserAssertion it creates; otherwise the INSERT hits the "
+        "NOT NULL violation that caused the 2026-05-25 P0."
+    )
+
+
+def test_bulk_correct_facts_route_stamps_person_record_id():
+    """POST /api/facts/bulk must pass person_record_id=ctx.active_record_id
+    to every UserAssertion it creates inside the loop."""
+    import inspect
+    from ownchart.routes.facts import bulk_correct_facts
+    src = inspect.getsource(bulk_correct_facts)
+    assert "person_record_id=ctx.active_record_id" in src, (
+        "bulk_correct_facts must stamp person_record_id=ctx.active_record_id "
+        "on every UserAssertion it creates; otherwise the INSERT hits the "
+        "NOT NULL violation."
+    )

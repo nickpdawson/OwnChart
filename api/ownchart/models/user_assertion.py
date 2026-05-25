@@ -21,6 +21,21 @@ class UserAssertion(Base, TimestampMixin):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
+    # M02 perimeter: the record this assertion applies to. The
+    # underlying table got person_record_id NOT NULL via the Slice 1
+    # migration set, but the SQLAlchemy model wasn't updated to map
+    # it — the two PATCH /api/facts/* routes inserted UserAssertion
+    # rows without the field and hit asyncpg.NotNullViolationError
+    # at first user click (2026-05-25). Fixed by adding the mapped
+    # column here and stamping ctx.active_record_id at every insert
+    # site. Same fix shape as the earlier FU-EXTRACT-PERIMETER-MISS
+    # round (#160/#162).
+    person_record_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("person_records.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     related_fact_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("extracted_facts.id", ondelete="SET NULL"), index=True
     )

@@ -710,6 +710,7 @@ async def correct_fact(
 
     ua = UserAssertion(
         user_id=user.id,
+        person_record_id=ctx.active_record_id,
         related_fact_id=c.id,
         assertion_type=body.assertion_type,
         canonical_label=body.canonical_label,
@@ -960,6 +961,7 @@ async def bulk_correct_facts(
         try:
             db.add(UserAssertion(
                 user_id=user.id,
+                person_record_id=ctx.active_record_id,
                 related_fact_id=c.id,
                 assertion_type=body.assertion_type,
                 reason=body.reason,
