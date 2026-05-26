@@ -72,13 +72,21 @@ services:
       OWNCHART_ANTHROPIC_DEFAULT_MODEL: ${ANTHROPIC_DEFAULT_MODEL:-claude-opus-4-7}
       OWNCHART_ANTHROPIC_VISION_MODEL: ${ANTHROPIC_VISION_MODEL:-claude-opus-4-7}
       OWNCHART_TOKEN_DEK: ${OWNCHART_TOKEN_DEK:?set in infra/.env.demo}
-      # Epic SMART-on-FHIR app registrations. Sandbox is the public R4
-      # tutorial app id, safe to pass through. Production id is only set
-      # when an operator wants to connect a real Epic tenant from the demo.
-      OWNCHART_EPIC_CLIENT_ID: ${OWNCHART_EPIC_CLIENT_ID:-}
+      # SMART-on-FHIR app registrations.
+      #
+      # Demo posture: only the Epic R4 sandbox client_id is passed
+      # through. Production EHR client_ids (Epic prod, Athena, ModMed,
+      # Cerner, Google) are intentionally NOT exposed to the demo
+      # stack — visitors should not be able to initiate an OAuth flow
+      # against a real operator's registered app from a shared public
+      # demo. Each production connector row on demo will surface as
+      # "not configured by this OwnChart operator" until a sandbox-
+      # only registration is added per-vendor.
+      #
+      # If a future vendor publishes a public sandbox client_id, add
+      # the corresponding *_SANDBOX env var here. Never re-add the
+      # production *_CLIENT_ID vars to the demo compose.
       OWNCHART_EPIC_CLIENT_ID_SANDBOX: ${OWNCHART_EPIC_CLIENT_ID_SANDBOX:-}
-      OWNCHART_ATHENA_CLIENT_ID: ${OWNCHART_ATHENA_CLIENT_ID:-}
-      OWNCHART_MODMED_CLIENT_ID: ${OWNCHART_MODMED_CLIENT_ID:-}
       # Public URL the demo answers on. NPM forwards demo.ownchart.me to
       # host:9988; the API uses this for OAuth redirect_uri composition.
       OWNCHART_PUBLIC_BASE_URL: ${OWNCHART_PUBLIC_BASE_URL:-https://demo.ownchart.me}
