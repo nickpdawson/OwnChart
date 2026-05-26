@@ -6,7 +6,7 @@
 
 **Your life tells the story of your health. OwnChart helps you read it.**
 
-OwnChart is a private, self-hosted AI research partner for your body, your care, and your life. It brings together medical records, wearable data, clinical notes, PDFs, CCDAs, FHIR bundles, photos, voice notes, supplements, workouts, and life events, then lets you ask questions across all of it with citations back to the evidence.
+OwnChart is a private, self-hosted AI research partner for your body, your care, and your life. It brings together medical records, measured health data, clinical notes, PDFs, CCDAs, FHIR bundles, photos, voice notes, supplements, workouts, and life events, then lets you ask questions across all of it with citations back to the evidence.
 
 OwnChart is not a patient portal. It is not an EMR clone. It is a patient-owned, person-owned tool for understanding the story your data is already telling.
 
@@ -35,7 +35,7 @@ Examples:
 - "When did my knee problems start showing up in the record?"
 - "What did the operative note actually say, in plain English?"
 - "Which medications show up in multiple systems, and are any duplicates?"
-- "What do my wearable data and calendar suggest about the weeks before this flare?"
+- "What do my health metrics and calendar suggest about the weeks before this flare?"
 - "What should I review before my next appointment?"
 - "What does OwnChart know, what is inferred, and what is still missing?"
 
@@ -110,7 +110,7 @@ Ask natural-language questions across your whole record or a specific Event, Dos
 
 OwnChart can help explain what happened around a meaningful event: a surgery, injury, race, medication change, trip, flare, or recovery window.
 
-It can connect clinical notes, medications, wearable data, calendar context, photos, and personal notes when those sources are available.
+It can connect clinical notes, medications, body data, calendar context, photos, and personal notes when those sources are available.
 
 ### Build Dossiers
 
@@ -177,19 +177,20 @@ Full privacy commitment: [PRIVACY.md](./PRIVACY.md) (or <https://www.ownchart.me
 
 ---
 
-## Current alpha capabilities
+## Current Beta 1 capabilities
 
-_As of OwnChart 0.1 alpha (2026-05-16). For the canonical
+_As of OwnChart v0.1.0-beta1 (2026-05-26). For the canonical
 shipped-vs-roadmap split, see
 [user-docs/SHIPPED_VS_ROADMAP.md](./user-docs/SHIPPED_VS_ROADMAP.md)._
 
-OwnChart is early, but already includes:
+OwnChart is early beta software, but already includes:
 
 - FHIR ingestion
 - CCDA / XML ingestion
 - PDF and document ingestion
 - FHIR clinical-note and CCDA attachment auto-extraction at sync time
 - HealthKit / Apple Health data paths
+- iOS EventKit calendar foundation
 - saved conversations
 - cited AI answers
 - Events with rename and aliases
@@ -199,10 +200,13 @@ OwnChart is early, but already includes:
 - source provenance
 - model run audit trail
 - BYO AI API keys
+- multi-record invite onboarding
+- export / portability UI
+- Oracle Health (Cerner) SMART connector support
 - demo mode
 - iOS companion app in TestFlight
 
-This is alpha software. Expect rough edges, missing connectors, evolving data models, and UX that is still being shaped.
+This is beta software. Expect rough edges, missing connectors, evolving data models, and UX that is still being shaped.
 
 ---
 
@@ -299,7 +303,7 @@ Documentation is organized into a few layers. Some of these are works in progres
 - [iOS companion app](./user-docs/IOS_PARITY.md) — pairing TestFlight build with your self-hosted server.
 - [Demo walkthrough](./user-docs/DEMO.md) — what you can see at <https://demo.ownchart.me> without installing anything.
 - [Risk, privacy, legal — plain English](./user-docs/RISK.md) — read this before pointing OwnChart at your own record.
-- [What's shipped vs roadmap](./user-docs/SHIPPED_VS_ROADMAP.md) — the honesty contract for the alpha.
+- [What's shipped vs roadmap](./user-docs/SHIPPED_VS_ROADMAP.md) — the honesty contract for Beta 1.
 
 **Inviting family or caregivers.** OwnChart is closed to public
 signup by default. The first registration becomes the instance
@@ -316,7 +320,8 @@ band — no outbound email in 0.1. See [INSTALL.md](./user-docs/INSTALL.md) → 
 - [Network access](./user-docs/NETWORK_ACCESS.md) — HTTPS / VPN / Tunnel exposure choices; what EHR callbacks actually need.
 - [LLM prompts and AI configuration](./user-docs/PROMPTS.md) — where versioned prompts live, how to review and edit them, the `ModelRun` audit trail.
 - [Upload contract](./user-docs/UPLOAD_CONTRACT.md) — how uploads flow from iOS through the api with batch correlation.
-- [Alpha release notes](./user-docs/RELEASE_NOTES_ALPHA.md) — what landed in 0.1, what's been hardened, what's deferred to beta.
+- [Beta 1 release notes](./user-docs/RELEASE_NOTES_BETA1.md) — what shipped in Beta 1, what was verified, and what is held for post-release.
+- [Alpha release notes](./user-docs/RELEASE_NOTES_ALPHA.md) — what landed in the first 0.1 alpha foundation.
 - [Operations runbook](./user-docs/OPERATIONS.md) — backups, upgrades, log rotation, common failure modes. _coming soon_
 - [Configuration reference](./user-docs/CONFIG.md) — every `infra/config.yaml` and `infra/.env` key. _coming soon_
 
@@ -327,7 +332,7 @@ Each OwnChart install registers its own apps with each EHR vendor. Cost: $0 per 
 - **[CONNECTORS.md](./user-docs/CONNECTORS.md) — start here.** The universal pattern that every vendor follows. Read this first; the per-vendor guides are short once you have it.
 - [Epic](./user-docs/EPIC_SETUP.md) — largest US hospitals and academic medical centers. USCDI v3 auto-download, no human review.
 - [athenahealth](./user-docs/ATHENA_SETUP.md) — mid-market ambulatory practices. Human review, 1–4 weeks.
-- [ModMed](./user-docs/MODMED_SETUP.md) — specialty practices (dermatology, ophthalmology, orthopedics, GI, plastic, pain, OB-GYN). Contact-driven.
+- [ModMed / EMA](./user-docs/MODMED_SETUP.md) — specialty practices (dermatology, ophthalmology, orthopedics, GI, plastic, pain, OB-GYN). Code path is implemented; live production OAuth remains a post-release vendor-entitlement follow-up.
 - [NextGen](./user-docs/NEXTGEN_SETUP.md) — mid-sized ambulatory practices, FQHCs, community health, behavioral health. Self-service portal.
 - [Oracle Health (Cerner)](./user-docs/CERNER_SETUP.md) — health systems on Oracle Health Millennium. Self-service sandbox + per-site production rollout.
 
