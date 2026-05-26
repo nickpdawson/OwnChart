@@ -16,6 +16,7 @@ from .core.demo_data_seed import (
     purge_stale_demo_state_if_needed,
     seed_demo_data_if_needed,
 )
+from .core.demo_calendar_seed import seed_demo_calendar_if_needed
 from .core.demo_seed import seed_demo_user_if_needed
 from .routes import (
     ask,
@@ -63,6 +64,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 log.info("demo_user_seeded", seeded=seeded_user)
                 seeded_data = await seed_demo_data_if_needed(db)
                 log.info("demo_data_seeded", sources=seeded_data)
+                seeded_cal = await seed_demo_calendar_if_needed(db)
+                log.info("demo_calendar_seeded", events=seeded_cal)
                 # Bound leakage window: drop visitor chats / saved
                 # events older than 24h on every restart. Per-visitor
                 # scoping in core/demo_session.py is the primary
