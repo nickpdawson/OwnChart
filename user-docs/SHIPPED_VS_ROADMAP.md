@@ -1,16 +1,156 @@
-# Shipped vs Roadmap — OwnChart 0.1 Alpha
+# Shipped vs Roadmap — OwnChart Beta 1
 
-> What works today. What is explicitly not in the alpha. Last
-> reviewed at the 0.1 alpha cut.
+> What works today. What is explicitly held to a post-release follow-up.
+> What is still on the longer roadmap. Last reviewed at the Beta 1
+> release cut (2026-05-26).
 
-This page is the honesty contract for the alpha. If a feature is in
-**Shipped**, you should be able to use it. If a feature is in
-**Roadmap**, do not plan around it being there — it isn't.
+This page is the honesty contract for Beta 1. If a feature is in
+**Shipped**, you should be able to use it. If it is in
+**Held for post-release**, the code may exist on the dev branch but
+the user-visible behavior or live verification isn't release-grade
+yet — do not plan around it in Beta 1. If it is in **Longer-term
+roadmap**, it's a known good idea that's not yet started.
 
-For deeper detail on what's been hardened for the alpha vs deferred
-to beta, see [RELEASE_NOTES_ALPHA.md](./RELEASE_NOTES_ALPHA.md).
+For deeper detail on what landed in each release see:
 
-## Shipped in alpha
+- [RELEASE_NOTES_BETA1.md](./RELEASE_NOTES_BETA1.md) (this release).
+- [RELEASE_NOTES_ALPHA.md](./RELEASE_NOTES_ALPHA.md) (prior).
+
+---
+
+## Shipped in Beta 1 (new since alpha)
+
+These are the additions Beta 1 makes on top of the alpha
+foundation. The full alpha feature list is preserved under
+"Shipped in alpha (carried forward)" below — Beta 1 includes
+all of that, plus everything in this section.
+
+### iOS EventKit calendar foundation
+
+Calendar context lands as the **iOS EventKit calendar foundation**:
+recent iOS calendar context from one or more iOS calendars the user
+selects, stored under the active person record, with three privacy
+modes (`busy_only`, `title_and_time`, `full_details`) applied
+client-side and re-applied server-side as defense in depth. An LLM
+exposure floor (`source_consent`) controls what the LLM sees
+independent of what's stored. Per-calendar `external_id`,
+`ical_uid`, and IANA time zones are captured on every event.
+Deletion is iOS-authoritative — only explicit `tombstoned: true`
+soft-deletes, with a 30-day hard-delete retention worker.
+
+Public phrasing rule for Beta 1: calendar copy reads "iOS EventKit
+calendar foundation" or "recent iOS calendar context." Other
+calendar adapters (Google, ICS, CalDAV), Ask integration, timeline
+/ dossier surfaces, web settings UI, and per-source history-window
+controls remain held until their respective follow-ups land — see
+"Held for post-release" below.
+
+### Multi-tenant invites (household / caregiver records)
+
+Beta 1 introduces person records on a single OwnChart instance —
+a household / caregiver model. Each record is the body / life /
+health record being analyzed; users hold memberships on records
+with `owner` or `caregiver` roles. Every record-bearing endpoint
+scopes by an `X-OwnChart-Person-Record` header (iOS) or
+signed-session pin (web). Invites are owner-issued, single-use,
+hashed at rest, expire (24h / 7d / 30d), and the resulting URL
+is copied out of band — no outbound email in Beta 1.
+
+The first signup on a fresh DB still creates the owner
+automatically. After that, `/api/auth/register` requires a valid
+invite token unless an operator explicitly opens public
+self-registration via `auth.allow_self_registration: true`.
+
+### Date provenance — Phase 1
+
+Every fact carries a `date_origin` classification so the retrieval
+and presentation layers can distinguish event dates from
+source-import dates from ingest timestamps. Phase 1 covers new
+ingest going forward — historical reingest of pre-Beta-1 rows is
+held to a post-release follow-up so the change is observable
+incrementally rather than as a single mass re-write.
+
+### Export UI
+
+Operators and users can request an export of the active person
+record. The export job model + canonical OwnChart JSON + TXT
+packet ship in Beta 1 with a 72-hour TTL, audit events at every
+state transition, and per-record cross-leak prevention. The UI
+surface for requesting + downloading exports ships in the web
+app for owner / caregiver roles. **Async-with-progress and an
+explicit upload-size cap are held** for the post-release
+follow-up — Beta 1 keeps the synchronous-then-poll pattern.
+Pictal JSON and CCDA mappers are tracked separately on the
+longer roadmap.
+
+### Cerner / Oracle Health connector
+
+Beta 1 adds Oracle Health (Cerner) as a first-class SMART-on-FHIR
+connector. Patient-app registration via
+[code-console.cerner.com](https://code-console.cerner.com),
+FHIR R4 (Ignite), public client with PKCE (no secret), env var
+`OWNCHART_CERNER_CLIENT_ID`. FHIR base URLs come from the Oracle
+Millennium patient R4 endpoint directory; the doc carries a
+concrete Centra Health example. See
+[CERNER_SETUP.md](./CERNER_SETUP.md).
+
+---
+
+## Held for post-release (Beta 1 → Beta 2 follow-ups)
+
+These have code or design in place but are not user-grade in
+Beta 1. Each gets a tracker entry and a verification gate before
+its public-facing copy flips.
+
+### ModMed live OAuth
+
+The ModMed connector is implemented and the setup guide is
+complete ([MODMED_SETUP.md](./MODMED_SETUP.md)), including the
+FHIR Vendor Dashboard registration walk-through, the
+portal-URL-vs-FHIR-base trap, and a Forefront Dermatology
+endpoint example. **End-to-end OAuth against a real production
+ModMed practice has not been verified in this release.** If the
+SMART login page loads but patient credentials fail, the cause
+is almost always vendor-side patient / firm / app entitlement,
+not OwnChart code. Tracked for post-release verification.
+
+### Reingest date provenance for historical rows
+
+`date_origin` ships for new ingest in Beta 1 (Phase 1 above).
+A backfill pass over pre-Beta-1 facts to retroactively assign
+provenance is held — the goal is to land it cleanly with audit
+output rather than as a silent mass-write.
+
+### Canonical Spine — Phase 2
+
+Phase 1 (date provenance, perimeter scoping) ships. Phase 2 —
+broader spine alignment across the retrieval, projection, and
+presentation paths — is held to a follow-up so it can be reviewed
+as a coherent step rather than spread across Beta 1 slices.
+
+### Export — async-with-progress + size cap
+
+Beta 1 export is synchronous-then-poll under a 72-hour TTL with
+no explicit per-job size cap. Long-running large exports and
+true async progress reporting are held; the explicit upload-size
+cap will land alongside the async mode so the user-visible
+contract changes once, not twice.
+
+### HealthKit steps ingest
+
+HealthKit workout fidelity is shipped (Slice 2: per-workout
+activity type, distance, energy, device). High-volume metrics
+that need daily-aggregation refinement — most prominently
+**steps** — are held to a post-release pass so the right
+storage shape lands once. Workouts, heart, sleep, body, and
+the other categories continue to sync per the alpha contract.
+
+---
+
+## Shipped in alpha (carried forward into Beta 1)
+
+Beta 1 includes everything from alpha. Each item below is still
+shipped and verified.
 
 ### Ask / AI research partner with citations
 
@@ -46,21 +186,24 @@ not a pre-op anesthesia summary. See
   underlying medical concept in the description so retrieval matches
   the concept even when the chart label is a brand.
 
-### HealthKit alpha sync path
+### HealthKit sync path
 
 Native iOS app reads HealthKit and syncs activity, heart, body, sleep,
 workouts, nutrition, mindfulness, symptoms, medications, reproductive,
 and clinical-records data. Per-identifier strategy
-(`daily_aggregate` for high-volume metrics like steps, `raw` for
-low-volume like workouts). Anchored-query cursor is persisted
-server-side so re-syncs are safe and incremental. See
-[HEALTHKIT_SYNC.md](./HEALTHKIT_SYNC.md).
+(`daily_aggregate` for high-volume metrics, `raw` for low-volume).
+Anchored-query cursor is persisted server-side so re-syncs are safe
+and incremental. Beta 1 adds workout fidelity (type / distance /
+energy / source / device); a steps-specific ingest refinement is held
+for post-release (see above). See [HEALTHKIT_SYNC.md](./HEALTHKIT_SYNC.md).
 
 ### FHIR / CCDA / PDF ingestion
 
 - **FHIR R4** via SMART on FHIR. Epic and athenahealth are the most
-  mature paths; ModMed is newly wired; NextGen and Oracle Health /
-  Cerner are documented or in progress. See [CONNECTORS.md](./CONNECTORS.md).
+  mature paths; **Oracle Health (Cerner) is added in Beta 1** (see
+  above); ModMed is implemented with the live-OAuth caveat noted
+  above; NextGen is documented or in progress. See
+  [CONNECTORS.md](./CONNECTORS.md).
 - **CCDA / XML** continuity-of-care documents.
 - **FHIR clinical notes and CCDA attachments auto-extract at sync
   time** — every `clinical_note` or `ccda_xml` attachment with
@@ -87,8 +230,8 @@ app for the "this fact is part of a known pattern" explainer.
 
 `/settings/providers/usage` shows your LLM spend by date range,
 provider, model, purpose, and cache-hit rate. CSV export available.
-V1 single-user (the deployment owner sees all rows); per-user filter
-ships with multi-user.
+Per-record / per-caregiver filters land in Beta 1 alongside the
+multi-tenant invites work above.
 
 ### Voice notes (with on-device iOS transcript)
 
@@ -102,39 +245,37 @@ A read-only synthetic-data instance at <https://demo.ownchart.me>.
 Safe for App Store review, sharing the product with someone, or
 testing changes against a stable record. See [DEMO.md](./DEMO.md).
 
-## Roadmap — not shipped in 0.1 alpha
+---
 
-These are explicit non-goals for the alpha. They are good ideas; they
-are not in the version you're holding.
+## Longer-term roadmap (not Beta 1, not held — not started)
 
-### Calendar integration
+These are good ideas that are explicitly not Beta 1. They are not
+"held" because they aren't partially built yet — they're roadmap.
 
-Connecting a calendar (Google Calendar, Apple Calendar, iCal) so OwnChart
-can correlate health signals with travel, meetings, late nights, and
-density of life. Not shipped. When asked, the AI does not have your
-calendar.
+### Calendar — Google / ICS / CalDAV adapters
 
-### Multi-user / caregiver / household
-
-The database schema separates *user account* (authentication) from
-*person whose record this is*, which is the foundation for caregiver
-delegation. The management UI (invite a caregiver, scope their
-access, manage their consent) is not shipped in 0.1. Effective today,
-OwnChart is single-tenant per instance.
+Beta 1 ships the iOS EventKit calendar foundation only. Google
+Calendar, ICS feeds, and CalDAV adapters share the same backend
+data model (one shared adapter contract) but are post-Beta-1.
+Public Beta 1 copy should not name "Google" or "ICS" as shipped
+adapters until they land. Per-source history-window controls
+(beyond the 90d default), Ask retrieval integration, and timeline /
+dossier product surfaces for calendar events are also post-Beta-1.
 
 ### Passkeys / 2FA
 
-Local password (Argon2id) is the auth in 0.1. Passkeys / WebAuthn /
-TOTP 2FA / SSO are roadmap. Recommend deploying behind a reverse proxy
-that does its own auth layer (e.g. Authentik) if you need stronger
-authentication before this lands.
+Local password (Argon2id) + invite tokens are the auth in Beta 1.
+Passkeys / WebAuthn / TOTP 2FA / SSO are roadmap. Deploy behind a
+reverse proxy that does its own auth layer (e.g. Authentik) if you
+need stronger authentication before this lands.
 
 ### Garmin
 
-Garmin sync (Connect IQ, FIT files, Garmin Health API) is not shipped.
-For now, Apple Health / HealthKit is the only first-class wearable
-path. Garmin → Apple Health bridges (via third-party apps) work as
-data sources for HealthKit sync, but native Garmin is roadmap.
+Garmin sync (Connect IQ, FIT files, Garmin Health API) is not
+shipped. For now, Apple Health / HealthKit is the only first-class
+wearable path. Garmin → Apple Health bridges (via third-party apps)
+work as data sources for HealthKit sync, but native Garmin is
+roadmap.
 
 ### Life events surface
 
@@ -148,7 +289,8 @@ notes or free-text annotations.
 An MCP server endpoint so other tools (Claude Desktop, Cursor, any
 MCP-aware client) can query your OwnChart instance with the same
 consent and audit guarantees as the web app — roadmap. The
-architectural commitment is there; the implementation is not in 0.1.
+architectural commitment is there; the implementation is not in
+Beta 1.
 
 ### Broader provider / connector coverage
 
@@ -171,6 +313,11 @@ to Event B in HRV, sleep, and weight"), and longitudinal pattern
 charts are all roadmap. Today the Timeline is functional but plain;
 Discover surfaces patterns but doesn't chart them yet.
 
+### Pictal JSON + CCDA export mappers
+
+Beta 1 exports canonical OwnChart JSON + TXT. Pictal JSON is the next
+mapper; CCDA XML is on the longer roadmap as a best-effort artifact.
+
 ### Other roadmap items mentioned in surrounding docs
 
 - **Application-layer encryption of `data/`** — relies on host disk
@@ -180,18 +327,20 @@ Discover surfaces patterns but doesn't chart them yet.
 - **Tamper-evident audit log** (hash-chained / external-anchored).
 - **Automated PHI scanning on outbound LLM calls.**
 - **First-class backup tool** — backups are operator-implemented in
-  0.1.
-- **Prompt-edit UI** — prompts are file-editable in 0.1
+  Beta 1.
+- **Prompt-edit UI** — prompts are file-editable in Beta 1
   ([PROMPTS.md](./PROMPTS.md)).
+
+---
 
 ## How to read this list
 
 A feature being on the Shipped list is not the same as the feature
-being polished. The alpha standard is "the feature works on the
+being polished. The Beta 1 standard is "the feature works on the
 golden path and doesn't lie." Edge cases, UI rough edges, and "I
-expected this to do X" gaps are likely; that's what alpha means. File
-issues, watch for the roadmap items listed above, and treat OwnChart
-as a serious tool you are helping shape — not as a finished product
-you're consuming.
+expected this to do X" gaps are likely; that's what beta means. File
+issues, watch for the held-and-roadmap items above, and treat
+OwnChart as a serious tool you are helping shape — not as a finished
+product you're consuming.
 
-— Last reviewed: 0.1 alpha release cut.
+— Last reviewed: Beta 1 release cut, 2026-05-26.

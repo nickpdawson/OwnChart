@@ -6,6 +6,19 @@
 
 > **Status note:** ModMed has consolidated onto the **FHIR Vendor Dashboard** for self-service patient-app registration — you no longer need to email developer-experience to get sandbox access. Production rollout is still per-practice (the practice has to enable patient FHIR access for your `client_id`), but the developer-side registration is now a portal flow. This guide reflects the Vendor Dashboard surface as of Beta 1; if it has shifted, please open a PR.
 
+> **Beta 1 verification status (2026-05-26):** the ModMed connector
+> code path is implemented in OwnChart Beta 1 and the SMART-on-FHIR
+> registration steps below have been confirmed against the Vendor
+> Dashboard. **Live OAuth against a real production ModMed practice
+> has not been verified end-to-end** in this release. We expect a
+> straightforward path because the connector reuses the same
+> SMART-on-FHIR R4 plumbing that's live-verified for Epic, Athena,
+> and Cerner — but if you hit a vendor-side login or entitlement
+> issue (see the troubleshooting matrix), the workaround is
+> "contact the practice's ModMed admin," not "wait for an OwnChart
+> code fix." ModMed live-OAuth verification is on the
+> post-release follow-up list.
+
 Expected time: ~30 minutes for the Vendor Dashboard registration; **per-practice** to enable production access at each specialty practice.
 
 ## Step 1 — Read the public API docs
