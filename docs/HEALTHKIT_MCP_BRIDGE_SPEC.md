@@ -107,10 +107,15 @@ Two paths, in order of preference:
 ### 4.1 Bonjour browse (recommended default)
 
 Browse for the service type `_ownchart-mcp._tcp.` on the local link via the OS's mDNS resolver (`dns-sd` / `NetService` / `node-mdns` / `zeroconf` depending on language). For each discovered instance:
-- Resolve to a host (typically `iPhone.local` or the user's device name `.local`) and port.
-- Surface to the user with the instance name (the iPhone advertises the literal `"OwnChart MCP"` — multiple instances on one LAN get Apple-suffixed names like `"OwnChart MCP (2)"`).
+- Resolve to a host and port.
+- **Read the TXT record** (build 40). Expected keys:
+  - `server_id` — stable per-iPhone UUID. The bridge stores this on its paired-device record and matches it on rediscovery (see §5.7).
+  - `server_name` — `"ownchart-ios-mcp"` (sanity check).
+  - `server_version` — `"0.1"` (advisory; future versions add new TXT entries).
+- Surface to the user with the instance name. The iPhone advertises the literal `"OwnChart MCP"` (no per-device name, no leak of the user's first name); multiple instances on one LAN get Apple-suffixed `"OwnChart MCP (2)"` etc.
+- Prefer connecting via raw IPv4 from the resolved endpoint over the `.local` hostname — `.local` mDNS resolution is flaky on many Mac configurations (VPNs, custom DNS, corporate APs). The iOS Settings screen also shows the LAN IPv4 for the same reason.
 
-If exactly one instance is found, the bridge proceeds with it. If multiple, the bridge requires a `--device <instance-name>` CLI flag to disambiguate.
+If exactly one instance is found AND the bridge has at most one paired-device record (or its single record matches the TXT `server_id`), the bridge proceeds. If multiple instances are found, the bridge requires either a `--device <instance-name>` CLI flag OR a TXT `server_id` match to disambiguate.
 
 ### 4.2 Manual host:port (fallback)
 
@@ -202,32 +207,52 @@ The bridge has only one mode. On startup, if no token is in Keychain:
 
 ### 5.3 The `/pair` request and response
 
-Request:
+Request (build 40 — extended with optional client metadata):
 
 ```http
 POST /pair HTTP/1.1
-Host: iPhone.local:54321
+Host: 10.0.0.42:54321
 Content-Type: application/json
-Content-Length: 28
+Content-Length: ~140
 
-{"pairing_code": "123456"}
+{
+  "pairing_code": "123456",
+  "client_name":  "Ridge",                       // optional; macOS hostname
+  "client_kind":  "mac",                          // optional; "mac"|"linux"|"windows"|"ios"
+  "bridge_name":  "ownchart-hk-mcp-bridge"        // optional; binary identifier
+}
 ```
 
-Response (success):
+`pairing_code` is required. The other three are optional and additive — iOS sanitizes (trims, length-caps to 64 / 16 / 64, drops control chars) before persisting them on the `MCPPairedBridge` record. iOS Settings → MCP server → Paired bridges shows `client_name` as the primary label (e.g. `"Ridge"`), with `bridge_name` as a secondary fallback, and the legacy `"Paired bridge"` as a final fallback for old / curl-pair records.
+
+**What the bridge MUST send for `client_name`:** the user-visible hostname only — `os.hostname()` in Node, `scutil --get ComputerName` shelled out, or the equivalent in your language. **MUST NOT** send:
+- The OS username
+- The Mac's serial number
+- The device model (unless PM later authorizes)
+- Anything PII-shaped (email, full name)
+
+The user sees this string back on their iPhone. Misbehaving values are sanitized but should never have been sent.
+
+Response (build 40 — extended with stable `server_id`):
 
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/json
-Content-Length: ~120
+Content-Length: ~180
 
 {
-  "session_token":  "<64 hex chars>",
-  "server_name":    "ownchart-ios-mcp",
-  "server_version": "0.1"
+  "session_token":   "<64 hex chars>",
+  "server_name":     "ownchart-ios-mcp",
+  "server_version":  "0.1",
+  "server_id":       "<UUID, stable per iPhone>"
 }
 ```
 
+`server_id` is the bridge's reconnection key (see §5.7). Store it alongside the session token. Old bridges that ignore the field still pair, but won't reconnect after the iPhone's ephemeral port changes.
+
 The pairing code is a 6-digit numeric string. The bridge SHOULD strip any hyphens or whitespace the user types (the iPhone displays `"123-456"` but the wire form is `"123456"`).
+
+**Backward compatibility:** iOS accepts `{"pairing_code": "..."}` alone (no client fields). Existing bridge code that doesn't supply client metadata pairs successfully; the paired-bridge record just shows `"Paired bridge"` instead of the hostname.
 
 ### 5.4 Pairing failure modes — wire shapes the iPhone returns
 
@@ -302,6 +327,33 @@ The bridge MUST:
 3. Continue forwarding subsequent calls as the same failure until re-paired. Do not auto-prompt for a code mid-session — Claude Desktop has no UI for that.
 
 **Note for transient unreachability**, distinct from invalidation: if the iPhone is unreachable (server toggled off, off-Wi-Fi, grace period expired, iPhone rebooted but OwnChart not yet foregrounded), the bridge's TCP connection fails or times out — the iPhone returns nothing. That's a transport failure, NOT a 401. The bridge MUST distinguish these and use error `-32000` with the "unreachable" message (per §8), not the "revoked" message. Do not clear Keychain on transport failure — the token is still valid; the iPhone just isn't reachable right now.
+
+### 5.7 Reconnection after iPhone port changes (build 40, 2026-05-27 PM P0)
+
+**Why this section exists.** iOS's `NWListener` binds a fresh ephemeral TCP port on every server start. The bridge's cached `base_url` (`http://10.x.x.x:<port>`) goes stale on any MCP off+on cycle. Persistent pairing (build 38) means the token is still valid; the bridge just doesn't know the new port. The build 40 iOS server advertises a stable `server_id` (random UUID, kept in iOS Keychain) so the bridge can find the same iPhone again.
+
+**On every `/mcp` call the bridge issues:**
+
+1. **Try the stored `base_url`.** Quick TCP connect + POST. If it succeeds (200 / 4xx / 5xx), use the response and update the stored `base_url`'s last-success timestamp.
+2. **On transport failure** (TCP connection refused, timeout, DNS failure, network unreachable — anything where iOS did NOT respond with HTTP):
+   1. **Do NOT clear the Keychain token.** Token is still valid.
+   2. **Bonjour-browse `_ownchart-mcp._tcp.`** on the local network. Apply the same browse timeout you use for the `pair` subcommand.
+   3. For each resolved service, read the TXT record. Look for a `server_id` key whose value equals the `server_id` stored with this paired-device record.
+   4. **If exactly one TXT match**: update the stored `base_url` to the resolved service's current `host:port`, retry the original `/mcp` request once. If the retry succeeds, return its result. If the retry also transport-fails, surface as in step 2.5 below.
+   5. **If zero TXT matches** (no service advertising this `server_id` on this LAN): the iPhone is unreachable. Return JSON-RPC error `-32000` with message `"OwnChart MCP server is not reachable. Open OwnChart on the paired iPhone and enable the MCP server."` Do not clear the token.
+   6. **If multiple TXT matches** (two iPhones somehow advertising the same `server_id` — extremely unlikely barring a Keychain-restore scenario): refuse the call. Return JSON-RPC error `-32000` with message `"Multiple iPhones are advertising the same OwnChart MCP server_id; refusing to reconnect. Run 'ownchart-mcp-bridge unpair' and re-pair."` Do not auto-pick.
+
+**Near-term workaround (until the bridge ships server_id-aware rediscovery):** if the bridge has only one paired-device record AND only one OwnChart MCP service is found via Bonjour, the bridge MAY use it without `server_id` matching. If two are found, refuse and require the user to re-run `ownchart-mcp-bridge pair` or pass `--base-url`. This is an honest stopgap, not the final shape — the `server_id` check is the durable solution.
+
+**Distinguishing transport failure from revoke (build 40 reaffirmation):**
+
+| Bridge observes | Meaning | Action |
+|---|---|---|
+| TCP connect / timeout / DNS error | iPhone unreachable | Bonjour rediscover (§5.7). Do not touch Keychain. |
+| HTTP 401 with `{"error": "unauthorized"}` body | User revoked the bridge in iOS Settings, OR iOS app uninstalled | Clear Keychain token. Surface JSON-RPC `-32000` "re-pair" message. |
+| HTTP 200 or 4xx (non-401) | Server responded | Honor the response. |
+
+The bridge MUST distinguish these. A common bug class: treating any non-2xx as 401 and clearing the token unnecessarily. Don't.
 
 **Background grace-period behavior (build 39, 2026-05-27 PM directive).** When the user backgrounds OwnChart or locks the iPhone with MCP running, the iOS server does NOT stop immediately. It enters a "grace period" of up to 5 minutes (or whatever iOS actually grants via `UIApplication.beginBackgroundTask` — typically a few minutes, never longer than 5). During grace, the listener keeps accepting `/mcp` calls and the bridge's token still works. From the bridge's perspective there's no observable state change — same TCP, same JSON-RPC, same 200 responses. After grace expires (timer or iOS revocation), the server stops; the next call fails with transport-failure semantics, not 401, because the token is still valid — the iPhone just isn't reachable. When the user foregrounds OwnChart again before they manually toggle MCP off, the server is in `.idle` (grace already ran out) — the user has to re-toggle MCP on, but the paired bridge does NOT need to re-pair. Same token still matches.
 
@@ -511,9 +563,13 @@ When the developer hands the binary back, these must pass against a real paired 
 11. **Foreground recovery after grace expiry.** User foregrounds OwnChart and re-toggles MCP on. Same paired bridge, same Keychain token: next `tools/list` succeeds without re-pair.
 12. **iPhone unreachable (other).** Off-Wi-Fi / cellular-only / OwnChart not foregrounded and grace already expired. Next `tools/call` returns JSON-RPC `-32000` with the "unreachable" message; the bridge does NOT crash, hang, or wedge stdin.
 13. **`unpair`.** Removes the Keychain entry; `serve` then refuses to start until `pair` is re-run.
-14. **`devices`.** Lists Bonjour-discovered instances and indicates which (if any) have a stored Keychain token.
-15. **Stdout cleanliness.** No bridge-internal log lines on stdout. Verified by `ownchart-mcp-bridge serve < /dev/null > /tmp/out.txt 2>/tmp/err.txt; cat /tmp/out.txt` — empty or pure JSON-RPC.
-16. **Cross-platform sanity** (if multi-platform target): bridge runs the same on macOS, Linux (libsecret), and Windows (DPAPI). Defer Linux/Windows if Mac-first is acceptable.
+14. **Server-port-change reconnect (build 40, P0).** Bridge is paired. User toggles MCP off, then on again — iPhone binds a new ephemeral port. Bridge's next `tools/call` succeeds: stored `base_url` transport-fails → Bonjour browse → TXT `server_id` matches the bridge's stored value → `base_url` updated to current `host:port` → retry succeeds. No re-pair required. (For old bridge binaries without `server_id` awareness, the near-term workaround in §5.7 applies.)
+15. **Pairing does not stop the server (build 40).** Bridge POSTs `/pair` with a wrong / expired / rate-limited / storage-failed code. iPhone-side state, listener, and port are unchanged. A successful pair leaves the server still on the same port. Verify by inspecting iOS Settings → MCP server → "Server: On" indicator before and after the pair attempt.
+16. **Paired-bridge primary label (build 40).** Bridge sends `client_name: "Ridge"` in `/pair`. iOS Paired bridges list shows `"Ridge"` as the primary label, with `"Paired <date> · Last seen <datetime>"` as secondary metadata. An old binary that omits `client_name` shows `"Paired bridge"` instead.
+17. **Ambiguous rediscovery (build 40).** Two iPhones somehow advertising the same `server_id` on the LAN → bridge refuses to auto-pick. JSON-RPC `-32000` with the "multiple iPhones" message. (Hard to reproduce in practice; spot-test by spoofing a second mDNS advertiser with the same TXT.)
+18. **`devices`.** Lists Bonjour-discovered instances and indicates which (if any) have a stored Keychain token (matched by `server_id` in TXT).
+19. **Stdout cleanliness.** No bridge-internal log lines on stdout. Verified by `ownchart-mcp-bridge serve < /dev/null > /tmp/out.txt 2>/tmp/err.txt; cat /tmp/out.txt` — empty or pure JSON-RPC.
+20. **Cross-platform sanity** (if multi-platform target): bridge runs the same on macOS, Linux (libsecret), and Windows (DPAPI). Defer Linux/Windows if Mac-first is acceptable.
 
 ## 14. Non-goals (explicit)
 
@@ -547,7 +603,7 @@ When the developer hands the binary back, these must pass against a real paired 
 
 - **One binary** (or platform-specific binaries) named `ownchart-mcp-bridge`.
 - **A short README** describing install + first-run pairing + Claude Desktop config snippet, plus the "don't run on hostile Wi-Fi" disclosure from §11.3.
-- **Acceptance test results** for each of the 16 items in §13, run against a real iPhone with OwnChart build 39+ (build 39 introduces background grace and persistent pairing; the build 37 contract is no longer current).
+- **Acceptance test results** for each of the 20 items in §13, run against a real iPhone with OwnChart build 40+ (build 40 introduces stable `server_id` + Bonjour TXT records, client-metadata in `/pair`, and the pairing-doesn't-stop-server invariant; build 39 brought background grace and persistent pairing).
 - **No code in this repo.** The bridge lives in a separate repo named **`ownchart-hk-mcp-bridge`** (PM-assigned 2026-05-27). The OwnChart app repo carries this spec and the iOS server; it does NOT carry bridge source.
 - **License: MIT or Apache-2.0.** Either is acceptable; pick one and stick with it. OwnChart-app proper ships under PolyForm Noncommercial 1.0.0 — that license does NOT apply to the bridge, because the bridge is a pure local protocol relay with no OwnChart product code. Permissive licensing is appropriate so users and other agents can inspect, install, and (if motivated) fork the bridge without friction.
 
