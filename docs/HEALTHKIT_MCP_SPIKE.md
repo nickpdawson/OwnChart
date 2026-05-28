@@ -53,12 +53,14 @@ On iOS:
 
 These are the hard facts the spike has to operate within. Each one shapes the UX of the Settings toggle and the pairing flow.
 
-**Foreground / background behavior.**
-- Server starts on Settings toggle; runs while OwnChart is in the foreground.
-- iOS's normal app lifecycle pauses URLSession-backed sockets when the app backgrounds. The MCP server will accept no new connections, and existing connections will be torn down within seconds of backgrounding.
-- App must NOT use "always-on" background modes (audio, location, VoIP) to keep this alive — doing so is App Store rejection territory and not honest about what the spike is.
-- UX consequence: the Settings UI must show a live "MCP active — keep OwnChart foregrounded to keep the server reachable" banner with the pairing code + port + URL.
-- Re-foregrounding the app should re-start the server automatically if the toggle was on when the user backgrounded.
+**Foreground / background behavior (build 39, 2026-05-27 PM revision).**
+- Server starts on Settings toggle; runs while OwnChart is in the foreground (state `.active`).
+- On scene-phase background, the server transitions to `.gracePeriod` and asks iOS for extra execution time via `UIApplication.beginBackgroundTask(withName: "OwnChart MCP grace period")`. The listener keeps serving up to **5 minutes** (or whatever iOS actually grants — typically up to ~5 min on modern devices; sometimes less) after the user leaves the app. A paired bridge can complete a query the user kicked off seconds before backgrounding.
+- Whichever fires first stops the server cleanly: (a) a 5-minute hard-stop timer the bridge code holds, or (b) `expirationHandler` from `beginBackgroundTask` when iOS is about to suspend. Both call `stop()` and `endBackgroundTask(_:)`. Never run past iOS's expiration.
+- Re-foregrounding before expiration cancels the timer + ends the background task; state flips back to `.active`; the listener never stopped. Bridge calls in-flight at the moment of re-foregrounding succeed.
+- Re-foregrounding AFTER expiration (rare — only if grace timer fired or iOS revoked) finds the server in `.idle`; the user has to re-toggle to start it again. Their paired-bridge tokens still work because pairing is persistent.
+- App must NOT request `audio` / `location` / `BLE` / `VoIP` background modes to extend this. The `beginBackgroundTask` lane is available to every app without entitlements. App Store rejection territory and dishonest about scope; not done.
+- Idle shutdown (5 min no traffic) still applies in parallel. If the user keeps OwnChart foregrounded but no bridge calls come in, the listener stops to save battery.
 
 **Local Network permission (iOS 14+).**
 - `NSLocalNetworkUsageDescription` must be added to `Info.plist`.
@@ -72,10 +74,10 @@ These are the hard facts the spike has to operate within. Each one shapes the UX
 - Heuristic: if no MCP request arrives within 5 minutes, automatically stop the server. Saves battery and forces re-pair if the user walks away.
 
 **TLS / auth / token story.**
-- **Pairing model:** when the user enables MCP, the iPhone generates a fresh 6-digit numeric pairing code AND a long random session token. The pairing code is shown in the iPhone UI; the user enters it on the MCP client side, which exchanges it for the session token. Tokens are scoped to a single MCP session and expire when the server stops.
+- **Pairing model — persistent (build 38, 2026-05-27 PM directive):** when the user enables MCP for the first time and a bridge presents the 6-digit pairing code, the iPhone mints a long random session token AND persists a `MCPPairedBridge` record in the iOS Keychain. The record stores only the **SHA-256 hash** of the token (a verifier), never the plaintext. The plaintext token is returned to the bridge in the `/pair` HTTP response exactly once; the bridge stores it in **macOS Keychain** on its side. Subsequent `/mcp` calls present the plaintext token via `Authorization: Bearer`; the iPhone hashes inbound and constant-time compares against every stored verifier. **Toggling MCP off and back on does NOT invalidate paired bridges** — they survive across server restarts, app force-quit, and device reboot. Revocation is explicit: per-row revoke or "Forget paired bridges" in Settings.
+- **Pairing code is still single-use + short-lived.** The 6-digit code generated when MCP starts has a 5-minute TTL, mints at most one paired-bridge record, and is rate-limited (≤5 attempts/minute) to defeat brute-force. Once consumed, MCP must be re-toggled to issue a new code for pairing another bridge.
 - **TLS:** local HTTP is acceptable for the MVP if the pairing token is required on every request (defense against passive Wi-Fi sniffing depends on the local network being trusted — a doctrinally honest disclosure in the UX). For a tighter posture, generate a self-signed cert at pair time and have the client pin it from the pairing exchange.
-- **No anonymous endpoints.** Every MCP method requires the token. The pairing exchange itself is the only unauthenticated endpoint and is rate-limited (≤5 attempts/minute) to defeat brute-force.
-- **Per-session token only.** No keychain-stored long-lived MCP token in the MVP. Re-pair every time. If we later add "remember this client," it's behind a separate toggle.
+- **No anonymous endpoints.** Every MCP method requires a token whose hash matches a stored `MCPPairedBridge.tokenHash`. The pairing exchange itself is the only unauthenticated endpoint and is rate-limited as above.
 
 **Discoverability / reachability.**
 - For Claude Desktop on a Mac to reach the iPhone, both must be on the same Wi-Fi (or via something like Tailscale that bridges the LAN). Cellular-only iPhone with Mac on a different network = no go for the MVP.
@@ -321,13 +323,13 @@ Hard rules. Enforced both in the tool implementations and surfaced in the Settin
 
 1. **Read-only.** No HealthKit writes through MCP, ever. The `HKHealthStore` request the spike makes is read-only (`requestAuthorization(toShare: nil, read: types)`).
 2. **Explicit in-app MCP enable toggle.** Default OFF. Toggling ON opens the pairing flow. No silent server start.
-3. **Per-session pairing token.** No anonymous local server. Token regenerated every time the user toggles the server.
+3. **Pair-once persistent bearer token.** No anonymous local server. **Phase 1.1 (build 38, 2026-05-27):** one successful pair mints a paired-bridge record on iOS — token hash persisted in Keychain (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, `ThisDeviceOnly`, never the plaintext). The bridge stays authorized across MCP off/on, app launches, and device reboots. The 6-digit pairing code itself remains single-use, 5-minute TTL, and rate-limited. Revocation is explicit in Settings → MCP server → Paired bridges. _Phase 1 (build 37) used per-session tokens that died on every server stop; smoke validation found this forced re-pair on every toggle — addressed in 1.1._
 4. **Default to aggregates over raw.** `query_daily_summary` is the recommended tool; `query_samples` is bounded and refuses broad windows.
 5. **Hard caps on date range + row count.** Per-tool, listed above. Beyond → structured refusal with `max_*` in the error body so the caller can re-issue.
 6. **Workout GPS / route data behind a separate consent.** Default off; per-session consent required.
 7. **No PHI or HealthKit data in logs.** Logger subsystem `OwnChart category mcp` debug-level logs may emit method name + identifier + sample count, never values, source names, or timestamps. Inspectable via Console.app for the user's own confidence.
 8. **"Health data," "health metrics," explicit names** in user-facing UI. "Wearable" stays as dev shorthand only — same as the iOS parity contract §A3.
-9. **Stop on background / lock.** Server stops on app backgrounding; pairing token is invalidated. Re-pair to use again.
+9. **Stop on background / lock.** Server stops on app backgrounding. In Phase 1.1, persistent paired-bridge records survive — the bridge resumes once the user foregrounds OwnChart and toggles MCP back on. No re-pair required.
 10. **No analytics.** Zero telemetry on what queries were issued. The user enabled this, the user controls it.
 
 ## 5. Reuse from existing code

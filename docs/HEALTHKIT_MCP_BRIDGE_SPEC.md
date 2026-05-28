@@ -122,7 +122,7 @@ The bridge does not persist discovered instances. Each launch starts fresh. The 
 
 ## 5. Pairing process
 
-This is the heart of the spec. The pairing flow is **user-mediated** — the human reads a code off their iPhone and types it into a prompt — and is required exactly once per iPhone-server session.
+This is the heart of the spec. The pairing flow is **user-mediated** — the human reads a code off their iPhone and types it into a prompt — and is required **exactly once per bridge** (build 38, 2026-05-27 PM directive). The token survives iPhone-side server restarts, app force-quit, and device reboot until the user explicitly revokes the bridge in Settings.
 
 ### 5.1 Sequence
 
@@ -270,9 +270,20 @@ Content-Length: ...
 
 The bridge does NOT mutate the JSON-RPC body. Method names, params, ids — all pass through.
 
-### 5.6 Token invalidation (iPhone server restarted)
+### 5.6 Token invalidation
 
-When the user toggles the iPhone server off and back on, the prior token is invalidated (iPhone-side `MCPPairing.clear()`). The next `/mcp` call from the bridge returns:
+Build 38 (2026-05-27 PM directive) makes pairing persistent across iPhone-side server restarts. The bridge's token remains valid in three ordinary scenarios:
+
+- User toggles MCP off on the iPhone, then on again.
+- User force-quits the OwnChart app, then re-launches.
+- iPhone reboots.
+
+In each of those, the bridge's next `/mcp` call after the server is back up succeeds without re-pairing. **The only paths that invalidate the token** are:
+
+1. **Explicit user revoke** in Settings → MCP server: tap "Forget paired bridges" or swipe a single paired-bridge row to "Revoke."
+2. **OwnChart app uninstall / re-install** (iOS clears app-scoped Keychain on uninstall).
+
+When invalidation has happened (any of the above), the next `/mcp` call returns:
 
 ```http
 HTTP/1.1 401 Unauthorized
@@ -286,9 +297,13 @@ The bridge MUST:
 1. Delete the stored token from Keychain.
 2. Surface to the MCP client a JSON-RPC error on the in-flight call:
    ```json
-   {"jsonrpc":"2.0","id":<id>,"error":{"code":-32000,"message":"OwnChart MCP server restarted. Run 'ownchart-mcp-bridge pair' to re-pair."}}
+   {"jsonrpc":"2.0","id":<id>,"error":{"code":-32000,"message":"OwnChart paired-bridge access was revoked. Run 'ownchart-mcp-bridge pair' to re-pair."}}
    ```
-3. Continue forwarding subsequent calls as normal failures until re-paired. Do not auto-prompt for a code mid-session — Claude Desktop has no UI for that.
+3. Continue forwarding subsequent calls as the same failure until re-paired. Do not auto-prompt for a code mid-session — Claude Desktop has no UI for that.
+
+**Note for transient unreachability**, distinct from invalidation: if the iPhone is unreachable (server toggled off, off-Wi-Fi, grace period expired, iPhone rebooted but OwnChart not yet foregrounded), the bridge's TCP connection fails or times out — the iPhone returns nothing. That's a transport failure, NOT a 401. The bridge MUST distinguish these and use error `-32000` with the "unreachable" message (per §8), not the "revoked" message. Do not clear Keychain on transport failure — the token is still valid; the iPhone just isn't reachable right now.
+
+**Background grace-period behavior (build 39, 2026-05-27 PM directive).** When the user backgrounds OwnChart or locks the iPhone with MCP running, the iOS server does NOT stop immediately. It enters a "grace period" of up to 5 minutes (or whatever iOS actually grants via `UIApplication.beginBackgroundTask` — typically a few minutes, never longer than 5). During grace, the listener keeps accepting `/mcp` calls and the bridge's token still works. From the bridge's perspective there's no observable state change — same TCP, same JSON-RPC, same 200 responses. After grace expires (timer or iOS revocation), the server stops; the next call fails with transport-failure semantics, not 401, because the token is still valid — the iPhone just isn't reachable. When the user foregrounds OwnChart again before they manually toggle MCP off, the server is in `.idle` (grace already ran out) — the user has to re-toggle MCP on, but the paired bridge does NOT need to re-pair. Same token still matches.
 
 ## 6. Token management
 
@@ -490,12 +505,15 @@ When the developer hands the binary back, these must pass against a real paired 
 6. **`serve` proxies `tools/call healthkit.query_daily_summary`** for 7 days steps + HRV + RHR.
    - Returns content[0].text JSON with 7 daily rows; each carries `metrics.HKQuantityTypeIdentifierStepCount.value` and `metrics.HKQuantityTypeIdentifierHeartRateVariabilitySDNN.value` (when iPhone has them).
 7. **Refusal forwarding.** `tools/call query_daily_summary` with a 400-day window → `isError: true` + `error: "window_too_broad"` in content[0].text.
-8. **Token-invalidation recovery.** User toggles iPhone MCP off + back on. Next `tools/call` returns JSON-RPC `-32000` with the "re-pair" message; Keychain token is cleared.
-9. **iPhone unreachable.** Background OwnChart on iPhone. Next `tools/call` returns JSON-RPC `-32000` with the "unreachable" message; the bridge does NOT crash, hang, or wedge stdin.
-10. **`unpair`.** Removes the Keychain entry; `serve` then refuses to start until `pair` is re-run.
-11. **`devices`.** Lists Bonjour-discovered instances and indicates which (if any) have a stored Keychain token.
-12. **Stdout cleanliness.** No bridge-internal log lines on stdout. Verified by `ownchart-mcp-bridge serve < /dev/null > /tmp/out.txt 2>/tmp/err.txt; cat /tmp/out.txt` — empty or pure JSON-RPC.
-13. **Cross-platform sanity** (if multi-platform target): bridge runs the same on macOS, Linux (libsecret), and Windows (DPAPI). Defer Linux/Windows if Mac-first is acceptable.
+8. **Token-invalidation recovery (build 39 — explicit revoke only).** User taps "Forget paired bridges" in OwnChart Settings → MCP server (NOT the off-toggle — that no longer invalidates per build 38+). Next `tools/call` returns JSON-RPC `-32000` with the "revoked" message; Keychain token is cleared. The bridge MUST distinguish revoke (401 from `/mcp`) from transient unreachability (transport failure) and use the right `-32000` message.
+9. **MCP off/on cycle preserves pairing (build 38+).** User toggles iPhone MCP off then on again from Settings. The bridge's stored token still works — next `tools/call` succeeds without re-pair. (This is the persistent-pairing acceptance.)
+10. **Background grace period (build 39).** Bridge is paired, user backgrounds OwnChart on iPhone, bridge immediately issues `tools/list`: succeeds (grace period is active, listener still up). Wait beyond grace (~5 min, or trigger iOS expiration by force-quitting the app): next `tools/list` fails as transport-unreachable, NOT as 401 — token is still valid, the iPhone just isn't reachable.
+11. **Foreground recovery after grace expiry.** User foregrounds OwnChart and re-toggles MCP on. Same paired bridge, same Keychain token: next `tools/list` succeeds without re-pair.
+12. **iPhone unreachable (other).** Off-Wi-Fi / cellular-only / OwnChart not foregrounded and grace already expired. Next `tools/call` returns JSON-RPC `-32000` with the "unreachable" message; the bridge does NOT crash, hang, or wedge stdin.
+13. **`unpair`.** Removes the Keychain entry; `serve` then refuses to start until `pair` is re-run.
+14. **`devices`.** Lists Bonjour-discovered instances and indicates which (if any) have a stored Keychain token.
+15. **Stdout cleanliness.** No bridge-internal log lines on stdout. Verified by `ownchart-mcp-bridge serve < /dev/null > /tmp/out.txt 2>/tmp/err.txt; cat /tmp/out.txt` — empty or pure JSON-RPC.
+16. **Cross-platform sanity** (if multi-platform target): bridge runs the same on macOS, Linux (libsecret), and Windows (DPAPI). Defer Linux/Windows if Mac-first is acceptable.
 
 ## 14. Non-goals (explicit)
 
@@ -529,7 +547,7 @@ When the developer hands the binary back, these must pass against a real paired 
 
 - **One binary** (or platform-specific binaries) named `ownchart-mcp-bridge`.
 - **A short README** describing install + first-run pairing + Claude Desktop config snippet, plus the "don't run on hostile Wi-Fi" disclosure from §11.3.
-- **Acceptance test results** for each of the 13 items in §13, run against a real iPhone with OwnChart build 37+.
+- **Acceptance test results** for each of the 16 items in §13, run against a real iPhone with OwnChart build 39+ (build 39 introduces background grace and persistent pairing; the build 37 contract is no longer current).
 - **No code in this repo.** The bridge lives in a separate repo named **`ownchart-hk-mcp-bridge`** (PM-assigned 2026-05-27). The OwnChart app repo carries this spec and the iOS server; it does NOT carry bridge source.
 - **License: MIT or Apache-2.0.** Either is acceptable; pick one and stick with it. OwnChart-app proper ships under PolyForm Noncommercial 1.0.0 — that license does NOT apply to the bridge, because the bridge is a pure local protocol relay with no OwnChart product code. Permissive licensing is appropriate so users and other agents can inspect, install, and (if motivated) fork the bridge without friction.
 
