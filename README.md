@@ -301,6 +301,7 @@ Documentation is organized into a few layers. Some of these are works in progres
 
 - [User Guide](./user-docs/USER_GUIDE.md) — how to use Ask, Events, Dossiers, Review Inbox, conversations. _coming soon_
 - [iOS companion app](./user-docs/IOS_PARITY.md) — pairing TestFlight build with your self-hosted server.
+- [HealthKit MCP bridge](./user-docs/HEALTHKIT_MCP.md) — let Claude Desktop / Claude Code / Codex read your iPhone HealthKit data over Wi-Fi via a small open-source bridge. No cloud, no OwnChart backend in the path.
 - [Demo walkthrough](./user-docs/DEMO.md) — what you can see at <https://demo.ownchart.me> without installing anything.
 - [Risk, privacy, legal — plain English](./user-docs/RISK.md) — read this before pointing OwnChart at your own record.
 - [What's shipped vs roadmap](./user-docs/SHIPPED_VS_ROADMAP.md) — the honesty contract for Beta 1.
