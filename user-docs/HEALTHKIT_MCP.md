@@ -54,7 +54,7 @@ The bridge has its own repo. It's the source of truth for install,
 Claude Desktop config, troubleshooting, threat model, and contract
 details:
 
-- **Repo:** `github.com/ownchart/ownchart-hk-mcp-bridge` *(pending publish; until then, see the bridge spec in `docs/HEALTHKIT_MCP_BRIDGE_SPEC.md`)*
+- **Repo:** <https://github.com/nickpdawson/ownchart-hk-mcp-bridge> *(pending publish to npm; until then, see the bridge spec in `docs/HEALTHKIT_MCP_BRIDGE_SPEC.md`)*
 - **README:** install, Claude config, smoke test, troubleshooting
 - **SECURITY.md:** local-only threat model, logging guarantees, what the bridge does and does not defend against
 - **docs/ACCEPTANCE.md:** acceptance test grid + release checklist
