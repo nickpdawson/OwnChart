@@ -61,6 +61,7 @@ These are the hard facts the spike has to operate within. Each one shapes the UX
 - Re-foregrounding AFTER expiration (rare — only if grace timer fired or iOS revoked) finds the server in `.idle`; the user has to re-toggle to start it again. Their paired-bridge tokens still work because pairing is persistent.
 - App must NOT request `audio` / `location` / `BLE` / `VoIP` background modes to extend this. The `beginBackgroundTask` lane is available to every app without entitlements. App Store rejection territory and dishonest about scope; not done.
 - Idle shutdown (5 min no traffic) still applies in parallel. If the user keeps OwnChart foregrounded but no bridge calls come in, the listener stops to save battery.
+- **MCP Settings screen as an active-monitoring surface (build 42, 2026-05-30 PM directive).** While `MCPServerView` is the foreground view, the screen sets `MCPServer.isUIKeepAlive = true` and `UIApplication.shared.isIdleTimerDisabled = true`. The first pauses the idle-shutdown 30-second tick so the server stays up indefinitely; the second prevents the iPhone from auto-dimming and sleeping the screen (which would suspend networking despite the foreground state). Both reverse on `.onDisappear`. This matches the real ergonomic — the user is on this screen because they're debugging the bridge, paying attention to the pairing/state indicators; the "no traffic for 5 min, save battery" heuristic explicitly does not apply.
 
 **Local Network permission (iOS 14+).**
 - `NSLocalNetworkUsageDescription` must be added to `Info.plist`.
@@ -72,14 +73,16 @@ These are the hard facts the spike has to operate within. Each one shapes the UX
 - iPhone locked + OwnChart in foreground: iOS still considers the app foregrounded for ~30 seconds, then puts it in a "background-ish" state where networking is suspended.
 - The "MCP active" banner should warn the user that locking the device ends the session.
 - Heuristic: if no MCP request arrives within 5 minutes, automatically stop the server. Saves battery and forces re-pair if the user walks away.
+- Build 42 caveat: while the MCP Settings screen is foreground, the iPhone is held awake via `isIdleTimerDisabled = true` so the lock never fires on its own. The user can still manually lock the device; that follows the normal background path (grace period, then stop).
 
 **TLS / auth / token story.**
 - **Pairing model — persistent (build 38, 2026-05-27 PM directive):** when the user enables MCP for the first time and a bridge presents the 6-digit pairing code, the iPhone mints a long random session token AND persists a `MCPPairedBridge` record in the iOS Keychain. The record stores only the **SHA-256 hash** of the token (a verifier), never the plaintext. The plaintext token is returned to the bridge in the `/pair` HTTP response exactly once; the bridge stores it in **macOS Keychain** on its side. Subsequent `/mcp` calls present the plaintext token via `Authorization: Bearer`; the iPhone hashes inbound and constant-time compares against every stored verifier. **Toggling MCP off and back on does NOT invalidate paired bridges** — they survive across server restarts, app force-quit, and device reboot. Revocation is explicit: per-row revoke or "Forget paired bridges" in Settings.
-- **Stable `server_id` for bridge reconnect (build 40, 2026-05-27 PM P0).** Every server start binds a NEW ephemeral TCP port. The bridge's cached `base_url` (`http://10.x.x.x:<port>`) goes stale on toggle off+on. To let the bridge rediscover the same iPhone, the iOS server now:
+- **Static TCP port (build 42, 2026-05-30 PM directive).** The listener binds to `MCPCaps.serverPort` (`52121`) on every start instead of letting the OS pick an ephemeral port. Rationale: ephemeral ports changed on every server restart and broke the bridge's cached `base_url` even with the build-40 server_id rediscovery flow — the bridge could find the iPhone again but had to re-resolve port-and-IP every time. With a static port, only the IP can shift (when the iPhone switches networks), so the cached `base_url` stays valid across MCP off/on cycles on a stable network. `52121` is in the IANA Dynamic / Private range (49152–65535), unlikely to collide with system services. If the port is already in use on the iPhone, the listener surfaces `.error` in the UI; the user can investigate. **The Bonjour `server_id` rediscovery flow (build 40) is still load-bearing for IP changes and multi-iPhone disambiguation** — see below.
+- **Stable `server_id` for bridge reconnect (build 40, 2026-05-27 PM P0; retained under build 42).** Originally introduced because every server start bound a new ephemeral TCP port. Build 42 made the port static, but `server_id` is still required for (a) IP changes when the iPhone moves between networks, and (b) telling two OwnChart iPhones on the same Wi-Fi apart (Bonjour auto-appends " (2)" / " (3)" to the service name on collision, which is opaque to humans). The iOS server:
   - Generates a per-iPhone stable UUID `server_id` once and stores it in iOS Keychain (`MCPServerIdentity`, accessibility `AfterFirstUnlockThisDeviceOnly`, no iCloud sync).
   - Advertises it in the Bonjour service's TXT records: `server_id=<uuid>` + `server_name=ownchart-ios-mcp` + `server_version=0.1`.
   - Returns it in the `/pair` response: `{session_token, server_name, server_version, server_id}`. Old clients that ignore `server_id` still pair.
-  - The bridge stores `server_id` alongside the paired-device record. On transport failure, it Bonjour-browses `_ownchart-mcp._tcp.`, matches the TXT `server_id`, updates its `base_url` to the current `host:port`, and retries. **The bridge does NOT clear its Keychain token on transport failure** — only on 401-revoked.
+  - The bridge stores `server_id` alongside the paired-device record. On transport failure, it Bonjour-browses `_ownchart-mcp._tcp.`, matches the TXT `server_id`, updates its `base_url` to the current `host:port` (where `port` is now always `52121`), and retries. **The bridge does NOT clear its Keychain token on transport failure** — only on 401-revoked.
 - **Optional client metadata in `/pair` (build 40).** The bridge may include `client_name` (e.g. the Mac's hostname), `client_kind` (`"mac"` / `"linux"` / `"windows"` / `"ios"`), and `bridge_name` (e.g. `"ownchart-hk-mcp-bridge"`) in the `/pair` request body. iOS stores these on the `MCPPairedBridge` record (sanitized, length-capped, no control chars) and shows `client_name` as the primary label in the paired-bridges list. The date moves to secondary metadata. Old bridge binaries that omit these fields still pair; their records show `"Paired bridge"` as the primary label.
 - **Pairing code is still single-use + short-lived.** The 6-digit code generated when MCP starts has a 5-minute TTL, mints at most one paired-bridge record, and is rate-limited (≤5 attempts/minute) to defeat brute-force. Once consumed, MCP must be re-toggled to issue a new code for pairing another bridge.
 - **Pairing must not affect server lifecycle (build 40 invariant).** The `/pair` handler does not call `stop()`, does not transition `state`, does not rebind the listener, does not change the port. Successful, failed, rate-limited, expired, already-paired, and storage-failure branches all leave the listener + port + state intact. Only explicit toggle-off, the idle timer, grace-period expiration, iOS background-task expiration, or app termination stop the server. (PM P0, 2026-05-27.)
@@ -192,12 +195,15 @@ Raw samples for one metric over a bounded window. **Default refuses if window > 
 
 Daily-aggregated values for one or more metrics. The default tool for any window > 7 days.
 
+**Phase 1.2 (build 41, 2026-05-27 follow-up):** sleep and workouts are first-class identifiers in this tool. They use `HKSampleQuery`-backed paths and emit shapes distinct from the scalar quantity shape — same wrapper tool, three metric shapes inside the `metrics` map. **No new tool surface.**
+
 **Input:**
 ```jsonc
 {
   "identifiers": [
     "HKQuantityTypeIdentifierStepCount",
     "HKCategoryTypeIdentifierSleepAnalysis",
+    "HKWorkoutType",
     "HKQuantityTypeIdentifierHeartRate",
     "HKQuantityTypeIdentifierRestingHeartRate",
     "HKQuantityTypeIdentifierHeartRateVariabilitySDNN",
@@ -217,35 +223,81 @@ Daily-aggregated values for one or more metrics. The default tool for any window
 {
   "days": [
     {
+      // Local-calendar day. Phase 1.2 unifies all metric kinds on local-day
+      // keys: quantity rows by the HK statistics-bucket boundary; sleep by
+      // **wake day** (local day of sample endDate — 23:00→07:00 sleep maps
+      // to the morning, the way users index it); workouts by the local day
+      // of startDate.
       "date": "2026-05-26",
       "metrics": {
-        "HKQuantityTypeIdentifierStepCount":         {"sum": 8423,  "unit": "count"},
-        "HKCategoryTypeIdentifierSleepAnalysis":     {"asleep_hours": 7.4, "in_bed_hours": 8.1, "unit": "h"},
-        "HKQuantityTypeIdentifierHeartRate":         {"avg": 68, "min": 48, "max": 142, "unit": "count/min"},
-        "HKQuantityTypeIdentifierRestingHeartRate":  {"avg": 52, "unit": "count/min"},
-        "HKQuantityTypeIdentifierHeartRateVariabilitySDNN": {"avg": 42, "unit": "ms"},
-        "HKQuantityTypeIdentifierActiveEnergyBurned":{"sum": 612, "unit": "kcal"},
-        "HKQuantityTypeIdentifierBodyMass":          {"latest": 78.4, "unit": "kg"},
-        "HKQuantityTypeIdentifierBloodPressureSystolic":  {"avg": 118, "unit": "mmHg"},
-        "HKQuantityTypeIdentifierBloodPressureDiastolic": {"avg": 74,  "unit": "mmHg"},
-        "HKQuantityTypeIdentifierBloodGlucose":      null   // no readings that day
+        // Scalar quantity shape (Phase 1):
+        "HKQuantityTypeIdentifierStepCount":         {"value": 8423,  "unit": "count",      "aggregation": "sum"},
+        "HKQuantityTypeIdentifierHeartRate":         {"value": 68,    "unit": "count/min",  "aggregation": "avg"},
+        "HKQuantityTypeIdentifierRestingHeartRate":  {"value": 52,    "unit": "count/min",  "aggregation": "avg"},
+        "HKQuantityTypeIdentifierHeartRateVariabilitySDNN": {"value": 42, "unit": "ms", "aggregation": "avg"},
+        "HKQuantityTypeIdentifierActiveEnergyBurned":{"value": 612,   "unit": "kcal",       "aggregation": "sum"},
+        "HKQuantityTypeIdentifierBodyMass":          {"value": 78.4,  "unit": "kg",         "aggregation": "latest"},
+        "HKQuantityTypeIdentifierBloodPressureSystolic":  {"value": 118, "unit": "mmHg", "aggregation": "avg"},
+        "HKQuantityTypeIdentifierBloodPressureDiastolic": {"value": 74,  "unit": "mmHg", "aggregation": "avg"},
+
+        // Sleep shape (Phase 1.2). Integer minutes (round half-up).
+        // Stage-specific keys are present only when iOS 16+ stages were
+        // logged by the user's device. `sample_count` is post-merge —
+        // informational only; not for user-facing display.
+        "HKCategoryTypeIdentifierSleepAnalysis": {
+          "asleep_total_minutes":       444,
+          "in_bed_minutes":             486,
+          "awake_minutes":              12,
+          "rem_minutes":                95,
+          "core_minutes":               220,
+          "deep_minutes":               60,
+          "asleep_unspecified_minutes": 69,
+          "sample_count":               18,
+          "unit":                       "min"
+        },
+
+        // Workout shape (Phase 1.2). One entry per local day. Activity
+        // names match WorkoutSampleExtractor.stableActivityName (the same
+        // ontology Slice 2 puts on the /api/healthkit/sync wire). No
+        // source / device names, no per-event timestamps, no GPS routes.
+        "HKWorkoutType": {
+          "workout_count":            2,
+          "total_duration_minutes":   72,
+          "total_active_energy_kcal": 612.4,
+          "total_distance_meters":    9420,
+          "activity_breakdown": [
+            {"activity": "running",            "count": 1, "duration_minutes": 42},
+            {"activity": "strength_training",  "count": 1, "duration_minutes": 30}
+          ],
+          "unit": null
+        },
+
+        // No readings that day — present in the day row, null value.
+        "HKQuantityTypeIdentifierBloodGlucose": null
       }
     },
     ...
   ],
   "window_start_at": "2026-04-27T00:00:00Z",
   "window_end_at":   "2026-05-27T00:00:00Z",
-  "missing_authorizations": ["HKQuantityTypeIdentifierBloodGlucose"]   // returned but null because not authorized
+  // Identifier absent from per-day `metrics` map AND listed here →
+  // either unauthorized, or the registry didn't recognize the string, or
+  // the call hit `sample_volume_too_large` for that identifier. Null
+  // value in `metrics` → identifier requested but no data that day.
+  "missing_authorizations": ["HKQuantityTypeIdentifierBloodGlucose"]
 }
 ```
+
+Notes on the heterogeneous shape: callers distinguish by which keys are present on a metric value (`value` → scalar; `asleep_total_minutes` → sleep; `workout_count` → workout). No discriminator tag; the keys are disjoint by construction.
 
 **Caps:**
 - Window ≤ 366 days.
 - Max 30 identifiers per call.
+- Sleep / workout sample queries return ≤ 50,000 raw samples per identifier. Beyond → structured refusal `{"error":"sample_volume_too_large","max_samples_per_identifier":50000,...}`. Defensive; not reachable for sane windows.
 
-**Privacy notes:** Aggregates only — no per-sample timestamps or sources. The aggregation kind per metric is fixed (sum for steps/energy, avg for HR/HRV, latest for weight, etc.) and listed in a server-side reference table that mirrors `HKTypeRegistry.preferredStrategy`.
+**Privacy notes:** Aggregates only — no per-sample timestamps, no source names, no device IDs, no GPS routes. Sleep + workouts follow the same "aggregates only" doctrine as scalar quantity metrics; the day shape is the only granularity exposed.
 
-**Reuse:** `HKQueryRunner.dailyAggregates(...)` (existing); `HKTypeRegistry` for preferred aggregation kind per metric.
+**Reuse:** `HKQueryRunner.dailyAggregates(...)` (quantity), `HKQueryRunner.sampleQuery(...)` (sleep + workouts), `WorkoutSampleExtractor.stableActivityName(...)` for workout-activity canonicalization (no second ontology).
 
 ### 3.4 `healthkit.query_workouts`
 
@@ -333,11 +385,12 @@ Hard rules. Enforced both in the tool implementations and surfaced in the Settin
 3. **Pair-once persistent bearer token.** No anonymous local server. **Phase 1.1 (build 38, 2026-05-27):** one successful pair mints a paired-bridge record on iOS — token hash persisted in Keychain (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`, `ThisDeviceOnly`, never the plaintext). The bridge stays authorized across MCP off/on, app launches, and device reboots. The 6-digit pairing code itself remains single-use, 5-minute TTL, and rate-limited. Revocation is explicit in Settings → MCP server → Paired bridges. _Phase 1 (build 37) used per-session tokens that died on every server stop; smoke validation found this forced re-pair on every toggle — addressed in 1.1._
 4. **Default to aggregates over raw.** `query_daily_summary` is the recommended tool; `query_samples` is bounded and refuses broad windows.
 5. **Hard caps on date range + row count.** Per-tool, listed above. Beyond → structured refusal with `max_*` in the error body so the caller can re-issue.
-6. **Workout GPS / route data behind a separate consent.** Default off; per-session consent required.
-7. **No PHI or HealthKit data in logs.** Logger subsystem `OwnChart category mcp` debug-level logs may emit method name + identifier + sample count, never values, source names, or timestamps. Inspectable via Console.app for the user's own confidence.
-8. **"Health data," "health metrics," explicit names** in user-facing UI. "Wearable" stays as dev shorthand only — same as the iOS parity contract §A3.
-9. **Stop on background / lock.** Server stops on app backgrounding. In Phase 1.1, persistent paired-bridge records survive — the bridge resumes once the user foregrounds OwnChart and toggles MCP back on. No re-pair required.
-10. **No analytics.** Zero telemetry on what queries were issued. The user enabled this, the user controls it.
+6. **Workout GPS / route data behind a separate consent.** Default off; per-session consent required. The Phase 1.2 daily-summary workout shape is aggregates-only — no route points, no per-event timestamps, no source / device names — irrespective of whether routes are authorized at the HK layer.
+7. **Sleep + workout aggregates follow the same doctrine as scalar metrics.** Phase 1.2 (build 41) added sleep / workout daily aggregates to `query_daily_summary`. They emit integer-minute durations + counts only; no per-sample timestamps, no source / device names, no GPS, no raw values. Sleep sample-merging across devices is done before aggregation so two trackers logging asleep simultaneously can't double-count.
+8. **No PHI or HealthKit data in logs.** Logger subsystem `OwnChart category mcp` debug-level logs may emit method name + identifier + sample count, never values, source names, or timestamps. Inspectable via Console.app for the user's own confidence.
+9. **"Health data," "health metrics," explicit names** in user-facing UI. "Wearable" stays as dev shorthand only — same as the iOS parity contract §A3.
+10. **Stop on background / lock.** Server stops on app backgrounding. In Phase 1.1, persistent paired-bridge records survive — the bridge resumes once the user foregrounds OwnChart and toggles MCP back on. No re-pair required.
+11. **No analytics.** Zero telemetry on what queries were issued. The user enabled this, the user controls it.
 
 ## 5. Reuse from existing code
 
@@ -376,19 +429,20 @@ Lives under Settings → Data & Ingestion (sibling to Calendar sources, HealthKi
 
 **Banner:** while active, show a persistent in-app banner ("MCP server active — keep OwnChart foregrounded") that's visible on every other tab so the user doesn't forget it's running.
 
-## 7. Implementation roster (Phase 1)
+## 7. Implementation roster (Phase 1 + 1.1 + 1.2)
 
-New iOS source group `OwnChartiOS/.../MCP/`:
+iOS source group `OwnChartiOS/.../MCP/` as of build 42:
 
 | File | Purpose |
 |---|---|
-| `MCPServer.swift` | Lifecycle (start/stop), `NWListener` or NIO HTTP server, port binding, foreground/background hooks, session-token gen. |
-| `MCPTransport.swift` | JSON-RPC 2.0 framing over HTTP + SSE. Parses inbound requests, formats outbound responses, handles streaming. |
-| `MCPRouter.swift` | Method dispatch: `healthkit.capabilities` → `HealthKitTools.capabilities()`, etc. Auth check on every call. |
-| `MCPPairing.swift` | Pairing-code generation, token exchange endpoint, rate limiting. |
-| `MCPHealthKitTools.swift` | The five tool implementations — wrappers around existing `HKQueryRunner` / `HealthAuthorization` / `WorkoutSampleExtractor`. |
-| `MCPModels.swift` | Codable input/output types for each tool. |
-| `MCPCaps.swift` | The hard caps (window days, row counts, identifier counts) as `static let` constants in one place. |
+| `MCPServer.swift` | Lifecycle (start/stop), `NWListener` HTTP server, **static port binding (build 42)**, foreground/background hooks, grace period (Phase 1.1), `isUIKeepAlive` flag (build 42), JSON-RPC dispatch. |
+| `MCPPairing.swift` | Pairing-code generation, token exchange endpoint, rate limiting; hands the SHA-256 token verifier to `MCPPairedBridgeStore`. |
+| `MCPPairedBridge.swift` | Phase 1.1 paired-bridge record (Codable; hash-only). |
+| `MCPPairedBridgeStore.swift` | Phase 1.1 Keychain-backed store; `match(bearer:)` does constant-time hash compare. |
+| `MCPHealthKitTools.swift` | The two tools. **Phase 1.2:** dispatches quantity / sleep / workout per identifier; reuses `HKQueryRunner`, `WorkoutSampleExtractor.stableActivityName`. |
+| `MCPModels.swift` | JSON-RPC envelopes + tool I/O. **Phase 1.2:** `HKMCPDailyMetricValue` sum type carrying scalar / sleep / workout shapes. |
+| `MCPCaps.swift` | Hard caps + `dailySummaryMaxSamplesPerIdentifier = 50_000` (Phase 1.2 defensive safety) + **`serverPort = 52121` (build 42)**. |
+| `MCPServerIdentity.swift` | Phase 1.1 stable server UUID for reconnect-by-discovery (separate doc). |
 
 Modified files:
 

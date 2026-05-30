@@ -20,6 +20,8 @@ A small, local, user-installed program that runs on the user's Mac (initial targ
 - **Above it**: a desktop MCP client — Claude Desktop, Codex, or any other MCP-conformant agent — that the user already has configured.
 - **Below it**: the OwnChart iOS app's foreground-only HealthKit MCP server, running on the user's iPhone on the same Wi-Fi.
 
+> **Phase 1.2 (build 41, 2026-05-27).** The iPhone server's `healthkit.query_daily_summary` output adds optional metric shapes for sleep (`HKCategoryTypeIdentifierSleepAnalysis`) and workouts (`HKWorkoutType`). The two-tool surface is unchanged; the bridge needs **no protocol changes** — it forwards the JSON body verbatim and Claude Desktop renders the new keys. See §7.4 for the exact wire-shape additions.
+
 The bridge is a **client-of-iPhone, server-of-Claude-Desktop** pattern. It speaks **stdio + JSON-RPC 2.0** upward (the transport Claude Desktop already knows) and **HTTP/1.1** downward (the transport the iPhone implements per the spike note §2). Pairing happens once per iPhone-server session; the bridge then proxies tool calls.
 
 ```
@@ -248,7 +250,7 @@ Content-Length: ~180
 }
 ```
 
-`server_id` is the bridge's reconnection key (see §5.7). Store it alongside the session token. Old bridges that ignore the field still pair, but won't reconnect after the iPhone's ephemeral port changes.
+`server_id` is the bridge's reconnection key (see §5.7). Store it alongside the session token. Old bridges that ignore the field still pair, but won't reconnect after the iPhone changes networks (its LAN IP shifts). The port is static (`52121`, build 42) so a stable network keeps `base_url` valid without `server_id` use.
 
 The pairing code is a 6-digit numeric string. The bridge SHOULD strip any hyphens or whitespace the user types (the iPhone displays `"123-456"` but the wire form is `"123456"`).
 
@@ -328,9 +330,9 @@ The bridge MUST:
 
 **Note for transient unreachability**, distinct from invalidation: if the iPhone is unreachable (server toggled off, off-Wi-Fi, grace period expired, iPhone rebooted but OwnChart not yet foregrounded), the bridge's TCP connection fails or times out — the iPhone returns nothing. That's a transport failure, NOT a 401. The bridge MUST distinguish these and use error `-32000` with the "unreachable" message (per §8), not the "revoked" message. Do not clear Keychain on transport failure — the token is still valid; the iPhone just isn't reachable right now.
 
-### 5.7 Reconnection after iPhone port changes (build 40, 2026-05-27 PM P0)
+### 5.7 Reconnection after iPhone port / network changes (build 40 + build 42)
 
-**Why this section exists.** iOS's `NWListener` binds a fresh ephemeral TCP port on every server start. The bridge's cached `base_url` (`http://10.x.x.x:<port>`) goes stale on any MCP off+on cycle. Persistent pairing (build 38) means the token is still valid; the bridge just doesn't know the new port. The build 40 iOS server advertises a stable `server_id` (random UUID, kept in iOS Keychain) so the bridge can find the same iPhone again.
+**Why this section exists.** Originally (through build 41), iOS's `NWListener` bound a fresh ephemeral TCP port on every server start; the bridge's cached `base_url` (`http://10.x.x.x:<port>`) went stale on any MCP off+on cycle. **Build 42 (2026-05-30 PM directive) pinned the listener to a static port** — `MCPCaps.serverPort = 52121`. With the port fixed, only the IP can shift (when the iPhone moves between Wi-Fi networks or DHCP changes), so a stored `base_url` survives MCP off+on on a stable network. The Bonjour-based rediscovery flow below is still load-bearing for two cases: (1) the iPhone moved networks since the bridge last reached it, and (2) the bridge must tell two OwnChart iPhones apart on the same LAN. Persistent pairing (build 38) keeps the token valid across all of these — the bridge just needs to find the current IP.
 
 **On every `/mcp` call the bridge issues:**
 
@@ -398,6 +400,16 @@ Forward unchanged. iPhone returns the two-tool descriptor set (`healthkit.capabi
 ### 7.4 `tools/call`
 
 Forward unchanged. iPhone returns the structured `MCPToolCallResult` with `content[0].text` carrying a JSON-stringified blob (capabilities snapshot OR daily-summary OR refusal payload) and `isError: bool`.
+
+**Phase 1.2 (iPhone build 41) wire-shape additions** — the daily-summary `metrics` map can now carry three disjoint shapes per identifier. The bridge does not parse them; it forwards verbatim. Callers (Claude Desktop, etc.) distinguish by which keys are present:
+
+- **Scalar quantity (unchanged from Phase 1):** `{"value": <number>, "unit": <string>, "aggregation": "sum"|"avg"|"min"|"max"|"latest"}`.
+- **Sleep (`HKCategoryTypeIdentifierSleepAnalysis`, new):** `{"asleep_total_minutes": <int>, "in_bed_minutes": <int>?, "awake_minutes": <int>?, "rem_minutes": <int>?, "core_minutes": <int>?, "deep_minutes": <int>?, "asleep_unspecified_minutes": <int>?, "sample_count": <int>, "unit": "min"}`. Integer minutes (half-up). Stage-specific keys absent when the device didn't log iOS 16+ stages. `sample_count` is post-merge — informational, never user-facing verbatim.
+- **Workout (`HKWorkoutType`, new):** `{"workout_count": <int>, "total_duration_minutes": <int>, "total_active_energy_kcal": <number>?, "total_distance_meters": <number>?, "activity_breakdown": [{"activity": <snake_case_string>, "count": <int>, "duration_minutes": <int>}], "unit": null}`. Activity names use the same `stableActivityName` ontology as the existing Slice 2 sync. No source / device names, no per-event timestamps, no GPS / routes.
+
+A new refusal code `sample_volume_too_large` (with `max_samples_per_identifier`) can land in `content[0].text` when a hostile or pathological sleep / workout window would return > 50,000 raw samples. Defensive; should not be reachable for sane windows. Treat like any other `isError: true` refusal — surface to the user, do not retry blindly.
+
+Wire-shape backwards compatibility: existing scalar metric shape is **unchanged** — Phase 1.1 / build 39 bridges keep working against build 41+. New keys are additive only.
 
 ### 7.5 Unknown methods
 
@@ -563,7 +575,7 @@ When the developer hands the binary back, these must pass against a real paired 
 11. **Foreground recovery after grace expiry.** User foregrounds OwnChart and re-toggles MCP on. Same paired bridge, same Keychain token: next `tools/list` succeeds without re-pair.
 12. **iPhone unreachable (other).** Off-Wi-Fi / cellular-only / OwnChart not foregrounded and grace already expired. Next `tools/call` returns JSON-RPC `-32000` with the "unreachable" message; the bridge does NOT crash, hang, or wedge stdin.
 13. **`unpair`.** Removes the Keychain entry; `serve` then refuses to start until `pair` is re-run.
-14. **Server-port-change reconnect (build 40, P0).** Bridge is paired. User toggles MCP off, then on again — iPhone binds a new ephemeral port. Bridge's next `tools/call` succeeds: stored `base_url` transport-fails → Bonjour browse → TXT `server_id` matches the bridge's stored value → `base_url` updated to current `host:port` → retry succeeds. No re-pair required. (For old bridge binaries without `server_id` awareness, the near-term workaround in §5.7 applies.)
+14. **Server-restart reconnect (build 40 + build 42).** Bridge is paired. User toggles MCP off, then on again. With build 42's static port, the iPhone comes back up on the same `host:port` and the bridge's stored `base_url` works on the first call — no rediscovery needed on a stable network. **Network-change variant (the case `server_id` still solves):** the iPhone moved Wi-Fi networks since the bridge last reached it (LAN IP shifted). Next `tools/call`: stored `base_url` transport-fails → Bonjour browse → TXT `server_id` matches the bridge's stored value → `base_url` updated to current `host:52121` → retry succeeds. No re-pair required.
 15. **Pairing does not stop the server (build 40).** Bridge POSTs `/pair` with a wrong / expired / rate-limited / storage-failed code. iPhone-side state, listener, and port are unchanged. A successful pair leaves the server still on the same port. Verify by inspecting iOS Settings → MCP server → "Server: On" indicator before and after the pair attempt.
 16. **Paired-bridge primary label (build 40).** Bridge sends `client_name: "Ridge"` in `/pair`. iOS Paired bridges list shows `"Ridge"` as the primary label, with `"Paired <date> · Last seen <datetime>"` as secondary metadata. An old binary that omits `client_name` shows `"Paired bridge"` instead.
 17. **Ambiguous rediscovery (build 40).** Two iPhones somehow advertising the same `server_id` on the LAN → bridge refuses to auto-pick. JSON-RPC `-32000` with the "multiple iPhones" message. (Hard to reproduce in practice; spot-test by spoofing a second mDNS advertiser with the same TXT.)
@@ -603,7 +615,7 @@ When the developer hands the binary back, these must pass against a real paired 
 
 - **One binary** (or platform-specific binaries) named `ownchart-mcp-bridge`.
 - **A short README** describing install + first-run pairing + Claude Desktop config snippet, plus the "don't run on hostile Wi-Fi" disclosure from §11.3.
-- **Acceptance test results** for each of the 20 items in §13, run against a real iPhone with OwnChart build 40+ (build 40 introduces stable `server_id` + Bonjour TXT records, client-metadata in `/pair`, and the pairing-doesn't-stop-server invariant; build 39 brought background grace and persistent pairing).
+- **Acceptance test results** for each of the 20 items in §13, run against a real iPhone with OwnChart build 42+ (build 42 pins the listener to static port `52121` and keeps the iPhone awake + server alive while the MCP Settings screen is foreground; build 41 added sleep / workouts to `query_daily_summary`; build 40 introduced stable `server_id` + Bonjour TXT records, client-metadata in `/pair`, and the pairing-doesn't-stop-server invariant; build 39 brought background grace and persistent pairing).
 - **No code in this repo.** The bridge lives in a separate repo named **`ownchart-hk-mcp-bridge`** (PM-assigned 2026-05-27). The OwnChart app repo carries this spec and the iOS server; it does NOT carry bridge source.
 - **License: MIT or Apache-2.0.** Either is acceptable; pick one and stick with it. OwnChart-app proper ships under PolyForm Noncommercial 1.0.0 — that license does NOT apply to the bridge, because the bridge is a pure local protocol relay with no OwnChart product code. Permissive licensing is appropriate so users and other agents can inspect, install, and (if motivated) fork the bridge without friction.
 
