@@ -2,8 +2,8 @@
 
 Created: 2026-05-27
 Owner: `ios-shipping-engineer` (drafter) → PM (decision)
-Status: **Design only.** No source code. Awaiting PM go for Phase 1 implementation.
-Scope: **Beta 1.1 spike, post-Beta-1 release.** Explicitly out-of-scope for the Beta 1 release freeze.
+Status: **PM accepted 2026-05-30 (build 43) for Beta 1.1.** Athlete/recovery acceptance path verified end-to-end through Claude Desktop bridge: steps, HR, RHR, HRV, VO2 Max, workouts, sleep, active energy, exercise time, weight/body mass. Single known non-blocking gap — medication dose events — deferred to `Working Docs/FU-HK-MCP-MEDICATION-DOSE-EVENTS.md` (aggregation path missing; capabilities + auth correct; not on the acceptance path).
+Scope: **Beta 1.1, shipped behind the MCP-server toggle.** Out-of-scope for the Beta 1 release; landed in builds 36 → 43 after Beta 1 acceptance.
 
 ## What this is
 
@@ -431,7 +431,7 @@ Lives under Settings → Data & Ingestion (sibling to Calendar sources, HealthKi
 
 ## 7. Implementation roster (Phase 1 + 1.1 + 1.2)
 
-iOS source group `OwnChartiOS/.../MCP/` as of build 42:
+iOS source group `OwnChartiOS/.../MCP/` as of build 43:
 
 | File | Purpose |
 |---|---|
@@ -439,10 +439,39 @@ iOS source group `OwnChartiOS/.../MCP/` as of build 42:
 | `MCPPairing.swift` | Pairing-code generation, token exchange endpoint, rate limiting; hands the SHA-256 token verifier to `MCPPairedBridgeStore`. |
 | `MCPPairedBridge.swift` | Phase 1.1 paired-bridge record (Codable; hash-only). |
 | `MCPPairedBridgeStore.swift` | Phase 1.1 Keychain-backed store; `match(bearer:)` does constant-time hash compare. |
-| `MCPHealthKitTools.swift` | The two tools. **Phase 1.2:** dispatches quantity / sleep / workout per identifier; reuses `HKQueryRunner`, `WorkoutSampleExtractor.stableActivityName`. |
-| `MCPModels.swift` | JSON-RPC envelopes + tool I/O. **Phase 1.2:** `HKMCPDailyMetricValue` sum type carrying scalar / sleep / workout shapes. |
+| `MCPHealthKitTools.swift` | The two tools. **Phase 1.2:** dispatches quantity / sleep / workout per identifier; reuses `HKQueryRunner`, `WorkoutSampleExtractor.stableActivityName`. **Build 42** removed `authorizationStatus(for:)` pre-filtering and the share-status-based capability buckets. |
+| `MCPModels.swift` | JSON-RPC envelopes + tool I/O. **Phase 1.2:** `HKMCPDailyMetricValue` sum type carrying scalar / sleep / workout shapes. **Build 42:** flat `identifiers: [{... status}]` capabilities shape + `unsupported_identifiers` on daily-summary results. |
 | `MCPCaps.swift` | Hard caps + `dailySummaryMaxSamplesPerIdentifier = 50_000` (Phase 1.2 defensive safety) + **`serverPort = 52121` (build 42)**. |
 | `MCPServerIdentity.swift` | Phase 1.1 stable server UUID for reconnect-by-discovery (separate doc). |
+
+Modified files in builds 42 → 43 outside the MCP group:
+
+| File | Change |
+|---|---|
+| `Health/HKTypeRegistry.swift` | **Build 43:** `canonicalReadScopes` — single canonical scope set shared by direct sync and MCP. |
+| `App/AppState.swift` | **Build 43:** `requestHealthKitReadAuthorization()` — invokes `HealthAuthorization` against the canonical set without disturbing `enabledScopes` or the orchestrator. |
+| `Features/Settings/MCPServerView.swift` | **Build 42:** `isUIKeepAlive` + `isIdleTimerDisabled` while on-screen, static-port copy. **Build 43:** `healthPermissionsSection` with the Review Health permissions action. |
+
+## Build 43 acceptance notes (PM, 2026-05-30)
+
+PM accepted the iOS HealthKit MCP implementation for Beta 1.1 against build 43. Accepted scope:
+
+- Build 43 HealthKit permission review flow (`MCPServerView.healthPermissionsSection` + `AppState.requestHealthKitReadAuthorization`).
+- Static port 52121 (build 42).
+- Persistent bridge pairing (build 38).
+- Stable `server_id` + Bonjour TXT records (build 40).
+- Client hostname labels in the paired-bridges list (build 40).
+- Settings keep-alive behavior (build 42 — `isUIKeepAlive` + `isIdleTimerDisabled`).
+- Background grace behavior (build 39).
+- Flat capabilities shape with cautious `available`/`unknown` per identifier (build 42).
+- `query_daily_summary` without `authorizationStatus(for:)` pre-filtering (build 42).
+- Sleep + workout daily summaries (build 41 / Phase 1.2).
+
+Athlete/recovery acceptance path validated through Claude Desktop bridge: steps, HR, RHR, HRV, VO2 Max, workouts, sleep, active energy, exercise time, weight/body mass.
+
+Known non-blocking gap: medication dose events. Capabilities + auth flow are correct for the identifier, but `query_daily_summary` has no aggregation branch for `HKMedicationDoseEventTypeIdentifierMedicationDoseEvent` and dumps it into `unsupported_identifiers`. Tracked at `Working Docs/FU-HK-MCP-MEDICATION-DOSE-EVENTS.md`. Not on the Beta 1.1 acceptance path.
+
+Next action: archive build 43 and push to TestFlight via Xcode Organizer.
 
 Modified files:
 
