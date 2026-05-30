@@ -13,6 +13,29 @@ No cloud relay. No OwnChart backend in this path. Read-only. Paired with
 a 6-digit code you read off the iPhone once; access can be revoked any
 time from OwnChart Settings.
 
+> **Scope of this release (Beta 1.1).** The bridge exposes
+> aggregated HealthKit data — daily summaries via
+> `healthkit_query_daily_summary` and a capability registry via
+> `healthkit_capabilities`. It does **not** expose raw sample
+> streams, GPS coordinates, workout routes, or medication dose
+> events. It is a **local** integration with on-device MCP clients
+> (Claude Desktop, Claude Code, Codex); ChatGPT remote-connector
+> support is not implied and not provided. See the bridge repo for
+> the full tool schema.
+
+## Requirements
+
+- **macOS** (Apple Silicon or Intel). Tested on macOS 14+.
+- **Node.js 20+**, installed system-wide so `npm install -g` can
+  drop the `ownchart-hk-mcp-bridge` binary on your `PATH`.
+- **OwnChart iOS app** on a phone reachable over the same Wi-Fi
+  network as the Mac. The bridge talks to the iOS app — the iOS
+  app must be **running in the foreground** (with a brief grace
+  period after you leave it). The bridge is not always-on
+  background infrastructure.
+- A Mac-side MCP client (Claude Desktop, Claude Code, or Codex)
+  installed and configured to load MCP servers.
+
 ## Shortest install path
 
 ```sh
@@ -50,15 +73,20 @@ needs to be open.
 
 ## Where to go for everything else
 
-The bridge has its own repo. It's the source of truth for install,
-Claude Desktop config, troubleshooting, threat model, and contract
-details:
+The bridge has its own repo and npm package. They are the source of
+truth for install, Claude Desktop config, troubleshooting, threat
+model, and contract details — this page is the OwnChart-side
+discovery surface, not a duplicate of the bridge README.
 
-- **Repo:** <https://github.com/nickpdawson/ownchart-hk-mcp-bridge> *(pending publish to npm; until then, see the bridge spec in `docs/HEALTHKIT_MCP_BRIDGE_SPEC.md`)*
-- **README:** install, Claude config, smoke test, troubleshooting
-- **SECURITY.md:** local-only threat model, logging guarantees, what the bridge does and does not defend against
-- **docs/ACCEPTANCE.md:** acceptance test grid + release checklist
+- **npm package:** <https://www.npmjs.com/package/ownchart-hk-mcp-bridge>
+- **Source repo:** <https://github.com/nickpdawson/ownchart-hk-mcp-bridge>
+- **Bridge `README.md`:** install, Claude Desktop config, smoke test,
+  full troubleshooting matrix
+- **Bridge `SECURITY.md`:** local-only threat model, logging guarantees,
+  what the bridge does and does not defend against
+- **Bridge `docs/ACCEPTANCE.md`:** acceptance test grid + release
+  checklist
 
-For the iOS-side contract (wire shapes, build history, what changed in
-builds 38/39/40/42) see `docs/HEALTHKIT_MCP_BRIDGE_SPEC.md` and
-`docs/HEALTHKIT_MCP_SPIKE.md` in this repo.
+For the iOS-side contract (wire shapes, build history) see
+`docs/HEALTHKIT_MCP_BRIDGE_SPEC.md` and `docs/HEALTHKIT_MCP_SPIKE.md`
+in this repo.

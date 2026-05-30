@@ -28,6 +28,16 @@ their own accounts in the web UI.
 |---|---|---|---|
 | **Google Calendar** | Users with one or more Google calendars under a Google account | [GOOGLE_CALENDAR_SETUP.md](./GOOGLE_CALENDAR_SETUP.md) | Requires a Google OAuth Web client, not an API key |
 
+## Local-agent bridges
+
+Some users want to read OwnChart data from a local AI agent on the
+same Mac (Claude Desktop, Claude Code, Codex) without exposing
+anything to the cloud. Beta 1.1 ships one such bridge:
+
+| Source | Audience focus | Guide | Notes |
+|---|---|---|---|
+| **HealthKit MCP bridge** | Mac users who want a local MCP client to query iPhone HealthKit data while OwnChart is open on the phone | [HEALTHKIT_MCP.md](./HEALTHKIT_MCP.md) | macOS + Node 20+. Local-only (Wi-Fi to your phone; no cloud relay, no OwnChart backend in the path). Read-only daily summaries. Requires the OwnChart iOS app to be running. npm: [`ownchart-hk-mcp-bridge`](https://www.npmjs.com/package/ownchart-hk-mcp-bridge) · source: [github.com/nickpdawson/ownchart-hk-mcp-bridge](https://github.com/nickpdawson/ownchart-hk-mcp-bridge) |
+
 ## Vendors not yet covered
 
 Open PR-worthy gaps:

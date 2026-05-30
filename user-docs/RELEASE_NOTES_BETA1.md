@@ -2,6 +2,8 @@
 
 **Tag:** beta1-0.2.0 (release-readiness pass)
 **Date:** 2026-05-26
+**Latest addendum:** Beta 1.1 (HealthKit MCP bridge), 2026-05-30 — see
+end of this doc.
 **Audience:** operators and technical self-hosters. Parallel to
 [RELEASE_NOTES_ALPHA.md](./RELEASE_NOTES_ALPHA.md); the full
 shipped-vs-held picture lives in
@@ -212,3 +214,96 @@ Three rules carry forward from the M02 PM directives:
    "Held for post-release" have not — don't promote them.
 
 — Beta 1 release cut, 2026-05-26.
+
+---
+
+## Beta 1.1 addendum — HealthKit MCP bridge (2026-05-30)
+
+A small targeted increment on top of Beta 1. One user-visible
+addition; nothing in the Beta 1 verification table or held list
+moves.
+
+### Shipped in Beta 1.1
+
+#### HealthKit MCP bridge (local-only)
+
+A published, open-source bridge that lets a **local MCP client on
+the same Mac** (Claude Desktop, Claude Code, or Codex) read
+aggregated HealthKit data from the iPhone while the OwnChart iOS
+app is open. The bridge runs on macOS, talks to the iOS app over
+the local Wi-Fi network, and exposes two MCP tools:
+`healthkit_capabilities` (the capability registry) and
+`healthkit_query_daily_summary` (aggregated daily summaries —
+steps, active energy, heart rate ranges, sleep duration, etc.).
+
+- npm: [`ownchart-hk-mcp-bridge`](https://www.npmjs.com/package/ownchart-hk-mcp-bridge)
+- source: [github.com/nickpdawson/ownchart-hk-mcp-bridge](https://github.com/nickpdawson/ownchart-hk-mcp-bridge)
+- OwnChart-side discovery: [HEALTHKIT_MCP.md](./HEALTHKIT_MCP.md)
+
+**Requirements:** macOS + Node 20+. Mac and iPhone on the same
+Wi-Fi network. OwnChart iOS app installed and **running in the
+foreground** (with a brief grace period after you leave it). One
+6-digit pairing code per Mac↔iPhone pair; revoke from OwnChart
+Settings.
+
+**Scope of what's exposed.** The bridge returns **aggregated daily
+summaries** plus the capability registry. It does **not** expose
+raw sample streams, GPS coordinates, workout routes, or medication
+dose events. The full tool schema lives in the bridge repo's
+README.
+
+**Local-only posture.** The bridge is a **local** integration with
+on-device MCP clients. There is **no cloud relay**, no OwnChart
+backend in the data path, and **no ChatGPT remote-connector
+support implied or provided**. The OwnChart iOS app must be open
+on the phone when the bridge is queried — the bridge is not
+always-on background infrastructure.
+
+This is a distinct surface from the still-roadmap **MCP server
+endpoint to the OwnChart backend** (Postgres-backed records on the
+self-hosted instance). The backend MCP server remains on the
+longer-term roadmap; see SHIPPED_VS_ROADMAP.
+
+### Held items unchanged
+
+Beta 1.1 does not move any Beta 1 held item. Specifically still
+held / not shipped:
+
+- ModMed live OAuth (no real-practice OAuth round-trip verified
+  yet — see Beta 1 release notes).
+- Reingest date provenance for historical rows.
+- Canonical Spine — Phase 2.
+- Export — async-with-progress + size cap.
+- HealthKit steps ingest into OwnChart's backend.
+- **HealthKit medication dose events** — `HKCategoryTypeIdentifierMedicationDoseEvent`
+  is not in the Beta 1.1 ingest path or the MCP bridge tool surface.
+  Other medication data sources (FHIR `MedicationStatement` /
+  `MedicationRequest` from EHR connectors, screenshot extraction of
+  Rx labels, manual entry) continue to work; only the HealthKit
+  dose-event stream is held.
+
+### Public-claim posture for Beta 1.1
+
+The three rules from Beta 1 carry forward unchanged:
+
+1. **Calendar copy.** Still constrained to "iOS EventKit calendar
+   foundation" / "recent iOS calendar context." No flip in this
+   addendum.
+2. **ModMed.** Still documented with the explicit vendor-side
+   live-OAuth caveat. Beta 1.1 does not verify ModMed OAuth.
+3. **Live verification.** The HealthKit MCP bridge has its own
+   acceptance grid in the bridge repo; this addendum claims local
+   Mac↔iPhone verification only — no cloud, no remote connector,
+   no always-on background behavior.
+
+### Operator upgrade notes
+
+- The bridge installs as a standalone npm package on the Mac:
+  `npm install -g ownchart-hk-mcp-bridge && ownchart-hk-mcp-bridge pair`.
+  No OwnChart server-side change is required.
+- No new env var in `infra/.env`. The bridge does not touch the
+  OwnChart backend.
+- The iOS-side MCP server toggle lives at OwnChart → **Settings →
+  Data & Ingestion → MCP server** in the iOS app.
+
+— Beta 1.1 addendum, 2026-05-30.

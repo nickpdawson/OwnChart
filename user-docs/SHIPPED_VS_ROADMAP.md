@@ -96,6 +96,42 @@ concrete Centra Health example. See
 
 ---
 
+## Shipped in Beta 1.1 (post-Beta-1 increment)
+
+A small targeted release on top of Beta 1. Same shipped-vs-held
+honesty contract.
+
+### HealthKit MCP bridge (local-only)
+
+A published macOS bridge that lets a local MCP client on the same
+Mac (Claude Desktop, Claude Code, Codex) read aggregated HealthKit
+data from your iPhone over Wi-Fi while the OwnChart iOS app is
+open. macOS + Node 20+; npm: [`ownchart-hk-mcp-bridge`](https://www.npmjs.com/package/ownchart-hk-mcp-bridge);
+source: [github.com/nickpdawson/ownchart-hk-mcp-bridge](https://github.com/nickpdawson/ownchart-hk-mcp-bridge).
+Operator-facing setup is in [HEALTHKIT_MCP.md](./HEALTHKIT_MCP.md);
+the bridge repo carries the full README, threat model, and
+acceptance grid.
+
+**What the bridge exposes:** aggregated daily summaries
+(`healthkit_query_daily_summary`) and a capability registry
+(`healthkit_capabilities`). Read-only. Paired with a 6-digit code
+once; revoke from OwnChart Settings.
+
+**What it does NOT expose:** raw sample streams, GPS coordinates,
+workout routes, or medication dose events. Beta 1.1 is a local
+integration — there is no cloud relay, no OwnChart backend in the
+path, and **no ChatGPT remote-connector support implied or
+provided**. The bridge requires the OwnChart iOS app to be running
+in the foreground (with a brief grace period); it is not always-on
+background infrastructure.
+
+This is a distinct surface from the still-roadmap **MCP server
+endpoint to the OwnChart backend** (Postgres-backed records on the
+self-hosted instance) — see "MCP server (Model Context Protocol)"
+under "Longer-term roadmap" below.
+
+---
+
 ## Held for post-release (Beta 1 → Beta 2 follow-ups)
 
 These have code or design in place but are not user-grade in
@@ -144,6 +180,17 @@ that need daily-aggregation refinement — most prominently
 **steps** — are held to a post-release pass so the right
 storage shape lands once. Workouts, heart, sleep, body, and
 the other categories continue to sync per the alpha contract.
+
+### HealthKit medication dose events
+
+`HKCategoryTypeIdentifierMedicationDoseEvent` (the Apple Health
+"Medications" dose-log surface that records when a user taps
+"taken" / "skipped" in iOS) is **not** in the Beta 1 / 1.1 ingest
+or in the HealthKit MCP bridge tool surface. Other medication
+data paths (FHIR `MedicationStatement` / `MedicationRequest` from
+EHR connectors, screenshot extraction of Rx labels, manual
+entry) continue to work; only the HealthKit dose-event stream
+specifically is held.
 
 ---
 
