@@ -157,6 +157,17 @@ existing audit events (`export_requested`, `export_completed`,
 held async + size-cap items remain held; they apply uniformly
 across all three mappers when they ship.
 
+**High-volume body-signal rows are not included in the Pictal
+JSON mapper.** Pictal v1.0's nine sections aren't shaped for raw
+daily HealthKit or Health Auto Export streams. Any fact whose
+`extraction_method` is `native_healthkit` or `health_auto_export`
+is silently dropped from the Pictal output. Clinical observations
+that happen to mention vitals (e.g., a discharge summary noting
+heart rate or SpO2) are kept — those are real clinical
+observations, not body-signal raw rows. The canonical OwnChart
+JSON + TXT mappers still carry body-signal rows when the user
+selects the "body signals" domain; only Pictal JSON drops them.
+
 CCDA XML stays roadmap — OwnChart does not generate CCDA in this
 release. If a user already has a CCDA file from elsewhere (an
 EHR portal download, a CCD export from a health system, etc.),

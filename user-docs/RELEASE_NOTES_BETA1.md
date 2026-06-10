@@ -345,6 +345,22 @@ everything the canonical-JSON and TXT mappers already get:
   (`export_requested`, `export_completed`, `export_failed`,
   `export_downloaded`, `export_deleted`).
 
+**High-volume body-signal rows are not included in Pictal JSON.**
+Pictal v1.0's nine sections (diagnoses, medications and
+treatments, surgeries and procedures, hospitalizations, tests and
+imaging, injuries and illnesses, symptoms, substance use, life
+events) aren't shaped for raw daily HealthKit or Health
+Auto Export streams — dumping per-minute heart-rate / step /
+SpO2 rows would dilute the clinical record. The Pictal mapper
+silently excludes any fact whose `extraction_method` is
+`native_healthkit` or `health_auto_export`. Clinical observations
+that happen to mention vitals (e.g., a discharge summary noting
+heart rate 78, SpO2 98%) are kept — those are real clinical
+observations, not body-signal raw rows. The canonical OwnChart
+JSON + TXT mappers still carry body-signal rows when the user
+selects the "body signals" domain on export; only Pictal JSON
+drops them.
+
 ### What stays on the roadmap
 
 #### CCDA XML export
