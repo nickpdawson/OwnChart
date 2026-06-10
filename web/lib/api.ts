@@ -1351,8 +1351,12 @@ export async function exchangeGoogleCallback(
 // --- Section D: Export / Portability -------------------------------------
 
 export type ExportStatus = "pending" | "running" | "completed" | "failed";
-export type ExportFormat = "ownchart_json" | "txt" | "all";
-export type ExportFileType = "ownchart_json" | "txt";
+export type ExportFormat =
+  | "ownchart_json"
+  | "txt"
+  | "pictal_json"
+  | "all";
+export type ExportFileType = "ownchart_json" | "txt" | "pictal_json";
 export type ExportDateRangeKind = "all" | "last_90d" | "last_1y" | "custom";
 export type ExportDomain = "clinical" | "body_signals" | "calendar";
 

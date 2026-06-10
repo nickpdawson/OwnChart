@@ -13,6 +13,7 @@ from .expiry import EXPORT_TTL_HOURS, compute_export_expiry
 from .mappers import (
     canonical_ownchart_json_mapper,
     human_readable_txt_mapper,
+    pictal_health_json_mapper,
 )
 from .snapshot import ExportSnapshot, build_export_snapshot
 
@@ -30,4 +31,5 @@ __all__ = [
     "canonical_ownchart_json_mapper",
     "compute_export_expiry",
     "human_readable_txt_mapper",
+    "pictal_health_json_mapper",
 ]

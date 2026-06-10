@@ -34,7 +34,12 @@ from .base import Base, TimestampMixin, new_uuid
 
 
 JOB_STATUSES: tuple[str, ...] = ("pending", "running", "completed", "failed")
-REQUESTED_FORMATS: tuple[str, ...] = ("ownchart_json", "txt", "all")
+REQUESTED_FORMATS: tuple[str, ...] = (
+    "ownchart_json",
+    "txt",
+    "pictal_json",
+    "all",
+)
 
 # Section D — domain filter values. "calendar" includes both
 # calendar_sources and (non-tombstoned) calendar_events. AI summaries

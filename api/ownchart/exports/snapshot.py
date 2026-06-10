@@ -175,7 +175,15 @@ class _SnapshotFact(BaseModel):
     """One extracted_fact row scoped to the record. Mappers render
     `label`, the date pair, and significance. Confidence + review
     state included so a re-import can preserve user-confirmation
-    state."""
+    state.
+
+    Section-C + extraction_method fields are present so the Pictal
+    mapper can (a) exclude body-signal extraction methods (raw
+    HealthKit / auto-export rows aren't Pictal-shaped) and
+    (b) honor date_provenance / historical_status when classifying
+    active vs resolved. Optional + backward-compatible — older
+    mappers can ignore them.
+    """
     id: str
     fact_type: str
     label: str
@@ -188,6 +196,9 @@ class _SnapshotFact(BaseModel):
     review_state: str
     significance: str | None = None
     significance_source: str | None = None
+    extraction_method: str | None = None
+    date_provenance: str | None = None
+    historical_status: str | None = None
     created_at: datetime
 
 
@@ -394,6 +405,9 @@ async def build_export_snapshot(
                 review_state=f.review_state,
                 significance=f.significance,
                 significance_source=f.significance_source,
+                extraction_method=f.extraction_method,
+                date_provenance=getattr(f, "date_provenance", None),
+                historical_status=getattr(f, "historical_status", None),
                 created_at=f.created_at,
             )
             for f in facts

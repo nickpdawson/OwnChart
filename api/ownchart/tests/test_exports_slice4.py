@@ -176,8 +176,11 @@ def test_model_constants_match_migration_enums():
     import; their values must match the CHECK constraints in the
     migration."""
     assert JOB_STATUSES == ("pending", "running", "completed", "failed")
-    assert REQUESTED_FORMATS == ("ownchart_json", "txt", "all")
-    assert FILE_TYPES == ("ownchart_json", "txt")
+    # Section D + Pictal JSON (migration 0046, 2026-06-10) widened these.
+    assert REQUESTED_FORMATS == (
+        "ownchart_json", "txt", "pictal_json", "all",
+    )
+    assert FILE_TYPES == ("ownchart_json", "txt", "pictal_json")
 
 
 def test_export_job_has_record_scope_column():

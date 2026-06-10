@@ -31,7 +31,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .expiry import compute_export_expiry
-from .mappers import canonical_ownchart_json_mapper, human_readable_txt_mapper
+from .mappers import (
+    canonical_ownchart_json_mapper,
+    human_readable_txt_mapper,
+    pictal_health_json_mapper,
+)
 from .snapshot import build_export_snapshot
 
 log = logging.getLogger("ownchart.exports.runner")
@@ -40,6 +44,7 @@ log = logging.getLogger("ownchart.exports.runner")
 _FILENAME_FOR_TYPE: dict[str, str] = {
     "ownchart_json": "ownchart_json.json",
     "txt": "packet.txt",
+    "pictal_json": "pictal_health.json",
 }
 
 
@@ -105,6 +110,8 @@ async def run_export_job(
                 payload = canonical_ownchart_json_mapper(snapshot)
             elif file_type == "txt":
                 payload = human_readable_txt_mapper(snapshot)
+            elif file_type == "pictal_json":
+                payload = pictal_health_json_mapper(snapshot)
             else:
                 raise ValueError(f"unknown file_type {file_type!r}")
 

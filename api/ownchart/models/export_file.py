@@ -3,7 +3,8 @@
 Created by migration 0040 (Slice 4 export skeleton). One row per
 (export_job, file_type). A job with ``requested_format='all'``
 produces two rows (one ownchart_json + one txt); a job with
-``requested_format='ownchart_json'`` or `'txt'` produces one.
+``requested_format='ownchart_json'``, ``'txt'``, or
+``'pictal_json'`` produces one.
 
 ``person_record_id`` is denormalized from the parent job so the
 record-scoped sweeps (delete-when-record-removed, audit by record)
@@ -29,7 +30,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from .base import Base, TimestampMixin, new_uuid
 
 
-FILE_TYPES: tuple[str, ...] = ("ownchart_json", "txt")
+FILE_TYPES: tuple[str, ...] = ("ownchart_json", "txt", "pictal_json")
 
 
 class ExportFile(Base, TimestampMixin):

@@ -1,6 +1,6 @@
-"""Slice 4 export mappers — canonical OwnChart JSON + human TXT.
+"""Slice 4 export mappers — OwnChart JSON + TXT + Pictal Health Record v1.0.
 
-Both mappers take a fully-built ``ExportSnapshot`` (pure data; no
+All mappers take a fully-built ``ExportSnapshot`` (pure data; no
 DB) and return bytes ready to write to disk. Designed for
 predictable testing: same input → byte-identical output (modulo
 the explicit ``generated_at`` field on the snapshot, which the
@@ -19,7 +19,15 @@ caller controls).
     sections render an explicit "(none)" line so the absence is
     visible at a glance.
 
-Both functions are pure: same input, same output, no I/O.
+  pictal_health_json_mapper(snapshot) → JSON bytes
+    Deterministic ``Pictal Health Record v1.0`` shape — buckets
+    facts into the nine Pictal sections, preserves date precision
+    (YYYY / YYYY-MM / YYYY-MM-DD / null), classifies active vs
+    resolved, and silently excludes high-volume body-signal rows
+    (HealthKit / auto-export). This is a *download* the user
+    imports into Pictal; OwnChart does not contact Pictal.
+
+All three are pure: same input, same output, no I/O.
 """
 
 from __future__ import annotations
@@ -248,3 +256,308 @@ def human_readable_txt_mapper(snapshot: ExportSnapshot) -> bytes:
     lines.append("")
 
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Pictal Health Record v1.0 mapper
+#
+# Deterministic JSON in the shape Pictal Health publishes for their
+# v1.0 import format. The user downloads this file from OwnChart and
+# imports it manually into Pictal — OwnChart does NOT contact Pictal,
+# there is no API integration, and Pictal does not see anything the
+# user did not choose to download.
+#
+# Design constraints (from PM, 2026-06-10):
+#   - Pure function, no LLM.
+#   - Read-only over ExportSnapshot. No DB. No I/O.
+#   - Stable: same snapshot → byte-identical bytes (sort_keys=True).
+#   - Body-signal facts (HealthKit / auto-export raw measurements)
+#     are silently excluded — Pictal isn't shaped for daily HR/steps
+#     and dumping them would dilute the clinical record.
+#   - Date precision is preserved on the wire: year → "YYYY",
+#     month → "YYYY-MM", day-or-finer → "YYYY-MM-DD", unknown → null.
+#   - Provenance lives in `notes` (Pictal has no native provenance
+#     field). Never include internal UUIDs.
+#   - Source semantics, not invention: when historical_status /
+#     date_provenance don't actually tell us the fact is resolved,
+#     we leave status as null rather than guess.
+
+_PICTAL_FORMAT_VERSION = "Pictal Health Record v1.0"
+
+# Body-signal extraction methods. The Pictal mapper drops these
+# facts entirely — Pictal isn't a quantified-self dump target. The
+# domain filter in the snapshot builder may already exclude them at
+# query time when the user deselects "body signals," but the mapper
+# is the second wall: even if a future caller includes body-signal
+# facts in the snapshot, Pictal JSON will not carry them.
+_BODY_SIGNAL_EXTRACTION_METHODS: frozenset[str] = frozenset({
+    "health_auto_export",
+    "native_healthkit",
+})
+
+# fact_type → Pictal section. Lower-case match. Anything that doesn't
+# map here (e.g. raw observation rows without a clinically-meaningful
+# label) gets dropped. The route from raw fact_type to Pictal section
+# is deliberately conservative: we'd rather omit ambiguous rows than
+# dump them into the wrong bucket.
+_PICTAL_SECTION_FOR_FACT_TYPE: dict[str, str] = {
+    # Diagnoses / problems
+    "condition":                "diagnoses",
+    "diagnosis":                "diagnoses",
+    "problem":                  "diagnoses",
+    "allergy":                  "diagnoses",
+    "allergy_intolerance":      "diagnoses",
+    # Medications + treatments
+    "medication":               "medications_and_treatments",
+    "medication_request":       "medications_and_treatments",
+    "medication_statement":     "medications_and_treatments",
+    "treatment":                "medications_and_treatments",
+    "therapy":                  "medications_and_treatments",
+    # Surgeries + procedures (immunizations file here too — Pictal
+    # treats them as procedures rather than carving a vaccines bucket)
+    "procedure":                "surgeries_and_procedures",
+    "surgery":                  "surgeries_and_procedures",
+    "operation":                "surgeries_and_procedures",
+    "immunization":             "surgeries_and_procedures",
+    "vaccination":              "surgeries_and_procedures",
+    # Hospitalizations
+    "hospitalization":          "hospitalizations",
+    "admission":                "hospitalizations",
+    "encounter_inpatient":      "hospitalizations",
+    "inpatient_encounter":      "hospitalizations",
+    # Tests + imaging
+    "lab":                      "tests_and_imaging",
+    "lab_result":               "tests_and_imaging",
+    "imaging":                  "tests_and_imaging",
+    "imaging_study":            "tests_and_imaging",
+    "test":                     "tests_and_imaging",
+    "diagnostic_report":        "tests_and_imaging",
+    "observation":              "tests_and_imaging",
+    # Injuries + illnesses + acute events
+    "injury":                   "injuries_and_illnesses",
+    "illness":                  "injuries_and_illnesses",
+    "infection":                "injuries_and_illnesses",
+    "acute_event":              "injuries_and_illnesses",
+    # Symptoms
+    "symptom":                  "symptoms",
+    # Substance use
+    "substance":                "substance_use",
+    "substance_use":            "substance_use",
+    "tobacco":                  "substance_use",
+    "alcohol":                  "substance_use",
+    "cannabis":                 "substance_use",
+    # Explicit life events
+    "life_event":               "life_events",
+}
+
+# Section keys in Pictal v1.0, fixed order so the JSON renders the
+# same way every time. Sections with no facts still appear, as empty
+# arrays — that's the documented v1.0 shape.
+_PICTAL_SECTIONS: tuple[str, ...] = (
+    "diagnoses",
+    "medications_and_treatments",
+    "surgeries_and_procedures",
+    "hospitalizations",
+    "tests_and_imaging",
+    "injuries_and_illnesses",
+    "symptoms",
+    "substance_use",
+    "life_events",
+)
+
+# historical_status values that imply the condition is no longer active.
+_RESOLVED_HISTORICAL_STATUSES: frozenset[str] = frozenset({
+    "resolved",
+    "inactive",
+    "remission",
+    "history_of",  # Section C: "history of X" means past, not present.
+})
+
+# fact_types where "no resolved signal" → default "active". Conditions,
+# medications, and symptoms have a meaningful default; for tests /
+# procedures / hospitalizations the concept of active/resolved doesn't
+# apply, so we leave status as null.
+_DEFAULTS_TO_ACTIVE: frozenset[str] = frozenset({
+    "diagnoses",
+    "medications_and_treatments",
+    "symptoms",
+    "substance_use",
+})
+
+
+def _pictal_date(
+    dt: date | datetime | None, precision: str | None,
+) -> str | None:
+    """Render a fact date honoring its stored precision.
+
+    Pictal v1.0 accepts a free-form date string per item; preserving
+    precision avoids fabricating day-of-month accuracy we don't have.
+    """
+    if dt is None:
+        return None
+    if isinstance(dt, datetime):
+        d = dt.date()
+    else:
+        d = dt
+    p = (precision or "").lower()
+    if p in ("year", "y"):
+        return d.strftime("%Y")
+    if p in ("month", "ym", "year_month"):
+        return d.strftime("%Y-%m")
+    # day / full / unspecified → full date. (Stored DB precision goes
+    # finer than "day" for some methods, but Pictal v1.0 is day-grain.)
+    return d.strftime("%Y-%m-%d")
+
+
+def _pictal_status(fact, pictal_section: str) -> str | None:
+    """Classify a fact as 'active' / 'resolved' / None.
+
+    Resolution signals, in order:
+      1. historical_status ∈ {resolved, inactive, remission, history_of}
+         → resolved.
+      2. date_end is set → resolved (the event ended).
+      3. fact_type's pictal_section defaults to active (diagnoses,
+         medications, symptoms, substance_use) AND no resolved signal
+         → active. Source semantics support this default — these are
+         the only buckets where ongoing-by-default is honest.
+      4. Anything else → None. We don't claim a status we can't honestly
+         derive (tests, procedures, hospitalizations don't have an
+         active/resolved concept).
+    """
+    hist = (fact.historical_status or "").lower()
+    if hist in _RESOLVED_HISTORICAL_STATUSES:
+        return "resolved"
+    if fact.date_end is not None:
+        return "resolved"
+    if pictal_section in _DEFAULTS_TO_ACTIVE:
+        return "active"
+    return None
+
+
+def _pictal_notes_for(fact) -> str | None:
+    """Compact human-readable provenance + description for `notes`.
+
+    Pictal has no native provenance field, so the few honest signals
+    we have (description, date_provenance hint) get folded into a
+    single short string. Never includes internal UUIDs or source
+    document IDs. Returns None when nothing useful exists.
+
+    Format examples:
+      - "Spasms in shoulder when reaching overhead."  (description only)
+      - "Patient-confirmed date."                     (user_canonical)
+      - "Source-documented date."                     (this_visit)
+      - "Approximate date."                           (approximate)
+      - "Patient-confirmed date. Spasms in shoulder…" (combined)
+    """
+    pieces: list[str] = []
+    prov = (fact.date_provenance or "").lower()
+    if prov == "this_visit":
+        pieces.append("Source-documented date.")
+    elif prov == "approximate":
+        pieces.append("Approximate date.")
+    elif prov in ("user_confirmed", "user_canonical"):
+        pieces.append("Patient-confirmed date.")
+    # description is the fact's longer text — copy as-is, no LLM
+    # rewriting. Trim trailing whitespace but otherwise preserve.
+    if fact.description and fact.description.strip():
+        pieces.append(fact.description.strip())
+    if not pieces:
+        return None
+    return " ".join(pieces)
+
+
+def _pictal_patient(record) -> dict:
+    """Build the top-level patient block.
+
+    `name`: prefer "given family" if both names present (or one of
+    them); otherwise display_name. We do not invent.
+    `date_of_birth`: birth_date verbatim if present, else null.
+    `notes`: omitted — no honest source.
+    """
+    given = (record.given_names or "").strip()
+    family = (record.family_name or "").strip()
+    if given or family:
+        name = f"{given} {family}".strip()
+    else:
+        name = record.display_name
+    out: dict = {
+        "name": name,
+        "date_of_birth": (
+            record.birth_date.strftime("%Y-%m-%d")
+            if record.birth_date is not None
+            else None
+        ),
+    }
+    return out
+
+
+def _pictal_item(fact, pictal_section: str) -> dict:
+    """Map one fact → one Pictal item dict. Item keys are stable
+    across all sections so consumers don't need section-specific
+    parsing."""
+    return {
+        "label": fact.label,
+        "date": _pictal_date(fact.date_start, fact.date_precision),
+        "date_end": _pictal_date(fact.date_end, fact.date_precision),
+        "status": _pictal_status(fact, pictal_section),
+        "notes": _pictal_notes_for(fact),
+    }
+
+
+def _fact_sort_key(fact) -> tuple:
+    """Stable ordering inside a Pictal section.
+
+    Primary: date_start ascending, NULLs last (consistent with the
+    OwnChart UI's chronological default).
+    Secondary: label (case-insensitive) so two same-day items render
+    deterministically.
+    """
+    has_date = fact.date_start is not None
+    if has_date:
+        d = fact.date_start
+        if isinstance(d, datetime):
+            d = d.date()
+        return (0, d.isoformat(), (fact.label or "").lower())
+    return (1, "", (fact.label or "").lower())
+
+
+def pictal_health_json_mapper(snapshot: ExportSnapshot) -> bytes:
+    """Render the snapshot as Pictal Health Record v1.0 JSON.
+
+    See module docstring for the design contract. Pure: same snapshot
+    in → byte-identical JSON out.
+    """
+    sections: dict[str, list[dict]] = {k: [] for k in _PICTAL_SECTIONS}
+
+    for f in snapshot.facts:
+        # Body-signal facts: skipped regardless of fact_type. This is
+        # the second wall behind the snapshot's domain filter.
+        if (f.extraction_method or "") in _BODY_SIGNAL_EXTRACTION_METHODS:
+            continue
+        # Rejected facts: out. The user said "no, this isn't true."
+        if (f.review_state or "") == "rejected":
+            continue
+        section = _PICTAL_SECTION_FOR_FACT_TYPE.get((f.fact_type or "").lower())
+        if section is None:
+            # No safe bucket → omit. Better than guessing.
+            continue
+        sections[section].append((f, section))
+
+    # Sort each section deterministically, then convert to item dicts.
+    out_sections: dict[str, list[dict]] = {}
+    for key in _PICTAL_SECTIONS:
+        items = sections[key]
+        items.sort(key=lambda pair: _fact_sort_key(pair[0]))
+        out_sections[key] = [_pictal_item(f, sec) for (f, sec) in items]
+
+    payload = {
+        "_format": _PICTAL_FORMAT_VERSION,
+        "patient": _pictal_patient(snapshot.record),
+        **out_sections,
+    }
+    return json.dumps(
+        payload,
+        indent=2,
+        sort_keys=True,
+        ensure_ascii=False,
+    ).encode("utf-8")

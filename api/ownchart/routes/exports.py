@@ -89,7 +89,9 @@ class ExportFilters(BaseModel):
 
 
 class CreateExportRequest(BaseModel):
-    requested_format: Literal["ownchart_json", "txt", "all"] = "all"
+    requested_format: Literal[
+        "ownchart_json", "txt", "pictal_json", "all"
+    ] = "all"
     filters: ExportFilters = Field(default_factory=ExportFilters)
 
 
@@ -367,7 +369,7 @@ async def get_export(
 async def download_export(
     export_id: uuid.UUID,
     request: Request,
-    file_type: Literal["ownchart_json", "txt"] = Query(...),
+    file_type: Literal["ownchart_json", "txt", "pictal_json"] = Query(...),
     ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ):
@@ -431,12 +433,9 @@ async def download_export(
             detail="export file no longer on disk",
         )
 
-    media_type = (
-        "application/json" if file_type == "ownchart_json" else "text/plain"
-    )
-    filename_for_user = (
-        f"ownchart-{job.id}.{'json' if file_type == 'ownchart_json' else 'txt'}"
-    )
+    media_type = "text/plain" if file_type == "txt" else "application/json"
+    suffix_for_user = "txt" if file_type == "txt" else "json"
+    filename_for_user = f"ownchart-{job.id}.{suffix_for_user}"
 
     await _emit_audit(
         db,

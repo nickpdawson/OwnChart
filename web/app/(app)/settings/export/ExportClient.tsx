@@ -32,6 +32,19 @@ type Props = {
 
 const POLL_INTERVAL_MS = 5_000;
 
+function fileTypeLabel(t: string): string {
+  switch (t) {
+    case "ownchart_json":
+      return "OwnChart JSON";
+    case "txt":
+      return "TXT packet";
+    case "pictal_json":
+      return "Pictal JSON";
+    default:
+      return t;
+  }
+}
+
 function fmtBytes(n: number | null): string {
   if (n === null || n === undefined) return "—";
   if (n < 1024) return `${n} B`;
@@ -452,6 +465,30 @@ export function ExportClient({ initialJobs }: Props) {
                     <span className="text-ink">TXT packet only</span>
                   </span>
                 </label>
+                <label className="flex items-start gap-2">
+                  <input
+                    type="radio"
+                    name="format"
+                    value="pictal_json"
+                    checked={format === "pictal_json"}
+                    onChange={() => setFormat("pictal_json")}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="text-ink">
+                      Pictal Health JSON
+                    </span>
+                    <span className="text-muted">
+                      {" "}
+                      &mdash; structured health-history JSON for
+                      import into Pictal Health. This is a download
+                      you import yourself; OwnChart does not send
+                      anything to Pictal. High-volume body-signal
+                      data (HealthKit / auto-export rows) is not
+                      included in the Pictal mapping.
+                    </span>
+                  </span>
+                </label>
                 <label className="flex items-start gap-2 opacity-60">
                   <input
                     type="radio"
@@ -572,7 +609,8 @@ export function ExportClient({ initialJobs }: Props) {
                           download
                           className="rounded-md border border-accent/40 px-3 py-1.5 text-sm text-accent hover:bg-accent/10"
                         >
-                          Download {f.file_type} ({fmtBytes(f.byte_size)})
+                          Download {fileTypeLabel(f.file_type)} (
+                          {fmtBytes(f.byte_size)})
                         </a>
                       ))}
                       <button
