@@ -2,8 +2,9 @@
 
 **Tag:** beta1-0.2.0 (release-readiness pass)
 **Date:** 2026-05-26
-**Latest addendum:** Beta 1.1 (HealthKit MCP bridge), 2026-05-30 — see
-end of this doc.
+**Latest addendum:** Beta 1.2 (Pictal JSON export), 2026-06-10 — see
+end of this doc. Prior addendum: Beta 1.1 (HealthKit MCP bridge),
+2026-05-30.
 **Audience:** operators and technical self-hosters. Parallel to
 [RELEASE_NOTES_ALPHA.md](./RELEASE_NOTES_ALPHA.md); the full
 shipped-vs-held picture lives in
@@ -96,7 +97,8 @@ viewer role cannot.
 
 **Held:** async-with-progress execution and an explicit per-job
 upload size cap. Beta 1 keeps the synchronous-then-poll pattern.
-Pictal JSON and CCDA mappers are on the longer roadmap.
+**Pictal JSON ships in Beta 1.2** (see addendum below); CCDA XML
+remains on the longer roadmap.
 
 ### Cerner / Oracle Health connector
 
@@ -307,3 +309,101 @@ The three rules from Beta 1 carry forward unchanged:
   Data & Ingestion → MCP server** in the iOS app.
 
 — Beta 1.1 addendum, 2026-05-30.
+
+---
+
+## Beta 1.2 addendum — Pictal JSON export (2026-06-10)
+
+A second small targeted increment on top of Beta 1. One
+user-visible addition; nothing in the Beta 1 verification table
+or held list moves except the export-mapper line.
+
+### Shipped in Beta 1.2
+
+#### Pictal JSON export
+
+The export job that shipped in Beta 1 now offers **Pictal JSON**
+as a third mapper alongside the canonical OwnChart JSON and the
+TXT packet. Requesting an export from the web Settings → Export
+surface produces a downloadable Pictal JSON file at the existing
+`/api/exports/{id}/download` path. **The user downloads that file
+and imports it into Pictal manually**, outside OwnChart — there
+is no OwnChart-to-Pictal network handoff, no cloud relay, no
+account linkage. The file goes user → user.
+
+**Contract carried forward from Beta 1.** Pictal JSON inherits
+everything the canonical-JSON and TXT mappers already get:
+
+- Synchronous-then-poll job model under the existing
+  `POST /api/exports` flow.
+- Per-record cross-leak prevention (an export for record A
+  contains only record A's facts / sources / events / dossiers).
+- Owner and caregiver roles can request and download; viewer
+  cannot.
+- 72-hour TTL; expired downloads return 410.
+- Five audit events fire in the right places
+  (`export_requested`, `export_completed`, `export_failed`,
+  `export_downloaded`, `export_deleted`).
+
+### What stays on the roadmap
+
+#### CCDA XML export
+
+**OwnChart does not generate CCDA in this release.** CCDA XML
+remains on the longer-term roadmap as a best-effort artifact.
+
+That said: **Pictal itself can ingest CCDA directly** if a user
+already has a CCDA file from elsewhere (an EHR portal download,
+a CCD export from a health system, a previous portal-mediated
+download). That's a Pictal feature, not an OwnChart export
+path — OwnChart's not generating CCDA, the user is providing
+their existing CCDA to Pictal alongside the OwnChart-generated
+Pictal JSON. The "OwnChart generates CCDA" gate and the "Pictal
+accepts CCDA from any source" gate are separate; don't conflate
+them in marketing copy.
+
+### Held items unchanged
+
+Beta 1.2 does not move any other Beta 1 held item. Specifically
+still held / not shipped:
+
+- ModMed live OAuth (no real-practice OAuth round-trip verified
+  yet — see Beta 1 release notes).
+- Reingest date provenance for historical rows.
+- Canonical Spine — Phase 2.
+- Export — **async-with-progress + size cap** (applies uniformly
+  across all three mappers when those ship).
+- HealthKit steps ingest into OwnChart's backend.
+- HealthKit medication dose events (`HKCategoryTypeIdentifierMedicationDoseEvent`).
+
+### Public-claim posture for Beta 1.2
+
+The three rules from Beta 1 carry forward unchanged:
+
+1. **Calendar copy.** Still constrained to "iOS EventKit calendar
+   foundation" / "recent iOS calendar context." No flip in this
+   addendum.
+2. **ModMed.** Still documented with the explicit vendor-side
+   live-OAuth caveat. Beta 1.2 does not verify ModMed OAuth.
+3. **Live verification.** Pictal JSON export rides on the
+   synchronous-then-poll export path that was live-verified for
+   Beta 1; the Beta 1.2 addition is a new mapper on the
+   already-verified plumbing. Mention CCDA only with the
+   "OwnChart does not generate CCDA; Pictal can ingest CCDA from
+   any source" framing — never as an OwnChart-shipped export.
+
+### Operator upgrade notes
+
+- No new env var in `infra/.env`. The Pictal JSON mapper runs in
+  the same arq export-job pipeline as the canonical-JSON and TXT
+  mappers.
+- No new role gate. Pictal JSON requests use the same owner /
+  caregiver role check as the existing export mappers.
+- No new database migration. Pictal JSON writes alongside the
+  existing `export_files` records.
+- The "manual import into Pictal" step is on the **user** —
+  OwnChart's job ends at the downloadable file. Operators do
+  not need to operate a Pictal endpoint or hold Pictal
+  credentials.
+
+— Beta 1.2 addendum, 2026-06-10.

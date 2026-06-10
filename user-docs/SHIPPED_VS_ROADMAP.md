@@ -80,8 +80,9 @@ surface for requesting + downloading exports ships in the web
 app for owner / caregiver roles. **Async-with-progress and an
 explicit upload-size cap are held** for the post-release
 follow-up — Beta 1 keeps the synchronous-then-poll pattern.
-Pictal JSON and CCDA mappers are tracked separately on the
-longer roadmap.
+**Pictal JSON ships in Beta 1.2** (see "Shipped in Beta 1.2"
+below) as a third available mapper alongside the canonical
+OwnChart JSON and TXT. CCDA XML remains roadmap.
 
 ### Cerner / Oracle Health connector
 
@@ -129,6 +130,38 @@ This is a distinct surface from the still-roadmap **MCP server
 endpoint to the OwnChart backend** (Postgres-backed records on the
 self-hosted instance) — see "MCP server (Model Context Protocol)"
 under "Longer-term roadmap" below.
+
+---
+
+## Shipped in Beta 1.2 (post-Beta-1 increment)
+
+A small targeted release on top of Beta 1 / 1.1. Same
+shipped-vs-held honesty contract.
+
+### Pictal JSON export
+
+Beta 1.2 adds **Pictal JSON** as a third available export mapper
+alongside the canonical OwnChart JSON and TXT mappers that
+shipped in Beta 1. Requesting an export produces a downloadable
+Pictal JSON file at the existing `/api/exports` flow; the user
+downloads it from the OwnChart web UI and **imports it into
+Pictal manually** outside of OwnChart. There is no
+OwnChart-to-Pictal network handoff and no cloud relay — the
+file goes user → user.
+
+Pictal JSON inherits the Beta 1 export contract:
+synchronous-then-poll job model, per-record cross-leak
+prevention, owner / caregiver roles, 72-hour TTL, and the five
+existing audit events (`export_requested`, `export_completed`,
+`export_failed`, `export_downloaded`, `export_deleted`). The
+held async + size-cap items remain held; they apply uniformly
+across all three mappers when they ship.
+
+CCDA XML stays roadmap — OwnChart does not generate CCDA in this
+release. If a user already has a CCDA file from elsewhere (an
+EHR portal download, a CCD export from a health system, etc.),
+Pictal itself can ingest that CCDA directly — that's a Pictal
+feature, not an OwnChart export path.
 
 ---
 
@@ -360,10 +393,16 @@ to Event B in HRV, sleep, and weight"), and longitudinal pattern
 charts are all roadmap. Today the Timeline is functional but plain;
 Discover surfaces patterns but doesn't chart them yet.
 
-### Pictal JSON + CCDA export mappers
+### CCDA XML export mapper
 
-Beta 1 exports canonical OwnChart JSON + TXT. Pictal JSON is the next
-mapper; CCDA XML is on the longer roadmap as a best-effort artifact.
+Beta 1 exports canonical OwnChart JSON + TXT; Beta 1.2 adds Pictal
+JSON (see "Shipped in Beta 1.2" above). **CCDA XML is on the longer
+roadmap as a best-effort artifact** — OwnChart does not generate
+CCDA today. If a user already has a CCDA file from elsewhere (an EHR
+portal download, a CCD export from a health system), Pictal itself
+can ingest that CCDA directly; that's a Pictal feature, not an
+OwnChart export path. The "OwnChart generates CCDA" roadmap entry
+is separate from "Pictal accepts CCDA from any source."
 
 ### Other roadmap items mentioned in surrounding docs
 
