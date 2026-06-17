@@ -669,6 +669,9 @@ def test_active_general_ask_prompt_has_no_banned_phrases_in_voice_rules():
 
 
 def test_general_ask_v4_is_latest_version():
+    """v4 must still be callable by id@4 for historical ModelRun
+    audit after v5 supersedes it. The 'latest is v4' check was
+    rolled forward to test_general_ask_v5_is_latest_version."""
     from ownchart.llm import get_registry
     get_registry.cache_clear()
     reg = get_registry()
@@ -676,7 +679,6 @@ def test_general_ask_v4_is_latest_version():
     assert reg.get("general_ask@2").version == 2
     assert reg.get("general_ask@3").version == 3
     assert reg.get("general_ask@4").version == 4
-    assert reg.get("general_ask").version == 4
 
 
 def test_general_ask_v4_contains_absolute_structural_ban():
@@ -824,4 +826,230 @@ def test_general_ask_v4_tool_schema_unchanged():
         frozenset(t["input_schema"].get("required", [])) for t in tools
     ]
     # All four versions must agree on required fields.
+    assert all(r == required_sets[0] for r in required_sets)
+
+
+# ---------------------------------------------------------------------------
+# 10. general_ask v5 — pathology-phrase interpretation rule (2026-06-17)
+#
+# PM-caught dermatopathology regression: user asked what "no
+# residual atypical nevus" means; v4's answer over-deferred to
+# "ask your dermatologist" instead of providing the plain-language
+# interpretation first. v5 adds an explicit rule that pathology-
+# phrase MEANING questions get interpreted first and uncertainty
+# bracketed, with the safety boundary held at treatment orders
+# (which is where it should have been, not at "any phrase the
+# specialist wrote").
+
+
+def test_general_ask_v5_is_latest_version():
+    """v5 supersedes v4 as the default `general_ask` resolution."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    reg = get_registry()
+    for i in (1, 2, 3, 4, 5):
+        assert reg.get(f"general_ask@{i}").version == i
+    assert reg.get("general_ask").version == 5
+
+
+def test_general_ask_v5_declares_pathology_interpretation_section():
+    """v5 must contain the new section heading so a future cleanup
+    that drops it trips immediately."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system.lower()
+    assert "pathology-phrase interpretation" in text, (
+        "v5 must declare the pathology-phrase interpretation section"
+    )
+
+
+def test_general_ask_v5_phrase_is_the_evidence_rule():
+    """v5 must contain the load-bearing rule: when the retrieved
+    evidence carries the pathology phrase, the phrase IS the
+    evidence — sufficient to interpret. quality=unknown does not
+    erase this."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system.lower()
+    assert "phrase is the evidence" in text, (
+        "v5 must declare that the retrieved phrase IS the evidence "
+        "needed to interpret it"
+    )
+    # quality=unknown must NOT be a reason to refuse.
+    assert "quality=unknown" in text or "quality_tier=unknown" in text or (
+        "quality" in text and "erase the answer" in text
+    ), (
+        "v5 must pin that quality=unknown does NOT erase the answer"
+    )
+
+
+@pytest.mark.parametrize(
+    "example_phrase",
+    [
+        "no residual atypical nevus",  # the PM-caught case
+        "negative margins",
+        "no acute findings",
+        "stable compared to prior",
+        "no evidence of malignancy",
+    ],
+)
+def test_general_ask_v5_enumerates_pathology_phrase_examples(example_phrase):
+    """v5 must enumerate concrete pathology-phrase examples so the
+    model has a pattern to recognize."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system.lower()
+    assert example_phrase.lower() in text, (
+        f"v5 must enumerate the pathology-phrase example "
+        f"{example_phrase!r}"
+    )
+
+
+def test_general_ask_v5_required_answer_shape_for_phrase_questions():
+    """v5 prescribes a five-part answer shape: direct answer,
+    nuance, evidence, practical next step, uncertainty bracket.
+    Pin each piece so future edits can't quietly drop one."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system.lower()
+    for needle in (
+        "direct answer",
+        "nuance",
+        "evidence",
+        "practical next step",
+        "uncertainty bracket",
+    ):
+        assert needle in text, (
+            f"v5 must declare the {needle!r} step of the answer shape"
+        )
+
+
+def test_general_ask_v5_bans_ask_your_doctor_as_dominant_conclusion():
+    """v5 must explicitly forbid 'ask your <specialist>' as the
+    dominant answer when the user asked what a phrase MEANS."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system.lower()
+    assert "dominant conclusion" in text or "dominant answer" in text, (
+        "v5 must reference 'dominant conclusion' to ground the "
+        "anti-pattern"
+    )
+    # Must reference the deferral phrase pattern it's blocking.
+    assert (
+        "this is a clinical decision that belongs to" in text
+        or '"ask your doctor"' in text
+        or "ask your doctor" in text
+    ), (
+        "v5 must enumerate the 'ask your <specialist>' anti-pattern"
+    )
+
+
+def test_general_ask_v5_bans_requiring_pdf_upload_before_interpreting():
+    """The user shouldn't have to upload the full report PDF when
+    the retrieved evidence already carries the phrase."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system.lower()
+    assert "upload the full pdf" in text or (
+        "upload" in text and "pdf" in text and "before" in text
+    ), (
+        "v5 must forbid requiring a PDF upload before interpreting "
+        "a phrase that's already in the retrieved evidence"
+    )
+
+
+@pytest.mark.parametrize(
+    "hedge",
+    [
+        "this usually means",
+        "this generally indicates",
+        "pathology result itself does not suggest",
+        "plan note",
+        "remaining thing to confirm",
+    ],
+)
+def test_general_ask_v5_enumerates_permitted_hedges(hedge):
+    """v5 lists the hedge constructions the model is allowed to
+    use. Without these, the model wouldn't know what's safe to
+    say in the "direct answer" slot."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system.lower()
+    assert hedge in text, (
+        f"v5 must enumerate the permitted hedge {hedge!r}"
+    )
+
+
+def test_general_ask_v5_holds_treatment_order_boundary():
+    """v5 must keep v4's safety boundary unchanged: interpreting a
+    phrase is allowed; prescribing treatment / changing meds is
+    not. The line moves from 'any phrase a specialist wrote' to
+    'treatment orders specifically' — but the orders boundary
+    must still be present."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system
+    # v4's existing safety rule must be carried forward verbatim.
+    assert "Never give treatment instructions" in text
+    assert "dosing changes" in text
+    # And v5's explicit re-statement of the boundary.
+    assert "may NOT issue a treatment order" in text or (
+        "may NOT prescribe" in text
+        or "may NOT prescribe a procedure" in text
+    ), (
+        "v5 must explicitly restate the treatment-order boundary "
+        "so the new permission to interpret phrases doesn't leak "
+        "into prescribing"
+    )
+
+
+def test_general_ask_v5_preserves_v4_tone_ban_unchanged():
+    """The pathology rule is additive. v4's tone ban + acceptable
+    forms + self-check must survive verbatim."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system
+    assert "ABSOLUTE BAN" in text
+    assert "any inflection" in text.lower()
+    assert "Honest gap" in text  # PM-caught v3 leak phrase
+    assert "Before emitting your answer, scan it once" in text
+    assert "Acceptable forms for stating a limitation" in text
+
+
+def test_general_ask_v5_preserves_source_authority_and_med_chronology():
+    """Doctrine sections must survive — Source Authority Doctrine
+    and the five medication-chronology classes."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    p = get_registry().get("general_ask@5")
+    text = p.system
+    assert "Source Authority Doctrine" in text
+    assert "primary_event" in text
+    assert "self_reported_history" in text
+    assert "Earliest tracker log" in text
+    assert "originating prescription" in text
+
+
+def test_general_ask_v5_tool_schema_unchanged():
+    """v5 must keep the same emit_answer tool shape so route-layer
+    parsing is stable across versions."""
+    from ownchart.llm import get_registry
+    get_registry.cache_clear()
+    reg = get_registry()
+    versions = [reg.get(f"general_ask@{i}") for i in (1, 2, 3, 4, 5)]
+    tools = [v.tools[0] for v in versions]
+    names = {t["name"] for t in tools}
+    assert names == {"emit_answer"}
+    required_sets = [
+        frozenset(t["input_schema"].get("required", [])) for t in tools
+    ]
     assert all(r == required_sets[0] for r in required_sets)
