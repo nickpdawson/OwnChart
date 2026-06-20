@@ -129,6 +129,19 @@ class SyncSample(BaseModel):
     device: HKDevice | None = None  # optional device (Apple Watch, etc.)
     metadata: dict[str, Any] | None = None  # sample-level metadata
 
+    # ── Medication-dose fields (FU-HK-MEDICATION-DATA-ACCESS §4) ──
+    # iOS populates these only for the canonical identifier
+    # ``HKMedicationDoseEventTypeIdentifierMedicationDoseEvent``. One
+    # sample = one (local-day, medication) tuple. `dose_count` is the
+    # aggregate; per-dose timestamps are deliberately not on the wire
+    # (FU §3). `medication_display_name` is PHI — stored as-is on the
+    # fact but must never appear in logs.
+    medication_display_name: str | None = Field(default=None, max_length=256)
+    medication_display_key: str | None = Field(default=None, max_length=128)
+    dose_count: int | None = Field(default=None, ge=0)
+    scheduled_count: int | None = Field(default=None, ge=0)
+    as_needed_count: int | None = Field(default=None, ge=0)
+
 
 class SyncRequest(BaseModel):
     device_id: str

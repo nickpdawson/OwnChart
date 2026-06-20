@@ -147,20 +147,26 @@ _REGISTRY_LIST: tuple[HKIdentifierSpec, ...] = (
                      ("raw",), "raw", None, None),
 
     # ── Medications ──────────────────────────────────────────────────────
-    # iOS 16+ user-annotated medication doses. Keeps the existing
-    # HKClinicalTypeIdentifierMedicationRecord too for FHIR-derived
-    # medications that arrive via Health Records (clinical scope).
+    # Two streams. Both stay registered; ingest mapping for each is
+    # different.
     #
-    # NOTE on system-emitted medication-dose events (NOT in the
-    # registry yet): the canonical Apple identifier is
-    # ``HKMedicationDoseEventTypeIdentifierMedicationDoseEvent`` — see
-    # MEDICATION_DOSE_EVENT_IDENTIFIER and LEGACY_IDENTIFIER_ALIASES
-    # below. Ingest mapping for that stream is intentionally not in
-    # HK_REGISTRY until the normalized payload shape is coordinated
-    # with iOS (PM 2026-06-20). The user-annotated-dose row above
-    # stays as-is and is a separate stream.
+    # 1. iOS 16+ user-annotated medication doses (legacy iOS surface).
+    #    Kept here for backward compat. Never re-emitted on the wire
+    #    going outbound.
     HKIdentifierSpec("HKUserAnnotatedMedicationDose", "medications",
                      ("raw",), "raw", None, None),
+    # 2. iOS 26+ canonical medication-dose event stream. Added
+    #    2026-06-20 once the iOS direct-sync path (Apple's user-
+    #    initiated medication-data flow built in build 45+) was
+    #    confirmed to push the new wire shape. iOS aggregates one
+    #    sample per (local-day, medication); the server stores
+    #    `medication_display_name` (PHI) on the fact, dose counts as
+    #    `coded_concepts.dose_count`, and the normalized
+    #    `medication_display_key` as the persistence key. See
+    #    MEDICATION_DOSE_EVENT_IDENTIFIER below for the canonical
+    #    string + the LEGACY_IDENTIFIER_ALIASES read-normalizer.
+    HKIdentifierSpec("HKMedicationDoseEventTypeIdentifierMedicationDoseEvent",
+                     "medications", ("raw",), "raw", None, None),
 
     # ── Reproductive ─────────────────────────────────────────────────────
     HKIdentifierSpec("HKCategoryTypeIdentifierMenstrualFlow", "reproductive",
