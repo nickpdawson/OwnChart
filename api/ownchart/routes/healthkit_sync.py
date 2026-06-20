@@ -46,6 +46,7 @@ from ..ingest.healthkit import (
     enforce_strategy,
     format_aggregate_label,
     format_raw_label,
+    normalize_identifier,
     registry_for_capabilities,
 )
 from ..ingest.healthkit_workout import (
@@ -423,6 +424,13 @@ async def _sync_healthkit_inner(
     ctx: AuthContext,
     db: AsyncSession,
 ) -> SyncResponse:
+    # Inbound alias normalization (PM 2026-06-20). Maps the two
+    # historical medication-dose spellings to the canonical iOS 26+
+    # identifier before the HK_REGISTRY membership check. Pass-through
+    # for every other identifier. Outbound surfaces never invert this
+    # map — see ingest/healthkit.py::LEGACY_IDENTIFIER_ALIASES.
+    body.identifier = normalize_identifier(body.identifier)
+
     if body.identifier not in HK_REGISTRY:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

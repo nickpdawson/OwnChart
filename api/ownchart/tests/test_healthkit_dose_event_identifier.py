@@ -131,26 +131,36 @@ def test_normalize_identifier_passthrough_for_unknown():
 # 3. Registry posture — ingest NOT wired yet
 
 
-def test_canonical_dose_event_identifier_absent_from_HK_REGISTRY():
-    """PM 2026-06-20: ingest mapping is held until the normalized
-    payload shape is coordinated with iOS. The canonical identifier
-    must NOT be in HK_REGISTRY yet — adding it without iOS sign-off
-    would land facts into the timeline before the event payload is
-    pinned."""
+def test_canonical_dose_event_identifier_present_in_HK_REGISTRY():
+    """PM 2026-06-20 (build 45 directive): iOS now ships the explicit
+    medication-data flow (`MedicationAccessFlow`) that pushes the
+    canonical identifier through `/api/healthkit/sync`. The server
+    must recognize it in `HK_REGISTRY` so the route stops 422-ing on
+    the new shape. Scope of acceptance is identifier + wire shape;
+    full ExtractedFact mapping with
+    `extraction_method='native_healthkit_medication_dose'` lands in a
+    follow-up release."""
     from ownchart.ingest.healthkit import (
         HK_REGISTRY,
         MEDICATION_DOSE_EVENT_IDENTIFIER,
     )
-    assert MEDICATION_DOSE_EVENT_IDENTIFIER not in HK_REGISTRY
+    assert MEDICATION_DOSE_EVENT_IDENTIFIER in HK_REGISTRY
+    spec = HK_REGISTRY[MEDICATION_DOSE_EVENT_IDENTIFIER]
+    assert spec.scope == "medications"
+    assert "raw" in spec.strategies
+    assert spec.preferred_strategy == "raw"
 
 
-def test_legacy_dose_event_identifier_absent_from_HK_REGISTRY():
-    """Defense in depth: the legacy string must also not be in
-    HK_REGISTRY. Even if a future contributor mistakenly added it,
-    the alias map normalizes inbound payloads, so an HK_REGISTRY
-    entry under the legacy name would be unreachable."""
+def test_legacy_dose_event_identifiers_absent_from_HK_REGISTRY():
+    """Legacy spellings live ONLY in `LEGACY_IDENTIFIER_ALIASES` —
+    they're accepted on inbound (so older iOS builds don't 422) but
+    never emitted on outbound surfaces (`/capabilities`,
+    `HK_REGISTRY.values()`, exports, telemetry). Pinning their
+    absence here catches a future contributor accidentally adding
+    a row that would shadow the canonical identifier."""
     from ownchart.ingest.healthkit import HK_REGISTRY
     assert "HKCategoryTypeIdentifierMedicationDoseEvent" not in HK_REGISTRY
+    assert "HKUserAnnotatedMedicationDose" not in HK_REGISTRY
 
 
 # ---------------------------------------------------------------------------
@@ -168,13 +178,18 @@ def test_legacy_dose_event_identifier_absent_from_HK_REGISTRY():
 def _tracked_python_files() -> list[Path]:
     api_root = Path(__file__).resolve().parents[2]  # api/ownchart/
     out: list[Path] = []
+    # Identifier-governance test files intentionally reference the
+    # legacy string as literal in assertions / parametrize values.
+    # Skip them from the audit grep along with this file itself.
+    _GOVERNANCE_TEST_SELF_SKIPS = {
+        "test_healthkit_dose_event_identifier.py",
+        "test_healthkit_medication_dose_wire.py",
+    }
     for p in api_root.rglob("*.py"):
-        # Skip the venv if it somehow lives under ownchart/, skip the
-        # test file itself (it intentionally references the legacy
-        # string as a literal in assertions), and skip __pycache__.
+        # Skip the venv if it somehow lives under ownchart/ + __pycache__.
         if "__pycache__" in p.parts or ".venv" in p.parts:
             continue
-        if p.name == "test_healthkit_dose_event_identifier.py":
+        if p.name in _GOVERNANCE_TEST_SELF_SKIPS:
             continue
         out.append(p)
     return out
