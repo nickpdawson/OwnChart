@@ -150,6 +150,15 @@ _REGISTRY_LIST: tuple[HKIdentifierSpec, ...] = (
     # iOS 16+ user-annotated medication doses. Keeps the existing
     # HKClinicalTypeIdentifierMedicationRecord too for FHIR-derived
     # medications that arrive via Health Records (clinical scope).
+    #
+    # NOTE on system-emitted medication-dose events (NOT in the
+    # registry yet): the canonical Apple identifier is
+    # ``HKMedicationDoseEventTypeIdentifierMedicationDoseEvent`` — see
+    # MEDICATION_DOSE_EVENT_IDENTIFIER and LEGACY_IDENTIFIER_ALIASES
+    # below. Ingest mapping for that stream is intentionally not in
+    # HK_REGISTRY until the normalized payload shape is coordinated
+    # with iOS (PM 2026-06-20). The user-annotated-dose row above
+    # stays as-is and is a separate stream.
     HKIdentifierSpec("HKUserAnnotatedMedicationDose", "medications",
                      ("raw",), "raw", None, None),
 
@@ -180,6 +189,72 @@ _REGISTRY_LIST: tuple[HKIdentifierSpec, ...] = (
 )
 
 HK_REGISTRY: dict[str, HKIdentifierSpec] = {s.identifier: s for s in _REGISTRY_LIST}
+
+
+# ---------------------------------------------------------------------------
+# System-emitted medication-dose events — identifier governance
+# ---------------------------------------------------------------------------
+#
+# Apple's system-emitted medication-dose stream (the events the
+# Health app writes when the user logs / confirms / skips a dose
+# from a scheduled medication regimen) uses identifier
+#
+#     HKMedicationDoseEventTypeIdentifierMedicationDoseEvent
+#
+# An older OwnChart doc round (held by PM 2026-06-20) referenced the
+# string ``HKCategoryTypeIdentifierMedicationDoseEvent``, which would
+# place dose events under Apple's category-type hierarchy. That string
+# is NOT what Apple emits. The dose-event type sits in its own
+# ``HKMedicationDoseEventType`` hierarchy alongside ``HKCategoryType``,
+# ``HKQuantityType``, etc.
+#
+# Posture (PM 2026-06-20):
+#   - The canonical identifier going forward is
+#     ``HKMedicationDoseEventTypeIdentifierMedicationDoseEvent``.
+#   - The legacy string is accepted only as a read / backfill alias
+#     in case any historical payload made it into storage under the
+#     wrong name. The ``normalize_identifier()`` helper below maps
+#     legacy → canonical at the entry point.
+#   - The legacy string MUST NOT be emitted on any outbound surface
+#     going forward (``/capabilities``, ModelRun audit, exports,
+#     telemetry). The audit test pins this.
+#   - Ingest mapping for dose events is intentionally not wired into
+#     HK_REGISTRY yet. The normalized event payload shape (Apple
+#     provenance, event timestamp, medication identity from coded
+#     reference rather than displayText) is coordinated with iOS
+#     before the ingest path is added. When ingest does land, the
+#     facts produced will inherit ``extraction_method='native_healthkit'``
+#     and will be excluded from the Pictal export mapper alongside
+#     the rest of the body-signal stream.
+
+MEDICATION_DOSE_EVENT_IDENTIFIER: str = (
+    "HKMedicationDoseEventTypeIdentifierMedicationDoseEvent"
+)
+
+_LEGACY_MEDICATION_DOSE_EVENT_IDENTIFIER: str = (
+    "HKCategoryTypeIdentifierMedicationDoseEvent"
+)
+
+# Read-only alias map: legacy identifier → canonical identifier.
+# Future inbound payloads that still carry the legacy name get
+# normalized at the entry point. Never the other direction; nothing
+# outbound should ever emit a key from the keys of this dict.
+LEGACY_IDENTIFIER_ALIASES: dict[str, str] = {
+    _LEGACY_MEDICATION_DOSE_EVENT_IDENTIFIER: MEDICATION_DOSE_EVENT_IDENTIFIER,
+}
+
+
+def normalize_identifier(identifier: str) -> str:
+    """Map a legacy HealthKit identifier alias to its canonical form.
+
+    Called at the inbound boundary of any future ingest path that
+    accepts dose-event payloads. The legacy → canonical lookup is
+    side-effect-free; unknown identifiers are returned unchanged.
+    Outbound surfaces (``/capabilities``, exports, audit) must never
+    invert this map — the canonical identifier is the only string
+    that should leave the system going forward.
+    """
+    return LEGACY_IDENTIFIER_ALIASES.get(identifier, identifier)
 
 
 # Identifiers we refuse to accept as `strategy=raw` while `mode=demo`.

@@ -227,14 +227,23 @@ the other categories continue to sync per the alpha contract.
 
 ### HealthKit medication dose events
 
-`HKCategoryTypeIdentifierMedicationDoseEvent` (the Apple Health
-"Medications" dose-log surface that records when a user taps
-"taken" / "skipped" in iOS) is **not** in the Beta 1 / 1.1 ingest
-or in the HealthKit MCP bridge tool surface. Other medication
-data paths (FHIR `MedicationStatement` / `MedicationRequest` from
-EHR connectors, screenshot extraction of Rx labels, manual
-entry) continue to work; only the HealthKit dose-event stream
-specifically is held.
+`HKMedicationDoseEventTypeIdentifierMedicationDoseEvent` (the
+iOS 26+ per-object authorization type that records when a user
+taps "taken" / "skipped" in Apple Health → Medications) is
+**not** in the Beta 1 / 1.1 / 1.2 ingest or in the HealthKit MCP
+bridge tool surface. Other medication data paths (FHIR
+`MedicationStatement` / `MedicationRequest` from EHR connectors,
+screenshot extraction of Rx labels, manual entry) continue to
+work; only the HealthKit dose-event stream specifically is held.
+
+An earlier OwnChart doc round referenced
+`HKCategoryTypeIdentifierMedicationDoseEvent`; that's not what
+Apple emits (dose events live in their own
+`HKMedicationDoseEventType` hierarchy, not under `HKCategoryType`).
+The backend accepts the legacy string only as a read / backfill
+alias in case any historical payload was accepted under the
+wrong name; no outbound surface emits the legacy string going
+forward.
 
 ---
 

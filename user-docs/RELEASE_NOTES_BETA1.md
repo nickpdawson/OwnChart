@@ -277,12 +277,20 @@ held / not shipped:
 - Canonical Spine — Phase 2.
 - Export — async-with-progress + size cap.
 - HealthKit steps ingest into OwnChart's backend.
-- **HealthKit medication dose events** — `HKCategoryTypeIdentifierMedicationDoseEvent`
+- **HealthKit medication dose events** — `HKMedicationDoseEventTypeIdentifierMedicationDoseEvent`
   is not in the Beta 1.1 ingest path or the MCP bridge tool surface.
   Other medication data sources (FHIR `MedicationStatement` /
   `MedicationRequest` from EHR connectors, screenshot extraction of
   Rx labels, manual entry) continue to work; only the HealthKit
-  dose-event stream is held.
+  dose-event stream is held. An earlier OwnChart doc round
+  referenced the string `HKCategoryTypeIdentifierMedicationDoseEvent`,
+  which is not what Apple emits — the dose-event type lives in its
+  own `HKMedicationDoseEventType` hierarchy, not under
+  `HKCategoryType`. The backend accepts the legacy string only as a
+  read / backfill alias (see
+  `api/ownchart/ingest/healthkit.py::LEGACY_IDENTIFIER_ALIASES`) in
+  case any historical payload landed under the wrong name; no
+  outbound surface emits the legacy string going forward.
 
 ### Public-claim posture for Beta 1.1
 
@@ -390,7 +398,7 @@ still held / not shipped:
 - Export — **async-with-progress + size cap** (applies uniformly
   across all three mappers when those ship).
 - HealthKit steps ingest into OwnChart's backend.
-- HealthKit medication dose events (`HKCategoryTypeIdentifierMedicationDoseEvent`).
+- HealthKit medication dose events (`HKMedicationDoseEventTypeIdentifierMedicationDoseEvent`).
 
 ### Public-claim posture for Beta 1.2
 
