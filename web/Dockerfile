@@ -2,8 +2,11 @@
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
-COPY package.json package-lock.json* ./
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+# Require package-lock.json explicitly (no glob) and use `npm ci`, which
+# installs strictly from the lockfile and fails if it is missing or out of
+# sync with package.json — no silent `npm install` fallback.
+COPY package.json package-lock.json ./
+RUN npm ci
 
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app

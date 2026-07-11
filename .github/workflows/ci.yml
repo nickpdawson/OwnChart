@@ -1,0 +1,77 @@
+# OwnChart CI — reproducible-build gate.
+#
+# Two independent jobs:
+#   api-tests  — restore the exact locked deps (uv sync --frozen) and run the
+#                pure-function pytest suite. The suite needs no Postgres/Redis:
+#                every test is either a pure function or a FastAPI TestClient
+#                with its DB/auth dependencies overridden (see
+#                api/ownchart/tests/conftest.py), so no service containers are
+#                declared. If a future test needs a live DB, add
+#                pgvector/pgvector:pg16 + redis:7-alpine as `services:` here and
+#                point OWNCHART_DATABASE_URL / OWNCHART_REDIS_URL at them.
+#   web-build  — install strictly from the lockfile (npm ci) and run the
+#                Next.js production build, the same steps the web Dockerfile's
+#                deps+builder stages run.
+#
+# --frozen / npm ci both fail loudly if a lockfile is missing or out of sync
+# with its manifest, which is the whole point of committing the lockfiles.
+
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+# A newer push to the same ref cancels the older in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-tests:
+    name: API — uv sync --frozen + pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv (pinned)
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.8.15"
+          enable-cache: true
+          cache-dependency-glob: api/uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Run backend test suite
+        run: uv run --frozen pytest -q
+
+  web-build:
+    name: Web — npm ci + next build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build (Next.js standalone)
+        run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"

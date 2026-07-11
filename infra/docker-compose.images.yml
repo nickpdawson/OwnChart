@@ -1,0 +1,36 @@
+# OwnChart — published-image override.
+#
+# Additive override that pins the api / worker / web services to the images
+# published to GHCR by .github/workflows/release.yml, instead of building them
+# from source locally. The base infra/docker-compose.yml is unchanged and
+# still builds by default; this file is opt-in.
+#
+# Pin a specific release and run WITHOUT --build:
+#
+#   export OWNCHART_IMAGE_TAG=v0.1.0-alpha   # defaults to `latest` if unset
+#   docker compose \
+#     -f infra/docker-compose.yml \
+#     -f infra/docker-compose.images.yml \
+#     --env-file infra/.env \
+#     pull
+#   docker compose \
+#     -f infra/docker-compose.yml \
+#     -f infra/docker-compose.images.yml \
+#     --env-file infra/.env \
+#     up -d
+#
+# `worker` shares the api image (same Dockerfile, different command), so both
+# point at ownchart-api. Postgres and Redis already run published upstream
+# images in the base file and need no override here.
+
+name: ownchart
+
+services:
+  api:
+    image: ghcr.io/nickpdawson/ownchart-api:${OWNCHART_IMAGE_TAG:-latest}
+
+  worker:
+    image: ghcr.io/nickpdawson/ownchart-api:${OWNCHART_IMAGE_TAG:-latest}
+
+  web:
+    image: ghcr.io/nickpdawson/ownchart-web:${OWNCHART_IMAGE_TAG:-latest}

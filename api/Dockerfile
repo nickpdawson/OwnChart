@@ -19,14 +19,16 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
-COPY pyproject.toml ./
-COPY uv.lock* ./
-RUN uv sync --frozen --no-install-project --no-dev || uv sync --no-install-project --no-dev
+# Require the lockfile explicitly (no glob) so a missing uv.lock fails the
+# COPY, and `--frozen` with no fallback so a stale lock fails the build loudly
+# instead of silently resolving fresh dependencies.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev
 
 COPY ownchart ./ownchart
 COPY alembic.ini ./
 COPY alembic ./alembic
-RUN uv sync --no-dev
+RUN uv sync --frozen --no-dev
 
 # --- runtime stage -----------------------------------------------------------
 FROM python:3.12-slim-bookworm AS runtime
