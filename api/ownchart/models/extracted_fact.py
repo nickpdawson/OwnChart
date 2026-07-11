@@ -56,6 +56,14 @@ class ExtractedFact(Base, TimestampMixin):
     #                          display adds "from this visit"
     #   'issued_approximate'   Observation/DiagnosticReport with no
     #                          effective[x] fell back to `issued`
+    #   'documentation_date'   Echo Phase 0 — the date is when the fact
+    #                          was *documented* in a record, not a
+    #                          confirmed occurrence date. The LLM
+    #                          clinical-note "note-date" case: a
+    #                          same-day finding whose only available
+    #                          date is the note's creation timestamp.
+    #                          Treated like an echo — excluded from the
+    #                          explicit-only Home/Discover surfaces.
     #   'user_canonical'       a UserAssertion overrode the date
     #   NULL                   no date at all; UI shows "Undated
     #                          history" group, Chat says "mentioned in

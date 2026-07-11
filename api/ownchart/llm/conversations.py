@@ -616,6 +616,12 @@ def _evidence_block(
                 "\n  date_note: date is the report-issued timestamp, "
                 "approximate; the underlying observation may pre-date it."
             )
+        elif prov == "documentation_date":
+            body += (
+                "\n  date_note: mentioned in this record; the date "
+                "reflects when it was documented, not necessarily when "
+                "it happened."
+            )
         elif prov == "user_canonical":
             body += "\n  date_note: user-confirmed date."
         hist = getattr(f, "historical_status", None)

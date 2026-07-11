@@ -86,6 +86,62 @@ def _strip_to_plaintext(raw: bytes, mime: str | None) -> str:
     return text
 
 
+# Heuristic: any label that opens with these phrases is a HISTORY entry
+# on a note's review-of-systems / past-medical-history block. The
+# clinician wrote it down today; the event itself happened months or
+# years earlier. Default-dating these to the note's creation date would
+# lie. Caught 2026-05-14 PM during the RC walk: Home was showing
+# "Connected event: History of ACL repair (May 9, 2026)" because the
+# note's creation date leaked. Module-level so the Echo pins can call it.
+_HISTORICAL_LABEL_PREFIXES = (
+    "history of ", "hx of ", "h/o ", "status post ", "s/p ",
+    "prior ", "previous ", "former ", "past ",
+)
+
+
+def _looks_historical(label: str, status: str | None) -> bool:
+    s = (label or "").lower().strip()
+    if any(s.startswith(p) for p in _HISTORICAL_LABEL_PREFIXES):
+        return True
+    if "(history" in s or "(hx" in s or "(prior" in s or "(former" in s:
+        return True
+    if (status or "").lower() in ("history_of", "resolved"):
+        return True
+    return False
+
+
+def _resolve_note_date(
+    explicit_date: datetime | None,
+    is_historical: bool,
+    default_date: datetime | None,
+) -> tuple[datetime | None, str | None]:
+    """Echo Phase 0 — resolve ``(date_start, date_provenance)`` for a
+    clinical-note fact.
+
+    The ``date_provenance`` COLUMN is the single source of truth every
+    live reader consumes (Home, Discover, FactContext, the Ask evidence
+    block, Pictal export). This is the LLM-path analog of
+    ``routes/connectors.py::_date_for`` for the FHIR path.
+
+      - explicit LLM date       → (that date, "explicit")
+      - historical, no date     → (None, None)  # undated history
+      - same-day finding w/ note → (default_date, "documentation_date")
+      - nothing datable         → (None, None)
+
+    The ``documentation_date`` case is the note-date leak the PM caught
+    2026-05-14: the date is when the fact was *documented*, not a
+    confirmed event date, so it must never be stamped ``explicit`` (that
+    would let it anchor the explicit-only Home/Discover surfaces).
+    """
+    if explicit_date is not None:
+        return explicit_date, "explicit"
+    if is_historical:
+        return None, None
+    if default_date is not None:
+        return default_date, "documentation_date"
+    return None, None
+
+
 def _date_from_emit(date_str: str | None) -> datetime | None:
     if not date_str:
         return None
@@ -235,28 +291,6 @@ async def extract_clinical_note(
     pending: list[tuple[EvidenceAnchor, ExtractedFact]] = []
     fact_count = 0
 
-    # Heuristic: any label that opens with these phrases is a HISTORY
-    # entry on a note's review-of-systems / past-medical-history block.
-    # The clinician wrote it down today; the event itself happened
-    # months or years earlier. Default-dating these to the note's
-    # creation date would lie. Caught 2026-05-14 PM during the RC
-    # walk: Home was showing "Connected event: History of ACL
-    # repair (May 9, 2026)" because the note's creation date leaked.
-    historical_label_prefixes = (
-        "history of ", "hx of ", "h/o ", "status post ", "s/p ",
-        "prior ", "previous ", "former ", "past ",
-    )
-
-    def _looks_historical(label: str, status: str | None) -> bool:
-        s = (label or "").lower().strip()
-        if any(s.startswith(p) for p in historical_label_prefixes):
-            return True
-        if "(history" in s or "(hx" in s or "(prior" in s or "(former" in s:
-            return True
-        if (status or "").lower() in ("history_of", "resolved"):
-            return True
-        return False
-
     def add(fact_type: str, **kwargs: Any) -> None:
         nonlocal fact_count
         excerpt = (kwargs.get("text_excerpt") or "")
@@ -274,28 +308,28 @@ async def extract_clinical_note(
 
         # Date semantics — distinguish where the date came from so
         # downstream surfaces (Home, Timeline, Event Intelligence)
-        # don't treat note-date leak as event date.
+        # don't treat a note-date leak as an event date.
         #
-        # - explicit_date passed in (LLM extracted it from the prose):
-        #     date_start = that date           , date_origin="explicit"
-        # - historical fact, no explicit date:
-        #     date_start = NULL                , date_origin="historical_undated"
-        # - everything else (same-day clinical finding):
-        #     date_start = default_date        , date_origin="note_date"
+        # Echo Phase 0: the `date_provenance` COLUMN is the single
+        # source of truth every live reader consumes (Home, Discover,
+        # FactContext, the Ask evidence block, Pictal export). We stamp
+        # it here directly and no longer write the parallel
+        # `coded_concepts.date_origin` vocabulary — nothing live read
+        # it, and a dual-write is exactly the compat shim the repo
+        # forbids.
+        #
+        # See `_resolve_note_date` for the branch semantics: explicit
+        # LLM date → "explicit"; historical-undated → NULL; same-day
+        # finding → "documentation_date" (the note-date leak the PM
+        # caught 2026-05-14 — documented-not-occurred, treated like an
+        # echo and excluded from the explicit-only Home/Discover
+        # surfaces).
         is_historical = bool(kwargs.get("historical"))
-        explicit_date = kwargs.get("date_start")
-        if explicit_date is not None:
-            resolved_date = explicit_date
-            date_origin = "explicit"
-        elif is_historical:
-            resolved_date = None
-            date_origin = "historical_undated"
-        else:
-            resolved_date = default_date
-            date_origin = "note_date" if default_date else "unknown"
+        resolved_date, date_provenance = _resolve_note_date(
+            kwargs.get("date_start"), is_historical, default_date,
+        )
 
         cc = dict(kwargs.get("coded_concepts") or {})
-        cc.setdefault("date_origin", date_origin)
         if is_historical:
             cc.setdefault("historical", True)
 
@@ -327,6 +361,7 @@ async def extract_clinical_note(
             date_start=resolved_date,
             date_end=kwargs.get("date_end"),
             date_precision=kwargs.get("date_precision"),
+            date_provenance=date_provenance,
             body_site=kwargs.get("body_site"),
             laterality=kwargs.get("laterality"),
             coded_concepts=cc or None,

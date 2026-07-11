@@ -808,6 +808,12 @@ async def _ingest_one_ccda(
             date_start=cc.date_start,
             date_end=cc.date_end,
             date_precision=cc.date_precision,
+            # Echo Phase 0 — CCDA effectiveTime is a provider-attested
+            # occurrence date (0044's docstring already counts it as
+            # 'explicit'); a dated entry is explicit, an undated one
+            # stays NULL. Same COLUMN-is-authoritative contract as the
+            # FHIR and LLM paths.
+            date_provenance="explicit" if cc.date_start is not None else None,
             coded_concepts=cc.coded_concepts or None,
             confidence=cc.confidence,
             # CCDA is provider-attested like FHIR — auto-classify the same way:

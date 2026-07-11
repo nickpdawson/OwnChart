@@ -184,6 +184,11 @@ async def extract_page(
             date_start=kwargs.get("date_start"),
             date_end=kwargs.get("date_end"),
             date_precision=kwargs.get("date_precision"),
+            # Echo Phase 0 — a vision-extracted date is read off the
+            # page itself (an explicit occurrence date); undated stays
+            # NULL. The `date_provenance` COLUMN is authoritative across
+            # every extraction path.
+            date_provenance="explicit" if kwargs.get("date_start") is not None else None,
             body_site=kwargs.get("body_site"),
             laterality=kwargs.get("laterality"),
             confidence=_CONFIDENCE_INT.get(confidence_label),
