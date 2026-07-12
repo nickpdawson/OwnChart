@@ -184,6 +184,10 @@ def _tracked_python_files() -> list[Path]:
     _GOVERNANCE_TEST_SELF_SKIPS = {
         "test_healthkit_dose_event_identifier.py",
         "test_healthkit_medication_dose_wire.py",
+        # HK-1 raw dose-event guard test references the legacy string as
+        # a literal assertion input (proving normalize_identifier catches
+        # it); it's a governance test, not an outbound emission.
+        "test_healthkit_dose_event_raw_guard.py",
     }
     for p in api_root.rglob("*.py"):
         # Skip the venv if it somehow lives under ownchart/ + __pycache__.

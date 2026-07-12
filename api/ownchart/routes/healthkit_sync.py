@@ -46,6 +46,7 @@ from ..ingest.healthkit import (
     enforce_strategy,
     format_aggregate_label,
     format_raw_label,
+    is_medication_dose_event_identifier,
     normalize_identifier,
     registry_for_capabilities,
 )
@@ -168,6 +169,13 @@ class SyncRequest(BaseModel):
 class SyncResponse(BaseModel):
     accepted: int
     deduplicated: int
+    # Samples the server acknowledged (200) but deliberately did NOT
+    # persist — currently only raw medication dose-event samples from
+    # iOS builds ≤46 (see the guard in `_sync_healthkit_inner`).
+    # Counting them here (instead of returning a 4xx) lets the old
+    # client advance its HK anchor and STOP re-sending. Defaults to 0
+    # so nothing that doesn't hit the guard changes shape.
+    skipped: int = 0
     cursor_id: str
     anchor_blob: str | None
     mode: str
@@ -512,6 +520,24 @@ async def _sync_healthkit_inner(
 
     accepted = 0
     deduped = 0
+    skipped = 0
+
+    # Guard (HK-1 backend half): iOS builds ≤46 post medication dose
+    # events one-per-dose through this generic ``strategy='raw'`` lane
+    # (identifier ``HKMedicationDoseEventTypeIdentifier*``). Dose events
+    # are per-object-authorization PHI and must NOT be persisted as raw
+    # per-dose facts. Build 47+ routes medication data through the
+    # day-keyed aggregate lane (Health Auto Export ``ae-med-*`` in
+    # ingest/auto_export.py — a different endpoint this guard does not
+    # touch). We SILENTLY SKIP these samples and report them under
+    # ``skipped`` (a 200, never a 4xx) so old clients advance their HK
+    # anchor and stop re-sending the same samples forever. The identifier
+    # was already normalized above, so legacy aliases are covered; the
+    # helper prefix-matches so future dose-event variants are too.
+    skip_dose_event_raw = (
+        body.strategy == "raw"
+        and is_medication_dose_event_identifier(body.identifier)
+    )
 
     # Group samples by UTC day so we can pin them to the right
     # SourceDocument. Most batches will be one day or close to it.
@@ -522,6 +548,13 @@ async def _sync_healthkit_inner(
 
     source_doc_by_day: dict[str, SourceDocument] = {}
     for day_key, day_samples in samples_by_day.items():
+        if skip_dose_event_raw:
+            # Whole-batch skip: one identifier+strategy per request, so
+            # if the guard trips every day's samples are dose events.
+            # Skip fact creation AND the source-doc upsert (nothing to
+            # anchor). The cursor/anchor still advance below.
+            skipped += len(day_samples)
+            continue
         # All samples in this day share one SourceDocument.
         first = day_samples[0]
         src = await _upsert_source_for_day(
@@ -662,10 +695,12 @@ async def _sync_healthkit_inner(
         mode=effective_mode,
         accepted=accepted,
         deduped=deduped,
+        skipped=skipped,
     )
     return SyncResponse(
         accepted=accepted,
         deduplicated=deduped,
+        skipped=skipped,
         cursor_id=str(cursor.id),
         anchor_blob=_encode_anchor(cursor.anchor_blob),
         mode=effective_mode,

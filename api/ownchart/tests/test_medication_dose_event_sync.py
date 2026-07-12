@@ -448,13 +448,14 @@ def test_ordinary_sync_engine_does_not_reference_medication_picker():
 
 
 def test_medication_upload_uses_canonical_client_method():
-    """The iOS direct-sync push for medications goes through
-    `OwnChartClient.uploadHealthKitBatch(_:)` — the same entry point
-    every other HK identifier uses. That inherits the standard
-    four-step active-record resolution (header → session →
-    default → first-membership). Pin the call shape so a future
+    """The iOS direct-sync push for medications goes through the shared
+    `HKUploadGate.shared.upload(_:via:interactive:)`, which is the sole
+    caller of `OwnChartClient.uploadHealthKitBatch(_:)` (build 47, HK-2).
+    That inherits the standard four-step active-record resolution
+    (header → session → default → first-membership) AND the single-in-flight
+    upload gate + user-activity bracket. Pin the call shape so a future
     refactor doesn't introduce a parallel HTTP path that could send
-    medications to a different record."""
+    medications to a different record or bypass the gate."""
     root = _ios_repo_root()
     if root is None:
         pytest.skip("OwnChartiOS source tree not present; static check skipped")
@@ -467,10 +468,11 @@ def test_medication_upload_uses_canonical_client_method():
     # comments first so a future doc-only mention doesn't satisfy it.
     code_only = _strip_swift_comments(raw)
 
-    assert "client.uploadHealthKitBatch(" in code_only, (
-        "MedicationAccessFlow must push medication aggregates via "
-        "OwnChartClient.uploadHealthKitBatch(_:) so it inherits the "
-        "active-record resolution every other HK identifier uses."
+    assert "HKUploadGate.shared.upload(" in code_only, (
+        "MedicationAccessFlow must push medication aggregates through "
+        "HKUploadGate.shared.upload(_:via:interactive:) — the sole caller "
+        "of OwnChartClient.uploadHealthKitBatch(_:) — so it inherits both "
+        "active-record resolution and the single-in-flight upload gate."
     )
     # No hand-rolled HTTP — a separate URLRequest could bypass the
     # auth + record headers entirely. Check is over code-only so a

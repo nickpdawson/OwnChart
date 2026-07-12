@@ -280,6 +280,39 @@ def normalize_identifier(identifier: str) -> str:
     return LEGACY_IDENTIFIER_ALIASES.get(identifier, identifier)
 
 
+# Prefix shared by every HealthKit medication dose-event type identifier.
+# Apple's canonical stream is
+# ``HKMedicationDoseEventTypeIdentifierMedicationDoseEvent``; matching on
+# the *prefix* (not the exact string) future-proofs the guard against any
+# new dose-event variant Apple ships under the same type hierarchy.
+_MEDICATION_DOSE_EVENT_IDENTIFIER_PREFIX: str = (
+    "HKMedicationDoseEventTypeIdentifier"
+)
+
+
+def is_medication_dose_event_identifier(identifier: str) -> bool:
+    """True if ``identifier`` names a HealthKit medication dose-event type.
+
+    Medication dose events are per-object-authorization PHI. iOS builds
+    ≤46 posted them one-per-dose through the generic ``strategy='raw'``
+    lane of ``/api/healthkit/sync``; build 47+ moves medication data to
+    the day-keyed aggregate lane (Health Auto Export ``ae-med-*`` in
+    ``ingest/auto_export.py``). Old clients already in the field keep
+    posting raw dose events, so the sync route must recognize and drop
+    them rather than persist a raw per-dose fact.
+
+    Legacy spellings are normalized to canonical first, so a payload
+    still carrying an alias
+    (``HKCategoryTypeIdentifierMedicationDoseEvent`` /
+    ``HKUserAnnotatedMedicationDose``) is caught even if the caller
+    hasn't already normalized. The prefix match then covers the
+    canonical string and any future dose-event variant.
+    """
+    return normalize_identifier(identifier).startswith(
+        _MEDICATION_DOSE_EVENT_IDENTIFIER_PREFIX
+    )
+
+
 # Identifiers we refuse to accept as `strategy=raw` while `mode=demo`.
 # Heart rate, step count, and the energy streams are continuous on
 # Apple Watch and would flood the DB with millions of rows from a
