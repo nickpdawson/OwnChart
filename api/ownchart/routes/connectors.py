@@ -1486,6 +1486,14 @@ async def _extract_clinical_note_in_background(
             )
 
         if error_msg:
+            # A DB error inside extract_clinical_note leaves the session
+            # in a pending-rollback state; the very next db.get() would
+            # raise PendingRollbackError and we'd stamp nothing — no
+            # 'failed' status, no AuditEvent. Roll back first so the
+            # session is clean before we record the failure. (Harmless
+            # when the error was a non-DB exception — the rollback is a
+            # no-op on a clean session.)
+            await db.rollback()
             # Stamp the source so the UI / a future inbox surface can
             # show "extraction failed — Retry" affordances. Refetch
             # in case the failed extractor mutation didn't commit.
@@ -1504,3 +1512,88 @@ async def _extract_clinical_note_in_background(
                     detail={"error": error_msg[:1000]},
                 ))
                 await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Startup recovery for stranded clinical-note extractions.
+#
+# `_extract_clinical_note_in_background` runs as an in-process FastAPI
+# BackgroundTask. If the api container is rebuilt/redeployed between a
+# clinical_note/ccda_xml attachment landing and its extractor finishing,
+# the task is lost — the note sits with plaintext on disk and zero facts
+# forever, and (unlike vision jobs, which `_reenqueue_stranded_jobs`
+# recovers on worker startup) nothing re-scans it. This mirrors that
+# recovery for the clinical-note path, driven from main.py's lifespan.
+
+
+_CLINICAL_NOTE_SOURCE_TYPES = ("clinical_note", "ccda_xml")
+
+# Module-level anchor for fire-and-forget recovery tasks. asyncio only
+# holds weak references to tasks created via create_task(), so a task
+# whose only strong ref is a function-local can be GC'd mid-flight.
+# Keeping the ref here (discarded on completion) prevents that.
+_RECOVERY_TASKS: set = set()
+
+
+def _clinical_note_needs_extraction(
+    source_type: str, raw_metadata: dict | None,
+) -> bool:
+    """Pure predicate: is this source a clinical note whose extraction
+    never completed?
+
+    Stranded == a clinical_note/ccda_xml source that HAS extractable
+    plaintext (>= 40 chars, matching the /sync scheduling threshold)
+    but carries NO terminal `extraction_status`. A 'completed' or
+    'failed' stamp means the extractor (or its failure handler) already
+    ran — those are not re-driven ('failed' keeps its Retry affordance).
+    """
+    if source_type not in _CLINICAL_NOTE_SOURCE_TYPES:
+        return False
+    rm = raw_metadata or {}
+    if rm.get("extraction_status") in ("completed", "failed", "running"):
+        return False
+    if not rm.get("has_plaintext"):
+        return False
+    return int(rm.get("plaintext_length") or 0) >= 40
+
+
+async def reenqueue_stranded_clinical_notes(db: AsyncSession) -> int:
+    """Find clinical-note sources stranded mid-extraction and re-drive
+    their extractor as background tasks. Returns the count re-driven.
+
+    Runs at api startup (main.py lifespan). Each spawned task opens its
+    own SessionLocal and handles/records its own failures, so this does
+    not block startup and does not depend on `db` staying open.
+    """
+    import asyncio
+
+    from ..models.source_document import SourceDocument as _Src
+
+    rows = (await db.execute(
+        select(_Src).where(_Src.source_type.in_(_CLINICAL_NOTE_SOURCE_TYPES))
+    )).scalars().all()
+
+    stranded = [
+        r for r in rows
+        if _clinical_note_needs_extraction(r.source_type, r.raw_metadata)
+    ]
+    if not stranded:
+        log.info("clinical_note_recovery_clean")
+        return 0
+
+    # Keep references so the fire-and-forget tasks aren't GC'd.
+    for src in stranded:
+        t = asyncio.create_task(
+            _extract_clinical_note_in_background(
+                source_id=src.id, user_id=src.owner_user_id,
+            )
+        )
+        _RECOVERY_TASKS.add(t)
+        t.add_done_callback(_RECOVERY_TASKS.discard)
+        log.info(
+            "clinical_note_recovery_reenqueued",
+            source_id=str(src.id),
+            source_type=src.source_type,
+        )
+    log.info("clinical_note_recovery_scan_complete", reenqueued=len(stranded))
+    return len(stranded)

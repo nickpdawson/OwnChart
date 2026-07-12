@@ -24,6 +24,7 @@ from ..core.logger import get_logger
 from ..extract import ocr as ocr_extract
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.source_document import SourceDocument
+from .text_sanitize import strip_nul
 
 log = get_logger("ownchart.ingest.pdf")
 
@@ -67,7 +68,12 @@ def render_pdf(blob_bytes: bytes, source_id: str, dpi: int = 200) -> PdfIngest:
             png_path = out_dir / f"page-{i:04d}.png"
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             pix.save(png_path)
-            text = page.get_text("text") or ""
+            # PDF text layers can carry embedded NUL bytes; Postgres
+            # text/jsonb rejects them (asyncpg UntranslatableCharacterError)
+            # and rolls back the whole sync. Strip here at the source so
+            # every downstream sink (EvidenceAnchor.text_excerpt,
+            # raw_metadata) is NUL-free.
+            text = strip_nul(page.get_text("text") or "")
             text = text.strip()
             pages.append(
                 PageRender(
@@ -77,12 +83,15 @@ def render_pdf(blob_bytes: bytes, source_id: str, dpi: int = 200) -> PdfIngest:
                     has_text_layer=bool(text),
                 )
             )
+        # PDF metadata (title/author/creator/producer) is attacker- or
+        # scanner-controlled and can carry embedded NUL bytes; sanitize
+        # every value before it lands in raw_metadata JSONB.
         meta = {
             "page_count": len(pages),
-            "title": doc.metadata.get("title") if doc.metadata else None,
-            "author": doc.metadata.get("author") if doc.metadata else None,
-            "creator": doc.metadata.get("creator") if doc.metadata else None,
-            "producer": doc.metadata.get("producer") if doc.metadata else None,
+            "title": strip_nul(doc.metadata.get("title")) if doc.metadata else None,
+            "author": strip_nul(doc.metadata.get("author")) if doc.metadata else None,
+            "creator": strip_nul(doc.metadata.get("creator")) if doc.metadata else None,
+            "producer": strip_nul(doc.metadata.get("producer")) if doc.metadata else None,
             "any_page_has_text": any(p.has_text_layer for p in pages),
         }
         log.info(

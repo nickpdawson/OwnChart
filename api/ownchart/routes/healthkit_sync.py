@@ -586,9 +586,13 @@ async def _sync_healthkit_inner(
                 fact_type_value = _fact_type_for(spec)
                 anchor_type_value = "healthkit_sample"
 
-            # Idempotent insert via the partial unique index on
-            # client_sample_key. ON CONFLICT DO NOTHING — replays
-            # naturally dedupe. M02 perimeter: stamp the active
+            # Idempotent insert via the per-record partial unique index
+            # on (person_record_id, client_sample_key) — migration 0048.
+            # ON CONFLICT DO NOTHING — replays within the SAME record
+            # dedupe; an identical client_sample_key on a DIFFERENT
+            # person_record (paired family devices posting the same
+            # agg-<id>-<date> key) is now a distinct row instead of a
+            # silently-dropped collision. M02 perimeter: stamp the active
             # record id so retrieval scopes the wearable lane to
             # the right person.
             stmt = pg_insert(ExtractedFact.__table__).values(
@@ -608,7 +612,7 @@ async def _sync_healthkit_inner(
                 client_sample_key=s.client_sample_key,
                 equivalence_key=equiv_key,
             ).on_conflict_do_nothing(
-                index_elements=["client_sample_key"],
+                index_elements=["person_record_id", "client_sample_key"],
                 index_where=ExtractedFact.client_sample_key.isnot(None),
             ).returning(ExtractedFact.id)
             res = await db.execute(stmt)

@@ -24,11 +24,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-
 from ..core.db import SessionLocal
 from ..core.logger import get_logger
 from ..ingest import auto_export as auto_export_ingest
+from ..ingest.auto_export_persist import (
+    build_anchor_and_fact,
+    existing_client_sample_keys,
+)
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
@@ -117,10 +119,11 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
     existing_csks: set[str] = set()
     if csks_in_payload:
         async with SessionLocal() as db:
-            existing_csks = set((await db.execute(
-                select(ExtractedFact.client_sample_key)
-                .where(ExtractedFact.client_sample_key.in_(csks_in_payload))
-            )).scalars().all())
+            # Per-record scoping (migration 0048): only treat a key as a
+            # dupe if it already exists on THIS record.
+            existing_csks = await existing_client_sample_keys(
+                db, csks_in_payload, person_record_id=record_id,
+            )
 
     async def _flush() -> None:
         nonlocal fact_count, pending
@@ -138,64 +141,18 @@ async def process_auto_export_push(ctx: dict[str, Any], source_id: str) -> dict[
         pending = []
 
     for f in parsed.facts:
-        # Skip facts that already exist (cross-push dupes).
+        # Skip facts that already exist on this record (cross-push
+        # dupes) — plus the within-push tracking below.
         if f.client_sample_key and f.client_sample_key in existing_csks:
             skipped_dupe_count += 1
             continue
-        anchor = EvidenceAnchor(
-            source_document_id=src_uuid,
-            # Slice 1 perimeter — Round-2 stamp from the captured
-            # parent record id (the SourceDocument session closed
-            # earlier).
-            person_record_id=record_id,
-            # Default anchor_type is "auto_export_metric" for the
-            # vital-signs / activity / sleep path; medications and
-            # symptoms set their own (e.g. auto_export_medication).
-            anchor_type=f.anchor_type or "auto_export_metric",
-            section_path=";".join(
-                f"{k}={','.join(v)}" for k, v in (f.coded_concepts or {}).items()
-            ) or None,
-            text_excerpt=f.label,
-        )
-        ef = ExtractedFact(
-            fact_type=f.fact_type,
-            person_record_id=record_id,
-            label=f.label,
-            description=f.description,
-            date_start=f.date_start,
-            date_end=f.date_end,
-            date_precision="day",
-            coded_concepts=f.coded_concepts or None,
-            confidence=f.confidence,
-            # Default review_state is "confirmed" for Auto Export's
-            # passive metrics (heart rate, steps — provider-attested).
-            # Medications use "needs_review" for Skipped doses; the
-            # parser sets review_state explicitly when it differs.
-            review_state=f.review_state or "confirmed",
-            evidence_anchor_ids=[],
-            # Default extraction_method is "health_auto_export" so
-            # the global timeline classifies the fact as wearable.
-            # Medications / symptoms override to "patient_self_report"
-            # so they land in the clinical lane instead.
-            extraction_method=f.extraction_method or "health_auto_export",
-            # Cross-source equivalence (docs/07 §487-545). NULL for
-            # facts without a canonicalization rule (medications,
-            # workouts, sleep, body metrics in V1); same key across
-            # sources for daily-aggregate metrics.
-            equivalence_key=f.equivalence_key,
-            # docs/07 Priority 1 review reasons. Populated for the
-            # confidently-classifiable cases (Auto Export Skipped
-            # medications); NULL for the rest, which keeps the
-            # Review Inbox quiet for items we can't yet explain.
-            why_needs_review_code=f.why_needs_review_code,
-            why_needs_review_text=f.why_needs_review_text,
-            review_task_type=f.review_task_type,
-            source_context_only_eligible=f.source_context_only_eligible,
-            # Idempotency for medications (and any future emitter that
-            # sets one). Partial unique index on the column drops
-            # within-push dupes; the pre-filter above drops
-            # across-push dupes.
-            client_sample_key=f.client_sample_key,
+        # Shared builder — honors every per-fact override
+        # (extraction_method / review_state / anchor_type /
+        # equivalence_key / why_* / client_sample_key). Slice 1
+        # perimeter: record id captured while the SourceDocument was
+        # attached (its session closed earlier).
+        anchor, ef = build_anchor_and_fact(
+            f, source_id=src_uuid, person_record_id=record_id,
         )
         # Track keys we've added in this push so the same key emitted
         # twice in one payload (defense-in-depth) doesn't go to the

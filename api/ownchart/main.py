@@ -59,6 +59,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         async with SessionLocal() as db:
             count = await seed_provider_connectors(db)
             log.info("startup_seed_done", connectors_upserted=count)
+            if not settings.demo_mode:
+                # Recover clinical-note extractions stranded by a mid-
+                # extraction redeploy (the in-process BackgroundTask is
+                # lost on restart; vision jobs get worker-startup
+                # recovery, clinical notes need this). Skipped in demo
+                # mode (seed-only, no real clinical notes, no LLM spend).
+                from .routes.connectors import reenqueue_stranded_clinical_notes
+                reenqueued = await reenqueue_stranded_clinical_notes(db)
+                log.info("clinical_note_recovery_done", reenqueued=reenqueued)
             if settings.demo_mode:
                 seeded_user = await seed_demo_user_if_needed(db)
                 log.info("demo_user_seeded", seeded=seeded_user)

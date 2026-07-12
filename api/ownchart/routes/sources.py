@@ -30,6 +30,10 @@ from ..core.logger import get_logger
 from ..core.upload_audit import stamp_raw_metadata, upload_audit_dep
 from ..core.upload_context import attach_nearby_clinical_events
 from ..ingest import auto_export as auto_export_ingest
+from ..ingest.auto_export_persist import (
+    build_anchor_and_fact,
+    existing_client_sample_keys,
+)
 from ..ingest import ccda as ccda_ingest
 from ..ingest import images, pdf, storage
 from ..ingest.fact_classifier import review_state_for_fhir
@@ -1076,44 +1080,55 @@ async def upload_auto_export(
     db.add(src)
     await db.flush()
 
-    # One anchor per fact, anchored back to the same SourceDocument.
-    # We use anchor_type='auto_export_metric' so future timeline
-    # rendering can distinguish wearable evidence from clinical.
+    # Persist through the SAME parser/dedup path the REST-push worker
+    # uses (ingest/auto_export_persist.build_anchor_and_fact). Hardcoding
+    # review_state / extraction_method here — and dropping the parser's
+    # client_sample_key / equivalence_key — is exactly what let a
+    # re-upload of the same JSON duplicate every medication dose and
+    # mark Skipped doses "confirmed". `build_anchor_and_fact` honors
+    # every per-fact override; the per-record client_sample_key filter
+    # (migration 0048) drops re-uploaded doses.
+    csks_in_payload = [
+        f.client_sample_key for f in parsed.facts if f.client_sample_key
+    ]
+    seen_csks = await existing_client_sample_keys(
+        db, csks_in_payload, person_record_id=ctx.active_record_id,
+    )
+    fact_count = 0
+    dedup_skipped = 0
     for f in parsed.facts:
-        anchor = EvidenceAnchor(
-            source_document_id=src.id,
-            person_record_id=ctx.active_record_id,
-            anchor_type="auto_export_metric",
-            section_path=";".join(
-                f"{k}={','.join(v)}" for k, v in (f.coded_concepts or {}).items()
-            ) or None,
-            text_excerpt=f.label,
+        # Cross-upload dedup: the iOS app re-sends full medication
+        # history on every export, so skip keys already stored on this
+        # record (plus within-this-upload duplicates tracked below).
+        if f.client_sample_key and f.client_sample_key in seen_csks:
+            dedup_skipped += 1
+            continue
+        anchor, fact = build_anchor_and_fact(
+            f, source_id=src.id, person_record_id=ctx.active_record_id,
         )
         db.add(anchor)
         await db.flush()
-        db.add(
-            ExtractedFact(
-                fact_type=f.fact_type,
-                person_record_id=ctx.active_record_id,
-                label=f.label,
-                description=f.description,
-                date_start=f.date_start,
-                date_end=f.date_end,
-                date_precision="day",
-                coded_concepts=f.coded_concepts or None,
-                confidence=f.confidence,
-                review_state="confirmed",
-                evidence_anchor_ids=[anchor.id],
-                extraction_method="health_auto_export",
-            )
-        )
+        fact.evidence_anchor_ids = [anchor.id]
+        db.add(fact)
+        if f.client_sample_key:
+            seen_csks.add(f.client_sample_key)
+        fact_count += 1
+
+    # Keep the persisted fact_count truthful now that dedup can drop rows.
+    if src.raw_metadata is not None:
+        src.raw_metadata = {
+            **src.raw_metadata,
+            "fact_count": fact_count,
+            "dedup_skipped_count": dedup_skipped,
+        }
 
     await db.commit()
     await db.refresh(src)
     log.info(
         "auto_export_ingested",
         source_id=str(src.id),
-        fact_count=len(parsed.facts),
+        fact_count=fact_count,
+        dedup_skipped=dedup_skipped,
         workouts=parsed.workout_count,
         sleep_sessions=parsed.sleep_session_count,
         skipped_metrics=len(set(parsed.skipped_metrics)),

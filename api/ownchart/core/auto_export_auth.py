@@ -44,6 +44,12 @@ from ..models.person_record import PersonRecord
 from ..models.user import User
 from .config import get_settings
 
+# The scope a token must carry to authorize `POST /api/auto-export/push`.
+# The `scopes` column defaults to ['push']; enforcing it here means a
+# future token minted without 'push' (e.g. a read-only / delete-only
+# token) can't drive an ingest.
+PUSH_SCOPE = "push"
+
 
 # ---------------------------------------------------------------------------
 # Pure-function helpers
@@ -116,13 +122,16 @@ async def authenticate_auto_export_push(
     db: AsyncSession,
     *,
     authorization_header: str | None,
+    required_scope: str = PUSH_SCOPE,
 ) -> AutoExportAuthResult:
     """Authenticate a `POST /api/auto-export/push` request.
 
     Resolution order:
-      1. Try the per-record token table (any non-revoked row).
+      1. Try the per-record token table (any non-revoked row). The token
+         must carry `required_scope` in its `scopes`; otherwise 403.
       2. Fall back to the legacy env token IFF exactly one
-         non-disconnected person_record exists.
+         non-disconnected person_record exists. The env token is
+         deployment-wide and implicitly full-scope.
       3. Otherwise raise 401 (or 503 if neither path is configured).
     """
     raw_token = parse_bearer_header(authorization_header)
@@ -144,6 +153,16 @@ async def authenticate_auto_export_push(
     )).scalar_one_or_none()
 
     if token_row is not None:
+        # Enforce the token's granted scopes (never enforced before).
+        # A token minted without the push scope must not drive ingest.
+        if required_scope not in (token_row.scopes or []):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"This token is not authorized for '{required_scope}'. "
+                    f"Granted scopes: {sorted(token_row.scopes or [])}."
+                ),
+            )
         user = await db.get(User, token_row.user_id)
         if user is None:
             # Orphan token (user gone, FK cascade failed somehow).
