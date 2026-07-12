@@ -144,6 +144,15 @@ if [[ "$remote_env_exists" == "yes" ]]; then
     ssh "${REMOTE_USER}@${REMOTE_HOST}" \
       "umask 077 && printf 'OWNCHART_AUTO_EXPORT_TOKEN=%s\n' '${NEW_AET}' >> ${REMOTE_DIR}/infra/.env"
   fi
+
+  # Upsert OWNCHART_SMTP_PASSWORD from infra/deploy.env (piped via stdin so
+  # the secret never lands in the ssh argv / remote process table).
+  if [[ -n "${OWNCHART_SMTP_PASSWORD:-}" ]]; then
+    echo "→ upserting OWNCHART_SMTP_PASSWORD in remote .env"
+    printf 'OWNCHART_SMTP_PASSWORD=%s\n' "$OWNCHART_SMTP_PASSWORD" \
+      | ssh "${REMOTE_USER}@${REMOTE_HOST}" \
+        "umask 077 && cd ${REMOTE_DIR} && grep -v '^OWNCHART_SMTP_PASSWORD=' infra/.env > infra/.env.smtptmp 2>/dev/null; cat >> infra/.env.smtptmp && mv infra/.env.smtptmp infra/.env"
+  fi
 else
   echo "→ writing fresh remote infra/.env"
   PG_PASSWORD="$(LC_ALL=C tr -dc 'A-Za-z0-9_-' </dev/urandom | head -c 32)"
@@ -174,6 +183,10 @@ OWNCHART_AUTO_EXPORT_TOKEN=${AUTO_EXPORT_TOKEN}
 ANTHROPIC_API_KEY=${ANTHROPIC_KEY_VAL}
 ANTHROPIC_DEFAULT_MODEL=claude-opus-4-7
 ANTHROPIC_VISION_MODEL=claude-opus-4-7
+
+# Outbound mail password (mailcow @ ownchart.me). Non-secret SMTP config
+# (host/port/from) lives in infra/config.yaml; only the password is here.
+OWNCHART_SMTP_PASSWORD=${OWNCHART_SMTP_PASSWORD:-}
 EOF
 fi
 
