@@ -72,6 +72,9 @@ rsync -az --delete \
   --exclude 'data-demo' \
   --exclude '.DS_Store' \
   --exclude 'anthropic_dev_key.txt' \
+  --exclude 'Working Docs/' \
+  --exclude 'private/' \
+  --exclude 'athena.txt' \
   --exclude 'infra/.env' \
   ./ "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/"
 

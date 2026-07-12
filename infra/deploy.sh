@@ -89,6 +89,9 @@ rsync -az --delete \
   --exclude '**/.mypy_cache/' \
   --exclude '**/.ruff_cache/' \
   --exclude 'anthropic_dev_key.txt' \
+  --exclude 'Working Docs/' \
+  --exclude 'private/' \
+  --exclude 'athena.txt' \
   --exclude 'infra/.env' \
   --exclude '*.log' \
   ./ "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/"
