@@ -158,11 +158,21 @@ _REGISTRY_LIST: tuple[HKIdentifierSpec, ...] = (
     # "aliases remain inbound-only."
     #
     # iOS aggregates one sample per (local-day, medication); the server
-    # stores ``medication_display_name`` (PHI) on the fact, dose counts
-    # as ``coded_concepts.dose_count``, and the normalized
-    # ``medication_display_key`` as the persistence key.
+    # stores ``medication_display_name`` (PHI) on the fact as the label,
+    # the coded ``medication_display_key`` in ``coded_concepts``, and the
+    # dose counters in ``raw_metadata.medication_dose``. The client-derived
+    # ``client_sample_key`` (stable hash of display_key + local day) is the
+    # per-record persistence key.
+    #
+    # The canonical (build 47+) lane is ``daily_aggregate`` — the honest
+    # label for what iOS posts: one already-day-folded sample per
+    # (medication, local day). ``raw`` stays an accepted strategy so the
+    # 8be7f7a raw-skip guard still fires for iOS builds ≤46 that post
+    # one-per-dose events through the raw lane (those are skipped-200,
+    # never persisted). Preferred is ``daily_aggregate``.
     HKIdentifierSpec("HKMedicationDoseEventTypeIdentifierMedicationDoseEvent",
-                     "medications", ("raw",), "raw", None, None),
+                     "medications", ("daily_aggregate", "raw"),
+                     "daily_aggregate", None, None),
 
     # ── Reproductive ─────────────────────────────────────────────────────
     HKIdentifierSpec("HKCategoryTypeIdentifierMenstrualFlow", "reproductive",
@@ -374,6 +384,25 @@ def enforce_strategy(
         raise StrategyRejected(
             f"Demo mode: refusing raw samples for {identifier}; "
             f"switch to daily_aggregate (or set mode=full)."
+        )
+    if (
+        mode == "demo"
+        and strategy == "daily_aggregate"
+        and is_medication_dose_event_identifier(identifier)
+    ):
+        # PHI wall: the medication daily_aggregate lane persists the
+        # real ``medication_display_name`` as the fact label. The demo
+        # runs on a SHARED ``demo@ownchart.me`` account, so letting a
+        # visitor write real medication names there would leak PHI into
+        # the public demo. iOS already pauses personal HK sync in demo,
+        # but we refuse server-side too (belt-and-suspenders). NOTE this
+        # guard is scoped to ``daily_aggregate`` ONLY — raw dose events
+        # must still pass enforcement so the 8be7f7a raw-skip guard
+        # (skipped-200, no retry loop) handles them instead of a 422.
+        raise StrategyRejected(
+            f"Demo mode: refusing medication dose events for {identifier}; "
+            f"medication display names are PHI and must not enter the "
+            f"shared demo."
         )
     return spec
 

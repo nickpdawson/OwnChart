@@ -328,15 +328,19 @@ def test_capabilities_does_not_advertise_legacy_dose_identifiers():
 
 def test_capabilities_medication_dose_row_scope_and_strategy():
     """The advertised row for the canonical identifier must carry the
-    correct scope (``medications``) and strategy (``raw``). iOS uses
-    these to decide which onboarding card to surface and whether to
-    upload aggregates or per-sample rows."""
+    correct scope (``medications``) and strategies. iOS uses these to
+    decide which onboarding card to surface and which lane to upload on.
+    The canonical (build 47+) lane is ``daily_aggregate`` — one
+    day-folded sample per (medication, day) — so that's the preferred
+    strategy; ``raw`` stays advertised so build-≤46 clients keep hitting
+    the skip guard rather than a 400."""
     rows = registry_for_capabilities()
     by_id = {r["identifier"]: r for r in rows}
     row = by_id[MEDICATION_DOSE_EVENT_IDENTIFIER]
     assert row["scope"] == "medications"
+    assert "daily_aggregate" in row["strategies"]
     assert "raw" in row["strategies"]
-    assert row["preferred_strategy"] == "raw"
+    assert row["preferred_strategy"] == "daily_aggregate"
 
 
 # ---------------------------------------------------------------------------

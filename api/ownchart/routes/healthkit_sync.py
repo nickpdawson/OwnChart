@@ -425,6 +425,70 @@ def _build_workout_fact_payload(
     return label, coded, raw_meta
 
 
+def _build_medication_dose_fact_payload(
+    sample: SyncSample,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Map a ``daily_aggregate`` medication dose-event ``SyncSample`` to
+    fact-insert parameters.
+
+    Returns ``(label, coded_concepts, raw_metadata_medication_dose)``.
+    The route wraps the last value under
+    ``raw_metadata = {"medication_dose": ...}`` before persisting —
+    mirroring the workout path's ``raw_metadata.healthkit`` namespace.
+
+    Storage shape (mirrors ``ingest/auto_export.py::_emit_medication``,
+    the established device-sourced medication convention):
+      - ``label`` = ``medication_display_name`` — this IS PHI and is
+        intended to be stored as a plain label, exactly like the Auto
+        Export medication path stores the raw drug name as the label.
+        Falls back to ``medication_display_key`` if the display name is
+        absent so a fact is never labelled with an empty string.
+      - ``coded_concepts.hkmedicationdose`` = ``[medication_display_key]``
+        — the coded (locale-stable) medication reference, the identity
+        that survives a re-pair. Apple provenance
+        (``source_bundle_id`` / ``hk_uuid``) rides alongside as it does
+        on the generic sample path.
+      - dose counters go in ``raw_metadata`` (numeric / structured
+        payload that does not belong in ``coded_concepts``'s
+        list-of-strings retrieval bag — matches the column's documented
+        purpose on ``ExtractedFact.raw_metadata``).
+
+    Raises ``HTTPException(422)`` naming the ``client_sample_key`` if
+    ``medication_display_key`` is missing — that's the coded identity of
+    the fact, and a medication row without it is meaningless. Only build
+    47+ clients post this lane, so a 422 here does not risk a
+    build-≤46 retry loop (those still ride the raw skip-guard).
+
+    Pure: same input → same output.
+    """
+    display_key = (sample.medication_display_key or "").strip()
+    if not display_key:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "medication dose-event sample "
+                f"{sample.client_sample_key!r} is missing "
+                "medication_display_key"
+            ),
+        )
+    display_name = (sample.medication_display_name or "").strip() or display_key
+    label = display_name[:512]
+
+    coded: dict[str, Any] = {"hkmedicationdose": [display_key]}
+    if sample.source_bundle_id:
+        coded["source_bundle_id"] = [sample.source_bundle_id]
+    if sample.hk_uuid:
+        coded["hk_uuid"] = [sample.hk_uuid]
+
+    raw_med: dict[str, Any] = {
+        "medication_display_key": display_key,
+        "dose_count": sample.dose_count,
+        "scheduled_count": sample.scheduled_count,
+        "as_needed_count": sample.as_needed_count,
+    }
+    return label, coded, raw_med
+
+
 async def _sync_healthkit_inner(
     body: SyncRequest,
     request: Request,
@@ -539,6 +603,24 @@ async def _sync_healthkit_inner(
         and is_medication_dose_event_identifier(body.identifier)
     )
 
+    # Persist branch (HK-2 / FU-HK-MEDICATION-DATA-ACCESS): build 47+
+    # posts medication data through the honest ``daily_aggregate`` lane —
+    # one already-day-folded sample per (medication, local day) carrying
+    # the dedicated wire fields (``medication_display_name`` /
+    # ``medication_display_key`` / ``dose_count`` / ``scheduled_count`` /
+    # ``as_needed_count``). These persist as one ``fact_type='medication'``
+    # ExtractedFact per (record, medication, day), keyed for dedup on the
+    # client-provided ``client_sample_key`` via the per-record composite
+    # unique index (migration 0048). Mutually exclusive with
+    # ``skip_dose_event_raw`` — one identifier+strategy per request, and
+    # the two branches gate on opposite strategies. Demo mode never
+    # reaches here: ``enforce_strategy`` already 422'd this lane in demo
+    # (PHI wall — medication names must not enter the shared demo).
+    persist_dose_event_aggregate = (
+        body.strategy == "daily_aggregate"
+        and is_medication_dose_event_identifier(body.identifier)
+    )
+
     # Group samples by UTC day so we can pin them to the right
     # SourceDocument. Most batches will be one day or close to it.
     samples_by_day: dict[str, list[SyncSample]] = {}
@@ -579,6 +661,25 @@ async def _sync_healthkit_inner(
                 date_precision_value: str | None = None
                 fact_type_value = "observation"
                 anchor_type_value = "healthkit_workout"
+            elif persist_dose_event_aggregate:
+                # Daily-aggregate medication dose lane. One fact per
+                # (record, medication, local day); PHI display name is
+                # the label. extraction_method='patient_self_report' and
+                # fact_type='medication' (via the shared helpers) put it
+                # in the clinical lane next to Auto Export medications,
+                # not the wearable lane. equivalence_key stays NULL —
+                # medications have no clean daily canonicalization rule
+                # (matches ingest/auto_export.py). date_precision='day'
+                # since iOS already folded the doses into a day cell.
+                mlabel, mcoded, mraw = _build_medication_dose_fact_payload(s)
+                label = mlabel
+                coded = mcoded
+                method = _extraction_method_for(spec)
+                equiv_key = None
+                raw_metadata_value = {"medication_dose": mraw}
+                date_precision_value = "day"
+                fact_type_value = _fact_type_for(spec)
+                anchor_type_value = "healthkit_medication_dose"
             else:
                 label = (
                     format_aggregate_label(spec, s.value, body.unit)

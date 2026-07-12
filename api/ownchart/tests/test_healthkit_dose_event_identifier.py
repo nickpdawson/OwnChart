@@ -136,10 +136,11 @@ def test_canonical_dose_event_identifier_present_in_HK_REGISTRY():
     medication-data flow (`MedicationAccessFlow`) that pushes the
     canonical identifier through `/api/healthkit/sync`. The server
     must recognize it in `HK_REGISTRY` so the route stops 422-ing on
-    the new shape. Scope of acceptance is identifier + wire shape;
-    full ExtractedFact mapping with
-    `extraction_method='native_healthkit_medication_dose'` lands in a
-    follow-up release."""
+    the new shape. The daily_aggregate ingest lane (HK-2) now persists
+    one `fact_type='medication'` fact per (record, medication, day) with
+    `extraction_method='patient_self_report'` (the Auto Export
+    convention); `raw` is retained so the 8be7f7a raw-skip guard still
+    fires for build-≤46 clients."""
     from ownchart.ingest.healthkit import (
         HK_REGISTRY,
         MEDICATION_DOSE_EVENT_IDENTIFIER,
@@ -147,8 +148,12 @@ def test_canonical_dose_event_identifier_present_in_HK_REGISTRY():
     assert MEDICATION_DOSE_EVENT_IDENTIFIER in HK_REGISTRY
     spec = HK_REGISTRY[MEDICATION_DOSE_EVENT_IDENTIFIER]
     assert spec.scope == "medications"
+    # Both strategies are accepted: daily_aggregate is the canonical
+    # (build 47+) persist lane; raw is kept so old clients hit the skip
+    # guard instead of a 400.
+    assert "daily_aggregate" in spec.strategies
     assert "raw" in spec.strategies
-    assert spec.preferred_strategy == "raw"
+    assert spec.preferred_strategy == "daily_aggregate"
 
 
 def test_legacy_dose_event_identifiers_absent_from_HK_REGISTRY():
