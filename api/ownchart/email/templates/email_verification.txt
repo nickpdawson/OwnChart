@@ -1,0 +1,16 @@
+Verify your email for {{instance_name}}
+
+Confirm that {{invited_email}} is your email address to finish setting up
+your {{instance_name}} account.
+
+Open this link to verify your email:
+
+{{link}}
+
+{{expiry_note}}
+
+If you didn't create a {{instance_name}} account you can safely ignore this
+email.
+
+--
+{{instance_name}} · patient-owned health records

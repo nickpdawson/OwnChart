@@ -19,6 +19,7 @@ from ..core.auth_context import (
 )
 from ..core.config import get_settings
 from ..core.db import get_session
+from ..core.logger import get_logger
 from ..core.rate_limit import enforce_rate_limit
 from ..core.security import (
     hash_password,
@@ -35,6 +36,20 @@ from ..models.user import User
 
 router = APIRouter()
 _settings = get_settings()
+log = get_logger("ownchart.routes.auth")
+
+
+def _verification_expiry_note() -> str:
+    """Human phrase for the verification-email expiry note (no user input)."""
+    ttl = get_settings().email_verification_token_ttl_seconds
+    hours = ttl // 3600
+    if hours and hours % 24 == 0:
+        days = hours // 24
+        return f"This link expires in {days} day{'s' if days != 1 else ''}."
+    if hours:
+        return f"This link expires in about {hours} hour{'s' if hours != 1 else ''}."
+    minutes = max(1, ttl // 60)
+    return f"This link expires in about {minutes} minute{'s' if minutes != 1 else ''}."
 
 
 class LoginRequest(BaseModel):
@@ -120,6 +135,11 @@ class MeResponse(BaseModel):
     default_person_record_id: str | None = None
     memberships: list[MembershipOut] = []
     active_record: ActiveRecordOut | None = None
+    # Email/SMTP workstream. Default True so pre-verification clients and the
+    # no-verification (self-host default) path read as verified. Only the
+    # register response on a verification-required instance carries False —
+    # the signal the client uses to route to a "check your email" screen.
+    email_verified: bool = True
 
 
 def _compose_session_payload(
@@ -366,13 +386,14 @@ async def register(
     ).scalars().first()
     is_first_user = existing_first is None
 
+    cfg = get_app_config()
+
     invite: Invitation | None = None
     if not is_first_user and body.invite_token:
         invite = await _consume_invite(
             db, raw_token=body.invite_token, invitee_email=body.email,
         )
     elif not is_first_user:
-        cfg = get_app_config()
         if not cfg.auth.allow_self_registration:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -385,10 +406,25 @@ async def register(
                 },
             )
 
+    # Email verification (Email/SMTP workstream). Only meaningful when the
+    # operator turns the flag on AND SMTP is actually configured — otherwise
+    # there'd be no way to verify and login enforcement would brick everyone.
+    # The first user (bootstrap) is always auto-verified, mirroring how the
+    # invite token is ignored on that path.
+    from ..core.email import is_smtp_configured
+    verification_required = (
+        not is_first_user
+        and cfg.auth.require_email_verification
+        and is_smtp_configured()
+    )
+    now_reg = datetime.now(timezone.utc)
+
     user = User(
         email=body.email,
         password_hash=hash_password(body.password),
         is_instance_admin=is_first_user,
+        email_verified=not verification_required,
+        email_verified_at=None if verification_required else now_reg,
     )
     db.add(user)
     await db.flush()  # need user.id for downstream FKs
@@ -490,10 +526,32 @@ async def register(
 
     await db.commit()
     await db.refresh(user)
-    _set_session_cookie(
-        response, str(user.id),
-        session_token_version=user.session_token_version,
-    )
+
+    if verification_required:
+        # Don't log the user in — they must verify first. Send the link
+        # best-effort; a send failure doesn't fail registration (the account
+        # exists and the user can re-request verification).
+        from ..core.email import public_url, send_email_verification_email
+        from ..core.security import make_email_verification_token
+        token = make_email_verification_token(str(user.id), user.email)
+        url = public_url(f"/verify-email/{token}")
+        try:
+            await send_email_verification_email(
+                to=user.email,
+                verify_url=url,
+                expiry_note=_verification_expiry_note(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "verification_email_failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+    else:
+        _set_session_cookie(
+            response, str(user.id),
+            session_token_version=user.session_token_version,
+        )
+
     return MeResponse(
         id=str(user.id),
         email=user.email,
@@ -503,6 +561,7 @@ async def register(
             str(user.default_person_record_id)
             if user.default_person_record_id else None
         ),
+        email_verified=user.email_verified,
     )
 
 
@@ -528,11 +587,39 @@ async def login(
     user = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+    # Email-verification gate (Email/SMTP workstream). Enforced only when the
+    # operator turned the flag on AND SMTP is configured (otherwise there'd be
+    # no way to verify). Checked AFTER the password so it never reveals which
+    # emails exist / are verified to an unauthenticated prober.
+    cfg = get_app_config()
+    from ..core.email import is_smtp_configured
+    if (
+        cfg.auth.require_email_verification
+        and is_smtp_configured()
+        and not user.email_verified
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "email_not_verified",
+                "message": (
+                    "Verify your email address before signing in. Check your "
+                    "inbox for the verification link."
+                ),
+            },
+        )
+
     _set_session_cookie(
         response, str(user.id),
         session_token_version=user.session_token_version,
     )
-    return MeResponse(id=str(user.id), email=user.email, phi_consent_granted=user.phi_consent_granted)
+    return MeResponse(
+        id=str(user.id),
+        email=user.email,
+        phi_consent_granted=user.phi_consent_granted,
+        email_verified=user.email_verified,
+    )
 
 
 @router.post("/logout")
@@ -605,6 +692,9 @@ def _compose_me_response(
         ),
         memberships=memberships_out,
         active_record=active_out,
+        # NOT NULL in the DB; coerce defensively for synthetic/pre-refresh
+        # User instances (e.g. test fixtures) where the attribute is None.
+        email_verified=bool(user.email_verified),
     )
 
 

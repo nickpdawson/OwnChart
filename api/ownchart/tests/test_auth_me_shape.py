@@ -280,6 +280,8 @@ def test_composer_returns_only_what_was_passed_in():
         "id", "email", "phi_consent_granted",
         "is_instance_admin", "default_person_record_id",
         "memberships", "active_record",
+        # Email/SMTP workstream — additive verification flag.
+        "email_verified",
     }
     assert not extra_attrs, f"composer leaked attrs: {extra_attrs}"
 

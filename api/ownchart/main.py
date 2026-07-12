@@ -24,6 +24,7 @@ from .routes import (
     audit,
     auth,
     auth_device,
+    auth_recovery,
     auto_export,
     calendar,
     calendar_google,
@@ -234,6 +235,7 @@ app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(account.router, prefix="/api/account", tags=["account"])
 app.include_router(auth_device.router, prefix="/api/auth/device", tags=["auth-device"])
+app.include_router(auth_recovery.router, prefix="/api/auth", tags=["auth"])
 app.include_router(consent.router, prefix="/api/consent", tags=["consent"])
 app.include_router(sources.router, prefix="/api/sources", tags=["sources"])
 app.include_router(topics.router, prefix="/api/topics", tags=["topics"])

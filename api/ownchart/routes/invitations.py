@@ -47,6 +47,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.auth_context import AuthContext, get_auth_context
 from ..core.config import get_settings
 from ..core.db import get_session
+from ..core.email import is_smtp_configured, send_invitation_email
+from ..core.logger import get_logger
 from ..core.rate_limit import enforce_rate_limit
 from ..core.security import (
     generate_invite_token,
@@ -60,6 +62,7 @@ from ..models.person_record import PersonRecord
 from ..models.user import User
 
 router = APIRouter()
+log = get_logger("ownchart.routes.invitations")
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +74,11 @@ _EXPIRY_PRESETS: dict[str, timedelta] = {
     "24h": timedelta(hours=24),
     "7d": timedelta(days=7),
     "30d": timedelta(days=30),
+}
+_INVITE_EXPIRY_NOTES: dict[str, str] = {
+    "24h": "This invitation expires in 24 hours.",
+    "7d": "This invitation expires in 7 days.",
+    "30d": "This invitation expires in 30 days.",
 }
 
 
@@ -377,6 +385,24 @@ async def create_invitation(
     except Exception:
         base_url = None
     invite_url = _compute_invite_url(request, raw_token, base_url)
+
+    # Best-effort email delivery on top of the always-returned URL. When SMTP
+    # is unconfigured this no-ops (self-hoster copies the URL by hand); when a
+    # send fails we log and continue so a flaky MTA never fails invite
+    # creation. The raw URL in the response is the authoritative fallback.
+    if is_smtp_configured():
+        try:
+            await send_invitation_email(
+                to=invited_email,
+                invite_url=invite_url,
+                role=body.role,
+                expiry_note=_INVITE_EXPIRY_NOTES[body.expiry_preset],
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "invitation_email_failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     out = _to_invite_out(invite, target_record)
     return CreateInviteResponse(**out.model_dump(), invite_url=invite_url)

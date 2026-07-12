@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +33,20 @@ class User(Base, TimestampMixin):
     # tokens (which are separately revocable). Starts at 0.
     session_token_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0",
+    )
+
+    # Email verification (Email/SMTP workstream). Only enforced when
+    # `auth.require_email_verification` is true (default false / self-host).
+    # On the default path a freshly-registered user is stamped verified
+    # immediately so login is never gated; when the flag is on and SMTP is
+    # configured, registration leaves this false and sends a verification
+    # link. Pre-existing users are backfilled to true by the migration so
+    # enabling the flag later never bricks an established account.
+    email_verified: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
     )
 
     # UI affordance — "Nick" or similar. Distinct from each

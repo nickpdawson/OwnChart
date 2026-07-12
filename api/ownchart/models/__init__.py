@@ -29,6 +29,7 @@ from .llm_provider_credential import LlmProviderCredential
 from .membership import MEMBERSHIP_ROLES, Membership, role_rank
 from .model_run import ModelRun
 from .oauth_session import OAuthSession
+from .password_reset_token import PasswordResetToken
 from .person_record import PersonRecord
 from .provider_connection import ProviderConnection
 from .provider_connector import ProviderConnector
@@ -76,6 +77,7 @@ __all__ = [
     "Membership",
     "ModelRun",
     "OAuthSession",
+    "PasswordResetToken",
     "PersonRecord",
     "ProviderConnection",
     "ProviderConnector",
