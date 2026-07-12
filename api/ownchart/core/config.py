@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     anthropic_default_model: str = Field(default="claude-opus-4-7")
     anthropic_vision_model: str = Field(default="claude-opus-4-7")
 
+    # Optional per-model pricing override for cost attribution. JSON
+    # object mapping model id → [input_per_mtok, output_per_mtok] (USD
+    # per 1M tokens). Merges over the built-in table in llm/pricing.py so
+    # an operator can price a model we haven't shipped, or correct a
+    # stale number, without a code change. Bad JSON is logged + ignored.
+    llm_pricing_overrides_json: str | None = Field(default=None)
+
     # SMTP credential for outbound transactional email (invites, password
     # reset, email verification). The non-secret SMTP settings (host, port,
     # use_tls, username, from_address) live in infra/config.yaml under

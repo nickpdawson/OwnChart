@@ -758,6 +758,7 @@ async def suggest_topic_route(
             "assistant_answer": last_assistant.content[:6000],
         },
         purpose="suggest_topic_from_chat",
+        person_record_id=ctx.active_record_id,
         tool_name="emit_topic_suggestion",
     )
     if result.error and not result.tool_input:

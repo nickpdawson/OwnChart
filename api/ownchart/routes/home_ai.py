@@ -728,6 +728,7 @@ async def _build_home_insight(
         db, user, prompt,
         user_vars=user_vars,
         purpose="home_insight",
+        person_record_id=person_record_id,
         tool_name="emit_home_insight",
     )
     if result.error and not result.tool_input:

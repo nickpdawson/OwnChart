@@ -34,6 +34,8 @@ from ..core.logger import get_logger
 from ..models.llm_provider_credential import LlmProviderCredential
 from ..models.model_run import ModelRun
 from ..models.user import User
+from .budget import enforce_monthly_ceiling
+from .pricing import estimate_cost_usd
 from .prompts import Prompt
 from .providers import (
     LlmRequest,
@@ -103,6 +105,7 @@ async def call_with_tool(
     user_vars: dict[str, Any],
     purpose: str,
     input_source_ids: list[uuid.UUID] | None = None,
+    person_record_id: uuid.UUID | None = None,
     tool_name: str | None = None,
     image_b64: str | None = None,
     image_media_type: str | None = None,
@@ -119,6 +122,17 @@ async def call_with_tool(
     Per-user provider preference (from `ai.default_provider` setting)
     should be passed here by the caller — we don't peek at settings
     inside this module to keep it pure.
+
+    `person_record_id` (optional) is the active record at call time. It
+    is stamped on the ModelRun for attribution; pass it where a record
+    is in scope (route ctx / worker job / source row). Runs with no
+    record (system/none) leave it null.
+
+    Before any BILLED call, the acting user's monthly spend ceiling is
+    enforced (`ai.monthly_spend_ceiling_usd`); over budget raises
+    `MonthlyBudgetExceeded` (402). The free local_echo path is never
+    checked. Every completed run is stamped with the acting `user_id`,
+    `person_record_id`, and an `estimated_cost_usd` derived from usage.
     """
     rendered_user = prompt.render(**user_vars)
 
@@ -137,6 +151,20 @@ async def call_with_tool(
     content.append({"type": "text", "text": rendered_user})
 
     selected = resolve_provider(provider)
+    # `local_echo` is the free, no-external-call fallback. Every other
+    # provider makes a real, billed request — that's the line the
+    # monthly ceiling and cost stamping care about.
+    billed = selected.key != "local_echo"
+
+    # Monthly ceiling (Batch B). Enforced here — the single choke point
+    # every LLM call funnels through, alongside BYOK resolution below —
+    # so no route or worker can bypass it. Only the billed path is
+    # checked; the free local_echo path is never blocked. Over budget
+    # raises MonthlyBudgetExceeded (402) BEFORE any request leaves the
+    # host, so no ModelRun and no spend are recorded for the refusal.
+    if billed:
+        await enforce_monthly_ceiling(db, user)
+
     # BYOK: prefer the user's stored, non-revoked api_key credential
     # for this provider. Falls back to the deployment default key
     # (env var) when the user has no row. Decryption only at call time,
@@ -194,14 +222,24 @@ async def call_with_tool(
     if user_credential_id is not None:
         usage["billed_credential_id"] = str(user_credential_id)
         usage["billed_to"] = "user_byok"
-    else:
+    elif billed:
         usage["billed_to"] = "deployment_default"
+    else:
+        usage["billed_to"] = "local_echo"
+
+    # Cost attribution (Batch B). The free local_echo path is $0 even
+    # though prompt.model is a priced model id — only real external
+    # calls count toward the ceiling and /usage totals.
+    cost = estimate_cost_usd(prompt.model, usage) if billed else 0.0
 
     run = ModelRun(
         id=run_id,
         provider=selected.key,
         model=prompt.model,
         purpose=purpose,
+        user_id=user.id if user is not None else None,
+        person_record_id=person_record_id,
+        estimated_cost_usd=cost,
         input_source_ids=list(input_source_ids or []),
         input_hash=input_hash,
         output_hash=output_hash,

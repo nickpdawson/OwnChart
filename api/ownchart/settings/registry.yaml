@@ -120,13 +120,15 @@ settings:
   - key: ai.monthly_spend_ceiling_usd
     label: Monthly LLM spend ceiling (USD)
     description: |
-      Soft cap on outbound LLM cost per month. When exceeded,
-      sensemaking jobs refuse rather than queue. 0 means no cap.
+      Hard cap on outbound LLM cost per calendar month (UTC). When at or
+      over the cap, new billed AI requests are refused (402) until the
+      budget resets on the 1st. Applies to your own key (BYOK) too.
+      0 or unset means no cap (unlimited).
     section: privacy_ai
     scope: user
     storage: database
     type: integer
-    default: 25
+    default: 0
     ui_writable: true
     file_writable: false
     roles_allowed: [owner, admin, member]

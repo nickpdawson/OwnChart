@@ -704,6 +704,7 @@ async def generate_exec_brief(
         user_vars=user_vars,
         purpose="dossier_brief",
         input_source_ids=[],
+        person_record_id=topic.person_record_id,
         tool_name="emit_brief",
     )
     out = result.tool_input or {}
@@ -1160,6 +1161,7 @@ async def ask_followup(
         db, user, prompt,
         user_vars=user_vars,
         purpose="dossier_followup",
+        person_record_id=topic.person_record_id,
         tool_name="emit_followup_answer",
     )
     out = result.tool_input or {}

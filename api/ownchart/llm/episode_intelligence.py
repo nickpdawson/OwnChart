@@ -252,6 +252,7 @@ async def run_episode_intelligence(
         },
         purpose="episode_intelligence",
         input_source_ids=input_source_ids,
+        person_record_id=person_record_id,
         tool_name="emit_episode_intelligence",
         provider=preferred if isinstance(preferred, str) else None,
         # 9 required structured sections, each often multi-paragraph.

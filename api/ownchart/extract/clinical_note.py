@@ -264,6 +264,7 @@ async def extract_clinical_note(
         },
         purpose="extract_clinical_note",
         input_source_ids=[source.id],
+        person_record_id=source.person_record_id,
         tool_name="emit_clinical_note_extraction",
         max_tokens=8192,
     )

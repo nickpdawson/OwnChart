@@ -248,6 +248,7 @@ async def summarize_source(
         },
         purpose="source_sensemaking",
         input_source_ids=[source_id],
+        person_record_id=person_record_id,
         tool_name="emit_source_sensemaking",
     )
 

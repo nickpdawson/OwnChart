@@ -890,6 +890,7 @@ async def add_user_message_and_reply(
         },
         purpose="general_ask",
         input_source_ids=[s.id for s in sources],
+        person_record_id=conv_record_id,
         tool_name="emit_answer",
         provider=preferred,
     )

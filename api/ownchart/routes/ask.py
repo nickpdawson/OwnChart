@@ -191,6 +191,7 @@ async def ask(
             "context_block": context_block,
         },
         purpose="ask_query",
+        person_record_id=ctx.active_record_id,
         tool_name="emit_answer",
     )
 

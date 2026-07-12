@@ -68,6 +68,7 @@ async def relabel_one(
         },
         purpose="relabel_clinical",
         input_source_ids=[],
+        person_record_id=fact.person_record_id,
         tool_name=None,  # plain text response, no tool envelope
         max_tokens=200,  # short output — keeps cost minimal
     )

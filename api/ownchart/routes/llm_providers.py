@@ -32,10 +32,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.crypto import encrypt
 from ..core.db import get_session
 from ..core.logger import get_logger
+from ..llm.budget import (
+    ceiling_from_setting,
+    month_start_utc,
+    next_month_start_utc,
+)
+from ..llm.pricing import estimate_cost_usd, price_for
 from ..llm.providers import available_providers
 from ..models.audit_event import AuditEvent
 from ..models.llm_provider_credential import LlmProviderCredential
 from ..models.user import User
+from ..settings.registry import effective as setting_effective
 from .auth import get_current_user
 
 router = APIRouter()
@@ -231,7 +238,7 @@ async def revoke_credential(
 
 
 # ---------------------------------------------------------------------------
-# Cost attribution (#109)
+# Cost attribution (#109) + per-user scoping (Batch B, closes MED-5)
 #
 # /api/llm-providers/usage returns model_runs rows with derived
 # per-row cost so the UI can answer: "where did my spend go this
@@ -239,56 +246,30 @@ async def revoke_credential(
 # billed_to. CSV export via ?format=csv for paste-into-spreadsheet
 # workflows.
 #
-# Pricing model: Anthropic public per-token pricing for the
-# claude-opus / claude-sonnet / claude-haiku families. When a model
-# isn't in the pricing table, `estimated_usd_cost` is null and the UI
-# shows "—". Cache reads bill at 10% of input price; cache writes
-# bill at 125% (Anthropic's ephemeral-cache curve as of 2026-01).
+# Pricing lives in llm/pricing.py (one source of truth, shared with the
+# ModelRun stamping path). Per-row cost prefers the stored
+# `estimated_cost_usd` column and falls back to recomputing for legacy
+# rows written before the column existed. When a model isn't priced,
+# `estimated_usd_cost` is null and the UI shows "—".
 #
-# V1 single-user: every authenticated user sees all model_runs (the
-# self-hosted deployment owner is implicitly the admin). When
-# multi-user lands, filter by billed_credential_id → credentials
-# the caller owns + a separate "deployment_default" aggregate.
-
-_USD_PER_MTOK: dict[str, tuple[float, float]] = {
-    # (input $/MTok, output $/MTok). Anthropic public pricing
-    # 2026-01. Cache_read = input * 0.10, cache_create = input * 1.25
-    # are the ephemeral-cache modifiers.
-    "claude-opus-4-7":              (15.00, 75.00),
-    "claude-opus-4-7[1m]":          (15.00, 75.00),
-    "claude-opus-4-6":              (15.00, 75.00),
-    "claude-sonnet-4-6":            (3.00,  15.00),
-    "claude-sonnet-4-5":            (3.00,  15.00),
-    "claude-haiku-4-5":             (0.80,  4.00),
-    "claude-haiku-4-5-20251001":    (0.80,  4.00),
-}
+# SCOPING (MED-5): every row is filtered to the CALLING user's own
+# model_runs (`ModelRun.user_id == user.id`). A second user's activity
+# is never returned here. A cross-user admin surface, if needed, is a
+# separate (Batch C) endpoint — this one is caller-scoped, period.
 
 
-def _cost_for(model: str | None, usage: dict[str, Any] | None) -> float | None:
-    """Return estimated USD cost for one model_runs row, or None.
+def _row_cost(model: str | None, stored: Any, usage: dict[str, Any] | None) -> float | None:
+    """Per-row cost for the usage view.
 
-    None means we can't estimate (unknown model or no token counts)
-    — the UI renders "—" rather than guessing.
+    Prefer the stored ``estimated_cost_usd`` column (authoritative,
+    computed at write time). Fall back to recomputing from usage for
+    legacy rows predating the column. None → unpriced model ("—").
     """
-    if not model or not isinstance(usage, dict):
+    if price_for(model) is None:
         return None
-    prices = _USD_PER_MTOK.get(model)
-    if prices is None:
-        return None
-    in_per_m, out_per_m = prices
-    inp = int(usage.get("input_tokens") or 0)
-    outp = int(usage.get("output_tokens") or 0)
-    cache_read = int(usage.get("cache_read_input_tokens") or 0)
-    cache_create = int(usage.get("cache_creation_input_tokens") or 0)
-    # `input_tokens` from Anthropic is "non-cached" only — already
-    # excludes cache_read. We bill the three buckets separately.
-    cost = (
-        (inp * in_per_m) / 1_000_000.0
-        + (outp * out_per_m) / 1_000_000.0
-        + (cache_read * in_per_m * 0.10) / 1_000_000.0
-        + (cache_create * in_per_m * 1.25) / 1_000_000.0
-    )
-    return round(cost, 6)
+    if stored is not None:
+        return round(float(stored), 6)
+    return estimate_cost_usd(model, usage if isinstance(usage, dict) else None)
 
 
 class UsageRow(BaseModel):
@@ -320,9 +301,33 @@ class UsageAggregate(BaseModel):
     runs_with_unknown_cost: int
 
 
+class UsageBreakdownItem(BaseModel):
+    key: str                      # model id or purpose
+    runs: int
+    estimated_usd_cost: float
+
+
+class MonthToDateScope(BaseModel):
+    """Current-calendar-month (UTC) spend for the calling user.
+
+    Independent of the row date filters — always the live month-to-date
+    view the monthly ceiling is enforced against, so the UI can show
+    "you've spent $X of $Y, $Z left, resets on <date>".
+    """
+    month_start: datetime
+    resets_at: datetime
+    total_estimated_usd_cost: float
+    ceiling_usd: float | None       # None → unlimited (unset / <= 0)
+    remaining_usd: float | None     # None → unlimited
+    over_budget: bool
+    per_model: list[UsageBreakdownItem]
+    per_purpose: list[UsageBreakdownItem]
+
+
 class UsageResponse(BaseModel):
     rows: list[UsageRow]
     aggregate: UsageAggregate
+    scope: MonthToDateScope
 
 
 @router.get("/usage", response_model=UsageResponse)
@@ -338,11 +343,12 @@ async def get_usage(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    """Per-model_run usage + cost rows.
+    """Per-model_run usage + cost rows for the CALLING user only.
 
-    V1 returns every model_run for the caller's deployment (single-
-    user assumption). When multi-user lands, gate this by an admin
-    flag and provide a per-user filtered variant.
+    MED-5: scoped to `ModelRun.user_id == user.id` — a user never sees
+    another user's activity here. The `scope` block is the live
+    month-to-date (UTC) view the monthly ceiling is enforced against
+    (total + per-model/per-purpose breakdown + ceiling + remaining).
 
     CSV is returned with a Content-Disposition attachment header so
     browsers prompt a download.
@@ -376,7 +382,13 @@ async def get_usage(
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 detail=f"date_to must be ISO, got {date_to!r}")
 
-    stmt = select(ModelRun).order_by(ModelRun.created_at.desc()).limit(limit)
+    # MED-5: every query in this endpoint is scoped to the caller.
+    stmt = (
+        select(ModelRun)
+        .where(ModelRun.user_id == user.id)
+        .order_by(ModelRun.created_at.desc())
+        .limit(limit)
+    )
     if df is not None:
         stmt = stmt.where(ModelRun.created_at >= df)
     if dt_ is not None:
@@ -430,7 +442,7 @@ async def get_usage(
     }
     for r in rows:
         u = r.usage or {}
-        cost = _cost_for(r.model, u if isinstance(u, dict) else None)
+        cost = _row_cost(r.model, r.estimated_cost_usd, u if isinstance(u, dict) else None)
         cid = (u.get("billed_credential_id") if isinstance(u, dict) else None)
         out_rows.append(UsageRow(
             id=str(r.id),
@@ -495,4 +507,68 @@ async def get_usage(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    return UsageResponse(rows=out_rows, aggregate=UsageAggregate(**agg))
+    scope = await _month_to_date_scope(db, user)
+    return UsageResponse(rows=out_rows, aggregate=UsageAggregate(**agg), scope=scope)
+
+
+async def _month_to_date_scope(db: AsyncSession, user: User) -> MonthToDateScope:
+    """Live current-month (UTC) spend + ceiling view for one user.
+
+    Computed independently of the row filters — it always reflects the
+    same window the monthly ceiling is enforced against, so the UI's
+    "$X of $Y this month, resets on <date>" never drifts from what the
+    enforcement actually does.
+    """
+    from datetime import datetime as _dt
+
+    from ..models.model_run import ModelRun
+
+    now = _dt.now(timezone.utc)
+    start = month_start_utc(now)
+    resets = next_month_start_utc(now)
+
+    mtd_rows = list((await db.execute(
+        select(ModelRun)
+        .where(ModelRun.user_id == user.id)
+        .where(ModelRun.created_at >= start)
+    )).scalars().all())
+
+    total = 0.0
+    per_model: dict[str, list[float]] = {}
+    per_purpose: dict[str, list[float]] = {}
+    for r in mtd_rows:
+        cost = _row_cost(
+            r.model, r.estimated_cost_usd,
+            r.usage if isinstance(r.usage, dict) else None,
+        ) or 0.0
+        total += cost
+        pm = per_model.setdefault(r.model, [0.0, 0.0])
+        pm[0] += 1
+        pm[1] += cost
+        pp = per_purpose.setdefault(r.purpose, [0.0, 0.0])
+        pp[0] += 1
+        pp[1] += cost
+    total = round(total, 6)
+
+    ceiling = ceiling_from_setting(
+        await setting_effective(db, user, "ai.monthly_spend_ceiling_usd")
+    )
+    remaining = None if ceiling is None else round(max(0.0, ceiling - total), 6)
+    over_budget = ceiling is not None and total >= ceiling
+
+    def _items(d: dict[str, list[float]]) -> list[UsageBreakdownItem]:
+        return [
+            UsageBreakdownItem(key=k, runs=int(v[0]), estimated_usd_cost=round(v[1], 6))
+            for k, v in sorted(d.items(), key=lambda kv: -kv[1][1])
+        ]
+
+    return MonthToDateScope(
+        month_start=start,
+        resets_at=resets,
+        total_estimated_usd_cost=total,
+        ceiling_usd=ceiling,
+        remaining_usd=remaining,
+        over_budget=over_budget,
+        per_model=_items(per_model),
+        per_purpose=_items(per_purpose),
+    )
