@@ -267,3 +267,67 @@ async def enforce_rate_limit(
             },
             headers={"Retry-After": str(verdict.retry_after)},
         )
+
+
+async def enforce_demo_ai_budget(
+    request: Request,
+    *,
+    bucket: str = "demo_ai",
+) -> None:
+    """Cap cost-bearing AI calls on the shared PUBLIC DEMO (G-1).
+
+    No-op outside demo mode. G-1 enables Ask + Episode Intelligence on
+    the shared ``demo@ownchart.me`` account so App Store reviewers can
+    exercise the assistant; that points anonymous public-demo traffic at
+    a real, billed LLM. Without a budget a curl loop could run up the
+    operator's Anthropic bill. This enforces a small per-visitor-session
+    daily cap AND a looser per-source-IP daily cap, layered ON TOP OF the
+    Wave B auth limiter using the same fixed-window backend (86400s
+    window). Not gated by ``rate_limit_enabled`` — this is a demo cost
+    guard, not the credential-spray throttle, and must hold whenever the
+    demo is public.
+
+    Enforced BEFORE the LLM call so an over-budget request costs nothing.
+    Raises ``429`` with a friendly, demo-aware message + ``Retry-After``
+    when the visitor session OR the source IP is over its rolling-day cap.
+    """
+    s = get_settings()
+    if not s.demo_mode:
+        return
+    # Local import to avoid any import-time coupling between the two
+    # core modules; demo_session only depends on config, so this is
+    # cycle-free either way.
+    from .demo_session import get_demo_session_id
+
+    window = s.demo_ai_window_seconds
+    limiter = get_rate_limiter()
+    sid = get_demo_session_id(request)
+    # A visitor with no cookie yet collapses to one shared "nosession"
+    # bucket — bounded, not a bypass. The DemoSession middleware issues a
+    # cookie on the way out, so the visitor's *next* call is per-session.
+    session_ident = f"sess:{sid or 'nosession'}"
+    v_sess = await limiter.check(
+        bucket=bucket, identifier=session_ident,
+        max_attempts=s.demo_ai_daily_cap_per_session,
+        window_seconds=window,
+    )
+    v_ip = await limiter.check(
+        bucket=bucket, identifier=f"ip:{client_ip(request)}",
+        max_attempts=s.demo_ai_daily_cap_per_ip,
+        window_seconds=window,
+    )
+    verdict = v_sess if not v_sess.allowed else v_ip
+    if not verdict.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "demo_ai_daily_limit",
+                "message": (
+                    "You've reached today's limit for the AI assistant on "
+                    "the public demo. This is a shared, synthetic-data demo "
+                    "— set up your own private OwnChart instance to ask "
+                    "without limits."
+                ),
+            },
+            headers={"Retry-After": str(verdict.retry_after)},
+        )

@@ -116,6 +116,21 @@ class Settings(BaseSettings):
     rate_limit_invite_preview_max_attempts: int = Field(default=20)
     rate_limit_invite_preview_window_seconds: int = Field(default=300)
 
+    # --- Demo AI budget (G-1 — public-demo Ask/EI cost guardrail) -------
+    #
+    # G-1 enables the AI assistant (Ask + Episode Intelligence) on the
+    # SHARED public demo account so App Store reviewers can exercise it.
+    # That points anonymous public-demo traffic at a real, billed LLM, so
+    # we cap cost-bearing AI calls per visitor session AND per source IP
+    # per rolling day. Enforced ONLY when demo_mode is on, ON TOP OF the
+    # generic auth limiter above (same Redis-backed fixed-window counter,
+    # 86400s window). Over-budget → 429 with a friendly, demo-aware
+    # message. Per-session is the tight human bound; per-IP is looser so
+    # one NAT/office can't drain the whole day for everyone behind it.
+    demo_ai_daily_cap_per_session: int = Field(default=10)
+    demo_ai_daily_cap_per_ip: int = Field(default=40)
+    demo_ai_window_seconds: int = Field(default=60 * 60 * 24)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

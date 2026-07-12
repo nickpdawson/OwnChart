@@ -25,6 +25,7 @@ from ..core.consent import require_phi_consent
 from ..core.db import get_session
 from ..core.demo_session import apply_demo_session_scope
 from ..core.logger import get_logger
+from ..core.rate_limit import enforce_demo_ai_budget
 from ..llm import call_with_tool, get_registry
 from ..models.conversation import Conversation, ConversationMessage
 from ..models.extracted_fact import ExtractedFact
@@ -118,6 +119,11 @@ async def ask(
             safety_response=_SELF_HARM_RESPONSE,
             error=None,
         )
+
+    # G-1: bound cost-bearing AI on the shared public demo. Runs AFTER
+    # the (free) self-harm short-circuit so a blocked crisis question
+    # never spends a visitor's daily budget. No-op outside demo mode.
+    await enforce_demo_ai_budget(request)
 
     user = ctx.user
     require_phi_consent(user)

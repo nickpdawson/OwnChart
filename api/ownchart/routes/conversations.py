@@ -34,6 +34,7 @@ from ..core.demo_session import (
     demo_session_matches,
     get_demo_session_id,
 )
+from ..core.rate_limit import enforce_demo_ai_budget
 from ..llm import call_with_tool, get_registry
 from ..llm.conversations import (
     add_user_message_and_reply,
@@ -273,6 +274,12 @@ async def create_conversation_route(
     # demo. See core/demo_session.py for the rationale.
     scoped = apply_demo_session_scope(body.scope, request)
     body = body.model_copy(update={"scope": scoped})
+    # G-1: cap cost-bearing AI on the shared public demo. Only a
+    # first-message create reaches an LLM (the EI planner or the chat
+    # reply); an empty-shell create is free and isn't charged. No-op
+    # outside demo mode.
+    if body.first_message:
+        await enforce_demo_ai_budget(request)
     # Auto-route episode-shaped /ask questions to Episode Intelligence.
     # Only when the caller hasn't already chosen a scope (whole_record
     # is the default for /ask). Existing dossier / source / episode-
@@ -506,6 +513,10 @@ async def post_message_route(
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     if not (body.content or "").strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="empty message")
+    # G-1: each chat continuation is a billed LLM call — bound it on the
+    # shared public demo (per visitor session + per IP / day). No-op
+    # outside demo mode.
+    await enforce_demo_ai_budget(request)
     await add_user_message_and_reply(
         db, user, conv, body.content,
         provider_override=body.provider,

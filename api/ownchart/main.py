@@ -19,6 +19,7 @@ from .core.demo_data_seed import (
 from .core.demo_calendar_seed import seed_demo_calendar_if_needed
 from .core.demo_seed import seed_demo_user_if_needed
 from .routes import (
+    account,
     ask,
     audit,
     auth,
@@ -231,6 +232,7 @@ async def _http_exception_handler(
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(account.router, prefix="/api/account", tags=["account"])
 app.include_router(auth_device.router, prefix="/api/auth/device", tags=["auth-device"])
 app.include_router(consent.router, prefix="/api/consent", tags=["consent"])
 app.include_router(sources.router, prefix="/api/sources", tags=["sources"])

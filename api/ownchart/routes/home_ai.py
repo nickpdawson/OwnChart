@@ -46,6 +46,7 @@ from ..core.demo_session import (
     demo_topic_clause_for_sid,
     get_demo_session_id,
 )
+from ..core.rate_limit import enforce_demo_ai_budget
 from ..llm.providers import available_providers
 from ..models.conversation import Conversation
 from ..models.episode import Episode
@@ -769,6 +770,10 @@ async def refresh_home_insight(
     Scoped to the active record's facts only.
     """
     user = ctx.user
+    # G-1: the "Make sense of what changed" refresh bypasses the daily
+    # cache and forces a billed LLM call — bound it on the shared public
+    # demo (per visitor session + per IP / day). No-op outside demo mode.
+    await enforce_demo_ai_budget(request)
     now = datetime.now(timezone.utc)
     demo_sid = (
         get_demo_session_id(request) if get_settings().demo_mode else None

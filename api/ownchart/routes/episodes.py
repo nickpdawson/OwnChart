@@ -29,6 +29,7 @@ from ..core.config import get_settings
 from ..core.db import get_session
 from ..core.demo_session import demo_session_matches, get_demo_session_id
 from ..core.logger import get_logger
+from ..core.rate_limit import enforce_demo_ai_budget
 from ..llm.episode_intelligence import run_episode_intelligence
 from ..models.audit_event import AuditEvent
 from ..models.episode import Episode, EpisodeMember
@@ -84,6 +85,7 @@ class IntelligenceResponse(BaseModel):
              status_code=status.HTTP_201_CREATED)
 async def run_intelligence_route(
     body: IntelligenceRequest,
+    request: Request,
     ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> IntelligenceResponse:
@@ -93,6 +95,10 @@ async def run_intelligence_route(
             status.HTTP_400_BAD_REQUEST,
             detail="One of fact_id, episode_id, or natural_language is required.",
         )
+    # G-1: Episode Intelligence is a billed multi-pass LLM call — bound
+    # it on the shared public demo (per visitor session + per IP / day).
+    # No-op outside demo mode.
+    await enforce_demo_ai_budget(request)
     try:
         out = await run_episode_intelligence(
             db, user,
