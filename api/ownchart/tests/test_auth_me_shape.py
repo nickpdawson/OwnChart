@@ -282,6 +282,8 @@ def test_composer_returns_only_what_was_passed_in():
         "memberships", "active_record",
         # Email/SMTP workstream — additive verification flag.
         "email_verified",
+        # Art. 9 consent evidence — additive latest-acceptance fields.
+        "latest_agreement_version", "latest_agreement_accepted_at",
     }
     assert not extra_attrs, f"composer leaked attrs: {extra_attrs}"
 

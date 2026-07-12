@@ -37,17 +37,31 @@ extraction_jobs, user_assertions) are cascaded for purged records;
 their survivor-scoped remainders authored by the deleting user are
 deleted explicitly here so the RESTRICT FK can't block the user delete.
 
-**Blob GC is a deliberate follow-up.** The content-addressed evidence
-vault on disk is deduped across records — a blob may be referenced by a
-record that survives — so orphaned-blob garbage collection is NOT done
-here. The DB purge is the primary, verifiable requirement; on-disk GC
-is a separate sweep. See the route docstring.
+**On-disk evidence GC (GDPR Art. 17).** After the DB delete commits, the
+content-addressed blobs the purged records referenced are unlinked from
+the vault — but ONLY those with zero surviving references. The vault is
+deduped across records AND users, so a blob shared with a co-owned
+survivor (or any other user's record) is kept. Done post-commit and
+best-effort so a rolled-back deletion never orphan-deletes files and a
+filesystem hiccup never fails the deletion. See ``plan_blob_gc`` /
+``_unlink_blobs``. The count is returned as ``removed_blobs``.
+
+**ModelRun rows survive by design and are PHI-free.** ``model_runs`` is
+append-only (every FK to it is ``ON DELETE SET NULL``), so its rows
+outlive the account. Audited 2026-07-12: the table stores only SHA-256
+digests (``input_hash`` / ``output_hash``), source UUIDs, token/latency
+usage metadata, and an exception-string ``error`` — never raw prompt or
+response TEXT. The ``prompt_artifact_path`` column (the only pointer to
+on-disk prompt material) is defined but NEVER written anywhere in the
+codebase, so there are no prompt artifacts on disk to GC. The surviving
+rows carry no personal data; nothing to erase.
 """
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,8 +70,10 @@ from ..models.brief_message import BriefMessage
 from ..models.extraction_job import ExtractionJob
 from ..models.membership import Membership
 from ..models.person_record import PersonRecord
+from ..models.source_document import SourceDocument
 from ..models.user import User
 from ..models.user_assertion import UserAssertion
+from .config import get_settings
 from .logger import get_logger
 
 log = get_logger("ownchart.core.account_deletion")
@@ -100,6 +116,77 @@ def plan_record_dispositions(
         else:
             disposition.purge.append(rid)
     return disposition
+
+
+def plan_blob_gc(
+    purge_blobs: dict[str, set[str]],
+    surviving_hashes: set[str],
+) -> list[str]:
+    """Decide which on-disk evidence blobs to unlink (pure).
+
+    ``purge_blobs`` maps each content hash referenced by a PURGED
+    ``source_document`` to the set of storage URIs (absolute vault paths)
+    that hash was stored at. ``surviving_hashes`` is the set of hashes
+    STILL referenced by any surviving ``source_document`` after the DB
+    delete committed — co-owned records that survived, OR any other user's
+    record, since the vault is content-addressed and deduped across every
+    record and user.
+
+    A blob is unlinked ONLY when its hash appears in zero surviving rows.
+    Any hash still referenced by a survivor is kept — deleting it would
+    corrupt a record that outlives this account. The check is keyed on the
+    hash (not the exact path) so a differently-suffixed row sharing the
+    same content also protects the blob; the conservative direction is to
+    keep, never to over-delete.
+
+    Returns a sorted, de-duplicated list of storage URIs to unlink.
+    """
+    to_unlink: set[str] = set()
+    for sha, uris in purge_blobs.items():
+        if sha in surviving_hashes:
+            continue
+        to_unlink.update(uris)
+    return sorted(to_unlink)
+
+
+def _unlink_blobs(storage_uris: list[str]) -> int:
+    """Best-effort unlink of vault blob files. Never raises.
+
+    Defensive posture:
+      - Runs only AFTER the DB delete committed, so a rolled-back deletion
+        can never orphan-delete files.
+      - Refuses to touch any path that doesn't resolve under the evidence
+        vault root, so a corrupt ``storage_uri`` can't delete arbitrary
+        files.
+      - A failed unlink logs a warning and continues — a filesystem hiccup
+        must never fail the account deletion (the DB purge already
+        committed; the row is gone regardless).
+
+    Returns the count of files actually removed.
+    """
+    try:
+        evidence_root = (get_settings().data_dir / "evidence").resolve()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("blob_gc_root_unresolved", error=f"{type(exc).__name__}: {exc}")
+        return 0
+
+    removed = 0
+    for uri in storage_uris:
+        try:
+            path = Path(uri).resolve()
+            if evidence_root not in path.parents:
+                log.warning("blob_gc_path_outside_vault", path=str(path))
+                continue
+            path.unlink(missing_ok=True)
+            removed += 1
+        except Exception as exc:  # noqa: BLE001
+            # Includes the file already gone, permission errors, etc.
+            log.warning(
+                "blob_gc_unlink_failed",
+                path=uri,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+    return removed
 
 
 async def delete_user_account(db: AsyncSession, user: User) -> dict[str, int]:
@@ -157,6 +244,21 @@ async def delete_user_account(db: AsyncSession, user: User) -> dict[str, int]:
             .values(created_by_user_id=new_owner)
         )
 
+    # 3b. Snapshot the evidence blobs referenced by the records we're about
+    #     to purge — BEFORE the cascade deletes their source_documents. Map
+    #     content-hash -> the storage URIs it lived at. This is the input to
+    #     the post-commit GC; collecting it now is the only chance (the rows
+    #     vanish in step 4).
+    purge_blobs: dict[str, set[str]] = {}
+    if plan.purge:
+        for sha, uri in (await db.execute(
+            select(SourceDocument.hash, SourceDocument.storage_uri)
+            .where(SourceDocument.person_record_id.in_(plan.purge))
+        )).all():
+            if not sha or not uri:
+                continue
+            purge_blobs.setdefault(sha, set()).add(uri)
+
     # 4. Purge solely-owned records — Postgres CASCADE fans out to every
     #    person-scoped table.
     purged_records = 0
@@ -178,10 +280,27 @@ async def delete_user_account(db: AsyncSession, user: User) -> dict[str, int]:
     await db.execute(delete(User).where(User.id == uid))
     await db.commit()
 
+    # 7. On-disk evidence GC (GDPR Art. 17). AFTER the commit — a
+    #    rolled-back deletion must never orphan-delete files. For each blob
+    #    the purged records referenced, keep it if ANY surviving
+    #    source_document (co-owned survivor, or another user's record — the
+    #    vault is deduped across records + users) still references that hash;
+    #    otherwise unlink it. Best-effort: a failed unlink is logged and
+    #    never fails the deletion.
+    removed_blobs = 0
+    if purge_blobs:
+        surviving_hashes = set((await db.execute(
+            select(SourceDocument.hash)
+            .where(SourceDocument.hash.in_(purge_blobs.keys()))
+        )).scalars().all())
+        to_unlink = plan_blob_gc(purge_blobs, surviving_hashes)
+        removed_blobs = _unlink_blobs(to_unlink)
+
     summary = {
         "purged_person_records": int(purged_records),
         "survived_person_records": len(plan.survive),
         "reassigned_created_by": len(plan.reassign_created_by),
+        "removed_blobs": int(removed_blobs),
     }
     log.info("account_deleted", user_id=str(uid), **summary)
     return summary

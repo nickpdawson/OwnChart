@@ -1,3 +1,4 @@
+from .agreement_acceptance import AgreementAcceptance
 from .audit_event import AuditEvent
 from .auto_export_token import AutoExportToken
 from .base import Base
@@ -44,6 +45,7 @@ from .user_setting import UserSetting
 
 __all__ = [
     "ADAPTER_TYPES",
+    "AgreementAcceptance",
     "AuditEvent",
     "AutoExportToken",
     "Base",

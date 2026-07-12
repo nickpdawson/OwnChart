@@ -1,13 +1,17 @@
 import hashlib
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from ..models.agreement_acceptance import AgreementAcceptance
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.agreements import load_latest_agreement, record_agreement_acceptance
 from ..core.app_config import get_app_config
 from ..core.auth_context import (
     HEADER_PERSON_RECORD,
@@ -78,8 +82,15 @@ class RegisterRequest(LoginRequest):
 
     Anything else (subsequent user, no invite, default
     `allow_self_registration=false`) is 403.
+
+    Art. 9 consent evidence (optional, tenant posture): when the client
+    sends a non-empty `agreement_version` (+ the `consent_flags` the tester
+    ticked), an `AgreementAcceptance` row is recorded. Omitting it is the
+    default self-host path and changes nothing.
     """
     invite_token: str | None = None
+    agreement_version: str | None = None
+    consent_flags: dict | None = None
 
 
 class MembershipOut(BaseModel):
@@ -140,6 +151,11 @@ class MeResponse(BaseModel):
     # register response on a verification-required instance carries False —
     # the signal the client uses to route to a "check your email" screen.
     email_verified: bool = True
+    # Art. 9 consent evidence. The user's most-recent agreement acceptance,
+    # or null if they've never accepted one on this instance. Additive —
+    # only /me populates these; register/login leave them null.
+    latest_agreement_version: str | None = None
+    latest_agreement_accepted_at: datetime | None = None
 
 
 def _compose_session_payload(
@@ -524,6 +540,18 @@ async def register(
             },
         ))
 
+    # Art. 9 consent evidence — records a row only when the client sent a
+    # non-empty agreement_version. Absent payload = default self-host path,
+    # no row, unchanged behavior.
+    await record_agreement_acceptance(
+        db,
+        user_id=user.id,
+        agreement_version=body.agreement_version,
+        consent_flags=body.consent_flags,
+        context="register",
+        now=now_reg,
+    )
+
     await db.commit()
     await db.refresh(user)
 
@@ -653,13 +681,15 @@ def _compose_me_response(
     user: User,
     memberships: list[tuple[Membership, PersonRecord]],
     active_record_id: uuid.UUID | None,
+    latest_agreement: "AgreementAcceptance | None" = None,
 ) -> MeResponse:
     """Pure-function MeResponse composer.
 
     Pulled out for direct unit testing without setting up a DB
     fixture. `memberships` is the already-loaded list; the helper
     looks up the active record + role within that list rather than
-    re-querying.
+    re-querying. `latest_agreement` (when passed) surfaces the user's
+    most-recent Art. 9 consent acceptance.
     """
     by_record: dict[uuid.UUID, tuple[Membership, PersonRecord]] = {
         rec.id: (mem, rec) for mem, rec in memberships
@@ -695,6 +725,12 @@ def _compose_me_response(
         # NOT NULL in the DB; coerce defensively for synthetic/pre-refresh
         # User instances (e.g. test fixtures) where the attribute is None.
         email_verified=bool(user.email_verified),
+        latest_agreement_version=(
+            latest_agreement.agreement_version if latest_agreement else None
+        ),
+        latest_agreement_accepted_at=(
+            latest_agreement.accepted_at if latest_agreement else None
+        ),
     )
 
 
@@ -721,6 +757,7 @@ async def me(
     """
     memberships = await _load_active_memberships(db, user.id)
     active_ids = [rec.id for _, rec in memberships]
+    latest_agreement = await load_latest_agreement(db, user.id)
 
     header_record = _parse_record_id_from_header(
         request.headers.get(HEADER_PERSON_RECORD),
@@ -744,6 +781,7 @@ async def me(
         user=user,
         memberships=memberships,
         active_record_id=resolved,
+        latest_agreement=latest_agreement,
     )
 
 

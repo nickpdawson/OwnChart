@@ -44,8 +44,12 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.agreements import record_agreement_acceptance
 from ..core.auth_context import AuthContext, get_auth_context
 from ..core.config import get_settings
+from ..core.device_auth import (
+    get_user_from_device_token_or_session as get_current_user,
+)
 from ..core.db import get_session
 from ..core.email import is_smtp_configured, send_invitation_email
 from ..core.logger import get_logger
@@ -60,6 +64,7 @@ from ..models.invitation import Invitation
 from ..models.membership import Membership
 from ..models.person_record import PersonRecord
 from ..models.user import User
+from .auth import _consume_invite
 
 router = APIRouter()
 log = get_logger("ownchart.routes.invitations")
@@ -204,6 +209,35 @@ def _compute_invite_url(
         # for them.
         base = str(request.base_url).rstrip("/")
     return f"{base}/invite/{token}"
+
+
+def classify_authed_accept(
+    *,
+    create_new_record: bool,
+    already_active_member: bool,
+) -> Literal["ok", "new_record_for_existing_user", "already_member"]:
+    """Decide what an ALREADY-AUTHENTICATED user's invite accept resolves to.
+
+    Runs AFTER the invite has passed token/expiry/email verification
+    (`_consume_invite`), so it only decides the two existing-user-specific
+    branches:
+
+      - "new_record_for_existing_user": the invite's shape is "create your
+        own record", but the caller already has an account. Registration —
+        not accept — is the path for that shape. Route maps this to 400.
+
+      - "already_member": the caller already holds an active membership on
+        the target record. Route maps this to 409 (idempotency is NOT
+        assumed — we surface the conflict so the client can just switch to
+        the record it already has).
+
+      - "ok": create the membership on the target record.
+    """
+    if create_new_record:
+        return "new_record_for_existing_user"
+    if already_active_member:
+        return "already_member"
+    return "ok"
 
 
 async def _user_owns_record(
@@ -612,4 +646,187 @@ async def preview_invitation(
         ),
         proposed_record_name=invite.proposed_record_name,
         expires_at=invite.expires_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/invitations/accept  (authenticated)
+
+
+class AcceptInviteRequest(BaseModel):
+    """Body of `POST /api/invitations/accept`.
+
+    An already-authenticated user (iOS deep-link, or web while signed in)
+    joins an existing record via an invite. `token` is the raw invite
+    token from the deep-link. The optional agreement fields record Art. 9
+    consent evidence when a tenant instance sends them (see register)."""
+    token: str
+    agreement_version: str | None = None
+    consent_flags: dict | None = None
+
+
+class AcceptInviteResponse(BaseModel):
+    """The exact contract iOS built against (TENANT_IOS_RECORDS_REPORT §5)."""
+    person_record_id: str
+    role: str
+    display_name: str
+
+
+@router.post("/accept")
+async def accept_invitation(
+    body: AcceptInviteRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> AcceptInviteResponse:
+    """Authenticated invite acceptance — an existing user joins another
+    record (iOS handoff, TENANT_IOS_RECORDS_REPORT §5).
+
+    Registration owns the *new-user* accept path; this owns the case where
+    the person is already signed in when they open the invite deep-link.
+
+    Token verification reuses `_consume_invite` verbatim (argon2 hash +
+    lookup prefix, `FOR UPDATE` single-use lock, expiry, and email-binding
+    against the CALLER's email). The invite is consumed atomically — its
+    `accepted_at` / `accepted_by_user_id` are stamped in the same
+    transaction as the new membership.
+
+    Guard decisions:
+      - A "create your own record" invite (`create_new_record`) is rejected
+        with **400** — the user already has an account; that shape belongs
+        to registration, not accept.
+      - If the caller already holds an active membership on the target
+        record, **409 already_a_member** (non-idempotent by choice: the
+        client should just switch to the record it already has, rather
+        than silently succeed and imply a state change happened).
+      - Consumed / expired / revoked / unknown token → **410**; email
+        mismatch → **403** (both inherited from `_consume_invite`).
+
+    We do NOT change the caller's `default_person_record_id`: they already
+    have records and choose the active one explicitly via the record
+    switcher / `X-OwnChart-Person-Record`. Joining a record must not
+    silently repoint their default.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Same verification + single-use lock as registration. Binds to the
+    # signed-in caller's email, so an invite issued to someone else can't
+    # be accepted here (403 invite_email_mismatch from _consume_invite).
+    invite = await _consume_invite(
+        db, raw_token=body.token, invitee_email=user.email,
+    )
+
+    # For an existing record we must know whether the caller is already a
+    # member before classifying; a new-record invite has no target to check.
+    already_member = False
+    if not invite.create_new_record and invite.target_person_record_id is not None:
+        already_member = (await db.execute(
+            select(Membership)
+            .where(Membership.user_id == user.id)
+            .where(Membership.person_record_id == invite.target_person_record_id)
+            .where(Membership.revoked_at.is_(None))
+            .limit(1)
+        )).scalar_one_or_none() is not None
+
+    verdict = classify_authed_accept(
+        create_new_record=invite.create_new_record,
+        already_active_member=already_member,
+    )
+
+    if verdict == "new_record_for_existing_user":
+        # Do NOT consume the invite — a genuine new user can still use it.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "invite_creates_new_record",
+                "message": (
+                    "This invite creates a new account. You're already "
+                    "signed in — it can't be used to add a record to your "
+                    "existing account."
+                ),
+            },
+        )
+    if verdict == "already_member":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "already_a_member",
+                "message": (
+                    "You already have access to this record. Switch to it "
+                    "instead of accepting the invite again."
+                ),
+            },
+        )
+
+    target_id = invite.target_person_record_id
+    assert target_id is not None  # guaranteed: create_new_record is False here
+    record = await db.get(PersonRecord, target_id)
+    if record is None or record.disconnected_at is not None:
+        # The target record was removed/disconnected out from under the
+        # invite. Same terminal shape as any other unavailable invite.
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail={
+                "code": "invitation_unavailable",
+                "message": "This invite is no longer available.",
+            },
+        )
+
+    membership = Membership(
+        user_id=user.id,
+        person_record_id=target_id,
+        role=invite.role,
+        invited_by_user_id=invite.created_by_user_id,
+        invited_at=invite.created_at,
+        accepted_at=now,
+        created_at=now,
+    )
+    db.add(membership)
+
+    invite.accepted_at = now
+    invite.accepted_by_user_id = user.id
+
+    import hashlib
+    email_hash = hashlib.sha256(invite.invited_email.encode()).hexdigest()
+    db.add(AuditEvent(
+        user_id=user.id,
+        person_record_id=target_id,
+        event_type="membership_created",
+        subject_type="membership",
+        subject_id=str(membership.id),
+        detail={
+            "role": invite.role,
+            "granted_via": "invitation_accept",
+            "invitation_id": str(invite.id),
+        },
+    ))
+    db.add(AuditEvent(
+        user_id=user.id,
+        person_record_id=target_id,
+        event_type="invitation_accepted",
+        subject_type="invitation",
+        subject_id=str(invite.id),
+        detail={
+            "invited_email_hash": email_hash,
+            "role": invite.role,
+            "target_kind": "existing_record",
+            "accepted_while_authenticated": True,
+        },
+    ))
+
+    # Art. 9 consent evidence — records a row only when a version was sent.
+    await record_agreement_acceptance(
+        db,
+        user_id=user.id,
+        agreement_version=body.agreement_version,
+        consent_flags=body.consent_flags,
+        context="invite_accept",
+        now=now,
+    )
+
+    await db.commit()
+
+    return AcceptInviteResponse(
+        person_record_id=str(target_id),
+        role=invite.role,
+        display_name=record.display_name,
     )
