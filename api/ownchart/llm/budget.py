@@ -115,6 +115,32 @@ async def month_to_date_spend_usd(
     return float(total or 0.0)
 
 
+async def month_to_date_spend_by_user(
+    db: AsyncSession, *, now: datetime | None = None,
+) -> dict[uuid.UUID, float]:
+    """Sum ``estimated_cost_usd`` per user across the current UTC month.
+
+    The cross-user counterpart to ``month_to_date_spend_usd`` — one
+    grouped query instead of N per-user sums, for the instance-admin
+    usage view (Batch C). Rows whose ``user_id`` nulled out on account
+    erasure are skipped (a deleted user has no admin row to attribute
+    to). Returns a ``{user_id: usd}`` map; users with zero spend are
+    simply absent.
+    """
+    now = now or datetime.now(timezone.utc)
+    start = month_start_utc(now)
+    rows = (await db.execute(
+        select(
+            ModelRun.user_id,
+            func.coalesce(func.sum(ModelRun.estimated_cost_usd), 0),
+        )
+        .where(ModelRun.created_at >= start)
+        .where(ModelRun.user_id.is_not(None))
+        .group_by(ModelRun.user_id)
+    )).all()
+    return {uid: float(total or 0.0) for uid, total in rows}
+
+
 async def enforce_monthly_ceiling(
     db: AsyncSession, user: User, *, now: datetime | None = None,
 ) -> None:

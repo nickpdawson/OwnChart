@@ -20,6 +20,7 @@ from .core.demo_calendar_seed import seed_demo_calendar_if_needed
 from .core.demo_seed import seed_demo_user_if_needed
 from .routes import (
     account,
+    admin,
     ask,
     audit,
     auth,
@@ -263,3 +264,4 @@ app.include_router(home_ai.router, prefix="/api/home", tags=["home"])
 app.include_router(llm_providers.router, prefix="/api/llm-providers", tags=["llm-providers"])
 app.include_router(instance.router, prefix="/api/instance", tags=["instance"])
 app.include_router(invitations.router, prefix="/api/invitations", tags=["invitations"])
+app.include_router(admin.router, prefix="/api/admin", tags=["admin"])

@@ -34,6 +34,7 @@ const NAV: ReadonlyArray<NavItem> = [
   { href: "/connectors", label: "EHR connections" },
   { href: "/review", label: "Review inbox" },
   { href: "/audit", label: "Audit log", adminOnly: true },
+  { href: "/admin", label: "Admin", adminOnly: true },
   { href: "/settings", label: "Settings" },
 ] as const;
 

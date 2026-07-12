@@ -81,6 +81,12 @@ async def get_user_from_device_token_or_session(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token references a missing user",
             )
+        # Account lockout (Batch C). A disabled account's device bearer
+        # tokens stop working immediately — the token row is left intact
+        # (re-enabling the account restores it) but auth is refused here.
+        # This is the device-token half of the belt-and-suspenders freeze;
+        # the cookie half rides the session_token_version bump below.
+        _reject_if_disabled(user)
         # Tuck the token id on the request state so downstream routes
         # (e.g. /healthkit/sync) can scope cursors per device.
         request.state.device_token_id = row.id
@@ -110,4 +116,20 @@ async def get_user_from_device_token_or_session(
     # existing sessions keep working until they expire or are bumped.
     if payload.get("stv", 0) != user.session_token_version:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    # Account lockout (Batch C) — belt-and-suspenders. Disabling a user
+    # bumps their session_token_version, so any live cookie already 401s
+    # at the stv check above. This explicit check covers the edge where a
+    # freshly-signed cookie could exist and makes the freeze
+    # self-documenting: a disabled account never authenticates, period.
+    _reject_if_disabled(user)
     return user
+
+
+def _reject_if_disabled(user: User) -> None:
+    """401 a disabled account. The single choke point both auth paths
+    call so a frozen tester's cookie AND bearer token stop working."""
+    if getattr(user, "disabled", False):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account disabled",
+        )

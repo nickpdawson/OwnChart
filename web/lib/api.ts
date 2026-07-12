@@ -1402,3 +1402,150 @@ export async function listExports(): Promise<ExportJob[]> {
   if (!r.ok) throw new Error(`listExports failed: ${r.status}`);
   return (await r.json()) as ExportJob[];
 }
+
+// --- Batch C: instance-admin surface -------------------------------------
+//
+// Mirrors `routes/admin.py`. Every endpoint is gated server-side on
+// `is_instance_admin`; these SSR fetchers are only ever called from the
+// /admin pages, which the admin layout already gates. All go through
+// same-origin `/api/admin/*` via the internal URL + session cookie.
+// Mutations (disable/enable/make-admin/revoke-admin/revoke-invite) run
+// client-side against same-origin `/api/admin/*` with `credentials`.
+
+export type AdminUserRow = {
+  id: string;
+  email: string;
+  email_verified: boolean;
+  is_instance_admin: boolean;
+  disabled: boolean;
+  created_at: string;
+  membership_count: number;
+  latest_agreement_version: string | null;
+  latest_agreement_accepted_at: string | null;
+  month_to_date_spend_usd: number;
+};
+
+export type AdminUserList = {
+  users: AdminUserRow[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AdminMembership = {
+  person_record_id: string;
+  display_name: string;
+  role: string;
+  revoked: boolean;
+  revoked_at: string | null;
+};
+
+export type AdminUsageBreakdownItem = {
+  key: string;
+  runs: number;
+  estimated_usd_cost: number;
+};
+
+export type AdminUserDetail = AdminUserRow & {
+  memberships: AdminMembership[];
+  device_token_count: number;
+  per_model: AdminUsageBreakdownItem[];
+  per_purpose: AdminUsageBreakdownItem[];
+};
+
+export type AdminInvite = {
+  id: string;
+  invited_email: string;
+  target_kind: "existing_record" | "new_record";
+  target_person_record_id: string | null;
+  role: string;
+  status: "active" | "accepted" | "revoked" | "expired";
+  expires_at: string;
+  created_at: string;
+  created_by_user_id: string;
+  accepted_at: string | null;
+  accepted_by_user_id: string | null;
+  revoked_at: string | null;
+};
+
+export type AdminUsagePerUser = {
+  user_id: string;
+  email: string;
+  month_to_date_spend_usd: number;
+};
+
+export type AdminUsageResponse = {
+  month_start: string;
+  resets_at: string;
+  total_estimated_usd_cost: number;
+  per_user: AdminUsagePerUser[];
+};
+
+export type AdminOverview = {
+  user_count: number;
+  admin_count: number;
+  disabled_user_count: number;
+  record_count: number;
+  active_membership_count: number;
+  pending_invitation_count: number;
+  month_to_date_spend_usd: number;
+};
+
+export async function getAdminOverview(): Promise<AdminOverview> {
+  const r = await fetch(`${INTERNAL_API}/api/admin/overview`, {
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`getAdminOverview failed: ${r.status}`);
+  return (await r.json()) as AdminOverview;
+}
+
+export async function listAdminUsers(opts?: {
+  limit?: number;
+  offset?: number;
+  sort?: "created_at" | "email" | "spend";
+  order?: "asc" | "desc";
+}): Promise<AdminUserList> {
+  const p = new URLSearchParams();
+  if (opts?.limit) p.set("limit", String(opts.limit));
+  if (opts?.offset) p.set("offset", String(opts.offset));
+  if (opts?.sort) p.set("sort", opts.sort);
+  if (opts?.order) p.set("order", opts.order);
+  const url = `${INTERNAL_API}/api/admin/users${p.toString() ? `?${p}` : ""}`;
+  const r = await fetch(url, {
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`listAdminUsers failed: ${r.status}`);
+  return (await r.json()) as AdminUserList;
+}
+
+export async function getAdminUserDetail(
+  id: string,
+): Promise<AdminUserDetail | null> {
+  const r = await fetch(
+    `${INTERNAL_API}/api/admin/users/${encodeURIComponent(id)}`,
+    { headers: await withSessionHeaders(), cache: "no-store" },
+  );
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`getAdminUserDetail failed: ${r.status}`);
+  return (await r.json()) as AdminUserDetail;
+}
+
+export async function getAdminUsage(): Promise<AdminUsageResponse> {
+  const r = await fetch(`${INTERNAL_API}/api/admin/usage`, {
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`getAdminUsage failed: ${r.status}`);
+  return (await r.json()) as AdminUsageResponse;
+}
+
+export async function listAdminInvitations(): Promise<AdminInvite[]> {
+  const r = await fetch(`${INTERNAL_API}/api/admin/invitations`, {
+    headers: await withSessionHeaders(),
+    cache: "no-store",
+  });
+  if (!r.ok) throw new Error(`listAdminInvitations failed: ${r.status}`);
+  return (await r.json()) as AdminInvite[];
+}

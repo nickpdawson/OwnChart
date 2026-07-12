@@ -616,6 +616,23 @@ async def login(
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
+    # Account lockout (Batch C). Checked AFTER the password so a disabled
+    # account can't be distinguished from a wrong password by an
+    # unauthenticated prober. A frozen tester can't obtain a fresh cookie
+    # here; their live credentials are already rejected at the auth
+    # boundary (core/device_auth.py).
+    if getattr(user, "disabled", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "account_disabled",
+                "message": (
+                    "This account has been disabled by the instance "
+                    "administrator. Contact them to restore access."
+                ),
+            },
+        )
+
     # Email-verification gate (Email/SMTP workstream). Enforced only when the
     # operator turned the flag on AND SMTP is configured (otherwise there'd be
     # no way to verify). Checked AFTER the password so it never reveals which

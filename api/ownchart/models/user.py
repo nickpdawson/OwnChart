@@ -35,6 +35,17 @@ class User(Base, TimestampMixin):
         Integer, nullable=False, default=0, server_default="0",
     )
 
+    # Account lockout (Batch C — instance admin surface). When True the
+    # account is frozen: the login endpoint refuses it AND every live
+    # credential stops authenticating (cookie sessions via the
+    # session_token_version bump the disable action performs, device
+    # bearer tokens via the explicit check in core/device_auth.py). The
+    # row and all its data survive — this is a reversible freeze, not an
+    # erasure. Enforcement lives at the auth boundary, never per-route.
+    disabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+
     # Email verification (Email/SMTP workstream). Only enforced when
     # `auth.require_email_verification` is true (default false / self-host).
     # On the default path a freshly-registered user is stamped verified
