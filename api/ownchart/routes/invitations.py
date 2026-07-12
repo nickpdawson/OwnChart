@@ -45,7 +45,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.auth_context import AuthContext, get_auth_context
+from ..core.config import get_settings
 from ..core.db import get_session
+from ..core.rate_limit import enforce_rate_limit
 from ..core.security import (
     generate_invite_token,
     hash_invite_token,
@@ -503,6 +505,7 @@ async def revoke_invitation(
 @router.get("/preview")
 async def preview_invitation(
     token: str,
+    request: Request,
     db: AsyncSession = Depends(get_session),
 ) -> InvitePreviewResponse:
     """Public preview for the /invite/[token] accept page.
@@ -517,6 +520,19 @@ async def preview_invitation(
     the invite they're about to accept.
     """
     from ..core.security import verify_invite_token
+
+    # HIGH-7: this endpoint is unauthenticated and enumeration-shaped —
+    # an attacker can probe token prefixes to find live invites. Throttle
+    # per IP with a dedicated (tighter) bucket. No per-identifier
+    # dimension: the token itself is the secret and must not seed a
+    # counter key. This is the Lapland tenant launch gate's public face.
+    _s = get_settings()
+    await enforce_rate_limit(
+        request,
+        bucket="invite_preview",
+        max_attempts=_s.rate_limit_invite_preview_max_attempts,
+        window_seconds=_s.rate_limit_invite_preview_window_seconds,
+    )
 
     if not token or len(token) < 12:
         raise HTTPException(

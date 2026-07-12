@@ -5,13 +5,14 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.db import get_session
+from ..core.demo_session import demo_seeded_or_owned_clause
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
@@ -573,6 +574,7 @@ def _ask_question_for_fact(c: ExtractedFact) -> str:
 @router.get("/{fact_id}/context")
 async def get_fact_context(
     fact_id: uuid.UUID,
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> FactContext:
@@ -626,9 +628,18 @@ async def get_fact_context(
     # Topics carry person_record_id; scope explicitly.
     from ..models.topic import Topic
     from ..retrieval.topics import topic_membership_clause
-    topics = list((await db.execute(
-        select(Topic).where(Topic.person_record_id == ctx.active_record_id)
-    )).scalars().all())
+    topic_stmt = select(Topic).where(
+        Topic.person_record_id == ctx.active_record_id
+    )
+    # MED-7: on the shared demo account, don't match a fact against
+    # another visitor's save-as-topic dossier. Seeded topics (scope
+    # NULL) still match; no-op outside demo mode.
+    _demo_topic_clause = demo_seeded_or_owned_clause(
+        request, table="topics", json_col="scope",
+    )
+    if _demo_topic_clause is not None:
+        topic_stmt = topic_stmt.where(_demo_topic_clause)
+    topics = list((await db.execute(topic_stmt)).scalars().all())
     matching: list[FactContextDossier] = []
     for t in topics:
         clause = topic_membership_clause(t)

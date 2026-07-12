@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,6 +23,15 @@ class User(Base, TimestampMixin):
     # a fresh DB by migration 0028. Toggled via admin UI later.
     is_instance_admin: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False,
+    )
+
+    # Session invalidation lever (HIGH-5). Embedded as `stv` in the
+    # signed session cookie and re-checked on every cookie-authenticated
+    # request. Bumping it (e.g. on password change) instantly kills every
+    # outstanding web session for this user without touching device
+    # tokens (which are separately revocable). Starts at 0.
+    session_token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
     )
 
     # UI affordance — "Nick" or similar. Distinct from each

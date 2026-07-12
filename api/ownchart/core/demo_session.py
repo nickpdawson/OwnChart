@@ -30,6 +30,8 @@ import uuid
 from typing import Awaitable, Callable
 
 from fastapi import Request, Response
+from sqlalchemy import text
+from sqlalchemy.sql.elements import TextClause
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import get_settings
@@ -103,6 +105,70 @@ def demo_session_matches(scope: dict | None, request: Request) -> bool:
         # Seeded resource — visible to every visitor.
         return True
     return sid_on_row == get_demo_session_id(request)
+
+
+def _seeded_or_owned_text(
+    sid: str | None, *, table: str, json_col: str,
+) -> TextClause:
+    """Build the seeded-or-owned SQL clause for a raw session id.
+
+    A row is visible if ``<table>.<json_col>->>'demo_session_id'`` is
+    NULL (seeded / non-demo — visible to everyone) OR equals ``sid``.
+    With ``sid`` None (visitor has no cookie yet) only seeded rows show.
+    """
+    col = f"{table}.{json_col}->>'demo_session_id'"
+    if sid:
+        return text(f"({col} IS NULL OR {col} = :dsid)").bindparams(dsid=sid)
+    return text(f"{col} IS NULL")
+
+
+def demo_seeded_or_owned_clause(
+    request: Request,
+    *,
+    table: str,
+    json_col: str,
+) -> TextClause | None:
+    """SQL WHERE clause for Topic-style readers in demo mode.
+
+    Semantics (matches ``demo_session_matches``, in SQL): a row is
+    visible if its ``<table>.<json_col>->>'demo_session_id'`` is NULL
+    (seeded / non-demo — visible to everyone) OR equals THIS visitor's
+    session id. A visitor with no cookie yet sees only seeded rows.
+
+    Returns ``None`` outside demo mode so callers can skip adding any
+    filter — non-demo behavior is completely unchanged.
+
+    Used by the Topic readers (topics list, stats dashboard, Home
+    dossier targets, fact-context) where seeded Topics must stay visible
+    to all visitors of the shared demo account but a visitor's own
+    ``save-as-topic`` dossier must not leak to other visitors.
+    """
+    if not get_settings().demo_mode:
+        return None
+    return _seeded_or_owned_text(
+        get_demo_session_id(request), table=table, json_col=json_col,
+    )
+
+
+def demo_topic_clause_for_sid(sid: str | None) -> TextClause:
+    """Topic-scope visibility clause from a raw demo session id.
+
+    For background contexts (e.g. the Home insight builder) that carry
+    the visitor id as a string rather than a live ``Request``. Always
+    returns a clause; callers gate on demo-mode themselves.
+    """
+    return _seeded_or_owned_text(sid, table="topics", json_col="scope")
+
+
+def demo_scope_visible(scope: dict | None, request: Request) -> bool:
+    """Python-side counterpart of :func:`demo_seeded_or_owned_clause`
+    for post-fetch gating of a single Topic-style row.
+
+    Alias of ``demo_session_matches`` (same NULL-visible semantics) kept
+    under a Topic-oriented name so the intent reads clearly at call
+    sites that gate a resolved Topic. Any object exposing a ``scope``
+    dict works."""
+    return demo_session_matches(scope, request)
 
 
 class DemoSessionMiddleware(BaseHTTPMiddleware):

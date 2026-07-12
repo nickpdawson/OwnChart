@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from ..core.auth_context import AuthContext, get_auth_context
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
+from ..core.demo_session import apply_demo_session_scope
 from ..core.logger import get_logger
 from ..llm import call_with_tool, get_registry
 from ..models.conversation import Conversation, ConversationMessage
@@ -100,6 +101,7 @@ def _format_context(facts: list[ExtractedFact]) -> str:
 @router.post("")
 async def ask(
     body: AskRequest,
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> AskResponse:
@@ -229,7 +231,13 @@ async def ask(
             person_record_id=ctx.active_record_id,
             title=title,
             kind="ask",
-            scope={"type": "whole_record"},
+            # HIGH-8: stamp the per-visitor demo session id so this
+            # thread isn't cross-visitor-readable at
+            # GET /api/conversations/{id} on the shared demo account.
+            # No-op outside demo mode. Without this, an Ask-created
+            # conversation was the ONE conversation path that skipped
+            # the scope stamp the /conversations create path applies.
+            scope=apply_demo_session_scope({"type": "whole_record"}, request),
             last_message_at=now,
         )
         db.add(conv)

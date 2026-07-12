@@ -51,27 +51,35 @@ async def purge_expired_exports(
     data_dir: Path | None = None,
     now: datetime | None = None,
 ) -> int:
-    """Hard-delete completed export jobs whose ``expires_at`` has
-    passed. Returns count deleted.
+    """Hard-delete expired completed exports AND sweep failed jobs'
+    partial files. Returns the number of jobs cleaned.
 
-    Per-row loop with three steps per row:
-      1. Remove on-disk files (``delete_job_files_on_disk``). Files
-         go FIRST so a later DB error doesn't strand bytes that no
-         longer have a metadata anchor. Tolerant of FS errors —
-         missing directory / partial cleanup is OK; the audit row
-         still records the attempt.
-      2. Emit ``EXPORT_EXPIRED`` AuditEvent (user_id=NULL).
-      3. Hard-delete the ExportJob row (cascade removes ExportFile
-         children via FK).
+    Two classes of on-disk garbage accrue forever without this:
 
-    ``data_dir`` defaults to None for callers that don't want the
-    FS sweep — e.g. unit tests that just want to verify the SQL +
-    audit shape. Production callers pass ``settings.data_dir`` so
-    the on-disk cleanup actually runs.
+      A. **Completed + expired** jobs (``now() > expires_at``). Full-
+         record PHI snapshots. Per row: remove files
+         (``delete_job_files_on_disk``) → emit an ``EXPORT_EXPIRED``
+         AuditEvent (user_id=NULL) → hard-delete the ExportJob row
+         (cascade removes ExportFile children via FK). Files go FIRST so
+         a later DB error can't strand bytes with no metadata anchor.
 
-    Intended to run periodically (PM C-6, ~hourly). Local imports
-    keep this module importable in pure-function tests that never
-    wire a DB.
+      B. **Failed** jobs. A run that dies mid-render leaves partial
+         files in ``<data_dir>/exports/<job_id>/`` and NEVER gets an
+         ``expires_at`` (that's only set at completion), so class A
+         would never reach them. We remove the partial files but KEEP
+         the row — the user still sees the failure, and the bounded,
+         PHI-free ``error_message`` is all that remains. An
+         ``EXPORT_EXPIRED`` audit (``job_status='failed'``) is emitted
+         only when bytes were actually removed, so repeated hourly runs
+         don't spam the audit log once a job's dir is already clean.
+
+    ``data_dir`` defaults to None for callers that only want the class-A
+    SQL + audit shape (unit tests). Production callers pass
+    ``settings.data_dir`` so both on-disk sweeps run.
+
+    Intended to run periodically (PM C-6, hourly via the arq
+    ``WorkerSettings.cron_jobs``). Local imports keep this module
+    importable in pure-function tests that never wire a DB.
     """
     from sqlalchemy import delete, select
 
@@ -81,6 +89,8 @@ async def purge_expired_exports(
     from .runner import delete_job_files_on_disk
 
     cutoff = now or datetime.now(timezone.utc)
+
+    # --- Class A: completed + expired -----------------------------------
     expiring = (await db.execute(
         select(ExportJob).where(
             ExportJob.status == "completed",
@@ -88,9 +98,6 @@ async def purge_expired_exports(
             ExportJob.expires_at < cutoff,
         )
     )).scalars().all()
-
-    if not expiring:
-        return 0
 
     for job in expiring:
         if data_dir is not None:
@@ -117,14 +124,50 @@ async def purge_expired_exports(
                 ),
                 "expired_at": cutoff.isoformat(),
                 "requested_format": job.requested_format,
+                "job_status": "completed",
             },
             ip=None,
             user_agent=None,
             created_at=cutoff,
         ))
 
-    job_ids = [j.id for j in expiring]
-    result = await db.execute(
-        delete(ExportJob).where(ExportJob.id.in_(job_ids))
-    )
-    return result.rowcount or 0
+    if expiring:
+        job_ids = [j.id for j in expiring]
+        await db.execute(
+            delete(ExportJob).where(ExportJob.id.in_(job_ids))
+        )
+
+    # --- Class B: failed jobs' partial files ----------------------------
+    failed_files_cleaned = 0
+    if data_dir is not None:
+        failed = (await db.execute(
+            select(ExportJob).where(ExportJob.status == "failed")
+        )).scalars().all()
+        for job in failed:
+            try:
+                removed = delete_job_files_on_disk(
+                    data_dir=Path(data_dir), job_id=job.id,
+                )
+            except Exception:  # noqa: BLE001
+                removed = 0
+            if removed > 0:
+                failed_files_cleaned += 1
+                db.add(AuditEvent(
+                    id=uuid.uuid4(),
+                    user_id=None,  # system-attributed (purge worker)
+                    person_record_id=job.person_record_id,
+                    event_type=EXPORT_EXPIRED,
+                    subject_type=EXPORT_SUBJECT_TYPE,
+                    subject_id=str(job.id),
+                    detail={
+                        "expired_at": cutoff.isoformat(),
+                        "requested_format": job.requested_format,
+                        "job_status": "failed",
+                        "files_removed": removed,
+                    },
+                    ip=None,
+                    user_agent=None,
+                    created_at=cutoff,
+                ))
+
+    return len(expiring) + failed_files_cleaned

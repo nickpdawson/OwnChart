@@ -97,6 +97,25 @@ class Settings(BaseSettings):
     # stays visible while it's on so users still know it's a demo.
     demo_allow_ingest: bool = Field(default=False)
 
+    # --- Auth rate limiting (HIGH-7 — Lapland tenant launch gate) -------
+    #
+    # Per-IP (and, where an identifier exists, per-email) throttles on the
+    # credential-facing endpoints: login, device/pair, register, and the
+    # unauthenticated invitations/preview. Backed by Redis (shared with
+    # arq) so the limit holds across api workers; falls back to an
+    # in-process counter only when Redis is unreachable (single-process
+    # dev). Fixed-window counters — the Nth+1 attempt inside the window
+    # gets a 429 with Retry-After.
+    rate_limit_enabled: bool = Field(default=True)
+    # Login / pair / register share these defaults. Ten tries per five
+    # minutes per IP is generous for a human, punishing for a bot.
+    rate_limit_auth_max_attempts: int = Field(default=10)
+    rate_limit_auth_window_seconds: int = Field(default=300)
+    # invitations/preview is unauthenticated and enumeration-shaped
+    # (an attacker probing tokens), so it gets its own, tighter bucket.
+    rate_limit_invite_preview_max_attempts: int = Field(default=20)
+    rate_limit_invite_preview_window_seconds: int = Field(default=300)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

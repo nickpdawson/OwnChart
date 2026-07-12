@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from arq import cron
 from arq.connections import RedisSettings
 from sqlalchemy import select
 
@@ -461,6 +462,24 @@ async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[st
     }
 
 
+async def purge_exports_cron(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Hourly arq cron (HIGH-6): hard-delete expired completed exports
+    and sweep failed jobs' partial files.
+
+    Before this was wired, ``purge_expired_exports`` had zero
+    non-test callers — full-record PHI snapshots and failed-run partial
+    files accrued on disk forever. Runs against the api's Postgres +
+    ``settings.data_dir`` so the on-disk cleanup actually happens.
+    """
+    settings = get_settings()
+    async with SessionLocal() as db:
+        from ..exports.expiry import purge_expired_exports
+        cleaned = await purge_expired_exports(db, data_dir=settings.data_dir)
+        await db.commit()
+    log.info("export_purge_cron_ran", jobs_cleaned=cleaned)
+    return {"jobs_cleaned": cleaned}
+
+
 class WorkerSettings:
     """Arq config — `arq ownchart.workers.vision_extract_job.WorkerSettings`.
 
@@ -481,6 +500,11 @@ class WorkerSettings:
         process_auto_export_push,
         process_personal_photo,
         sync_google_calendar_source,
+    ]
+    # HIGH-6: run the export purge at the top of every hour. `cron` with
+    # only `minute` set fires once per hour (arq matches any hour/day).
+    cron_jobs = [
+        cron(purge_exports_cron, minute=0, run_at_startup=False),
     ]
     on_startup = _reenqueue_stranded_jobs
     max_jobs = 2  # one extraction is plenty heavy; cap concurrency

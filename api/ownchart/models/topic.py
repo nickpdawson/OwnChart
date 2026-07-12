@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import ARRAY, ForeignKey, String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, TimestampMixin, new_uuid
@@ -44,3 +44,11 @@ class Topic(Base, TimestampMixin):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
+
+    # Demo per-visitor isolation marker (MED-7). NULL for every
+    # normal / seeded Topic (the overwhelming common case, unchanged
+    # behavior). In demo mode a Topic created by a visitor's
+    # save-as-topic carries ``{"demo_session_id": "<uuid>"}`` so Topic
+    # readers can hide it from other visitors of the shared demo
+    # account. Mirrors Conversation.scope / Episode.payload.
+    scope: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

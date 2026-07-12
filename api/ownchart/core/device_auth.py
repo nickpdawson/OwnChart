@@ -93,10 +93,21 @@ async def get_user_from_device_token_or_session(
     session_token = request.cookies.get(_settings.session_cookie_name)
     if not session_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    # unsign_session enforces the signing timestamp against
+    # SESSION_MAX_AGE_SECONDS (HIGH-5) — an expired cookie decodes to
+    # None here, exactly like a tampered one.
     payload = unsign_session(session_token)
     if not payload or "uid" not in payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     user = await db.get(User, payload["uid"])
     if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+    # Session revocation lever (HIGH-5): the cookie embeds the
+    # session_token_version it was signed at. A bump (e.g. password
+    # change) leaves every live cookie carrying a stale `stv`, so they
+    # all 401 and route to re-login. Pre-migration cookies with no
+    # `stv` are treated as version 0 (matches the column default), so
+    # existing sessions keep working until they expire or are bumped.
+    if payload.get("stv", 0) != user.session_token_version:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return user

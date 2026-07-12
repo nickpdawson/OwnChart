@@ -23,11 +23,15 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.config import get_settings
 from ..core.db import get_session
 from ..core.device_auth import get_user_from_device_token_or_session
+from ..core.rate_limit import enforce_rate_limit
 from ..core.security import verify_password
 from ..models.device_token import DeviceToken
 from ..models.user import User
+
+_settings = get_settings()
 
 router = APIRouter()
 
@@ -90,11 +94,22 @@ def _capabilities() -> ServerCapabilities:
 @router.post("/pair", status_code=status.HTTP_201_CREATED)
 async def pair_device(
     body: PairRequest,
+    request: Request,
     db: AsyncSession = Depends(get_session),
 ) -> PairResponse:
     """Issue a bearer token for a named device after email/password
     verification. Plaintext token is in the response exactly once.
     """
+    # HIGH-7: device pairing is a password-verification endpoint too —
+    # throttle it per IP + per email exactly like /login so it isn't a
+    # brute-force bypass around the login limiter.
+    await enforce_rate_limit(
+        request,
+        bucket="device_pair",
+        max_attempts=_settings.rate_limit_auth_max_attempts,
+        window_seconds=_settings.rate_limit_auth_window_seconds,
+        identifier=body.email,
+    )
     if not body.device_name.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

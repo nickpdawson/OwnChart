@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.auth_context import AuthContext, get_auth_context
 from ..core.db import get_session
+from ..core.demo_session import demo_seeded_or_owned_clause
 from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
 from ..models.topic import Topic
@@ -56,6 +57,7 @@ class DashboardStats(BaseModel):
 
 @router.get("")
 async def get_dashboard_stats(
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> DashboardStats:
@@ -99,13 +101,20 @@ async def get_dashboard_stats(
     # RC fix 2026-05-14. If the count is needed back later, the right
     # shape is a precomputed topic_counts cache refreshed after
     # ingest/backfill, not a synchronous scan on every Home render.
-    topic_rows = (
-        await db.execute(
-            select(Topic)
-            .where(Topic.person_record_id == ctx.active_record_id)
-            .order_by(Topic.name)
-        )
-    ).scalars().all()
+    topic_stmt = (
+        select(Topic)
+        .where(Topic.person_record_id == ctx.active_record_id)
+        .order_by(Topic.name)
+    )
+    # MED-7: hide other demo visitors' save-as-topic dossiers from the
+    # shared demo account's dashboard. Seeded topics (scope NULL) stay
+    # visible; no-op outside demo mode.
+    _demo_clause = demo_seeded_or_owned_clause(
+        request, table="topics", json_col="scope",
+    )
+    if _demo_clause is not None:
+        topic_stmt = topic_stmt.where(_demo_clause)
+    topic_rows = (await db.execute(topic_stmt)).scalars().all()
     topic_snaps: list[TopicSnapshot] = [
         TopicSnapshot(
             id=str(t.id),

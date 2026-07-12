@@ -19,6 +19,7 @@ from ..core.auth_context import (
 )
 from ..core.config import get_settings
 from ..core.db import get_session
+from ..core.rate_limit import enforce_rate_limit
 from ..core.security import (
     hash_password,
     invite_lookup_prefix,
@@ -125,6 +126,7 @@ def _compose_session_payload(
     *,
     user_id: str,
     active_record_id: str | None = None,
+    session_token_version: int = 0,
 ) -> dict:
     """Build the dict that gets signed into the session cookie.
 
@@ -132,10 +134,18 @@ def _compose_session_payload(
     `{uid, active_record_id}` shape without spinning up FastAPI.
     The active_record_id key only appears when set — pre-M02 iOS
     builds and fresh logins keep the legacy `{uid}` shape.
+
+    HIGH-5: `stv` (session_token_version) is embedded ONLY when the
+    user's version is non-zero. A version-0 user keeps the legacy
+    `{uid}` shape; the decode side reads a missing `stv` as 0, so the
+    two are equivalent. The first bump (password change) starts writing
+    `stv`, which is exactly when old cookies must start failing.
     """
     payload: dict = {"uid": user_id}
     if active_record_id is not None:
         payload[SESSION_KEY_ACTIVE_RECORD] = active_record_id
+    if session_token_version:
+        payload["stv"] = session_token_version
     return payload
 
 
@@ -144,10 +154,13 @@ def _set_session_cookie(
     user_id: str,
     *,
     active_record_id: str | None = None,
+    session_token_version: int = 0,
 ) -> None:
     token = sign_session(
         _compose_session_payload(
-            user_id=user_id, active_record_id=active_record_id,
+            user_id=user_id,
+            active_record_id=active_record_id,
+            session_token_version=session_token_version,
         )
     )
     response.set_cookie(
@@ -314,6 +327,7 @@ async def _consume_invite(
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
     body: RegisterRequest,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_session),
 ) -> MeResponse:
@@ -336,6 +350,17 @@ async def register(
 
     All other cases return 403.
     """
+    # HIGH-7: throttle account creation per IP + per email so the
+    # registration path can't be used to mass-create accounts or probe
+    # for which emails already exist.
+    await enforce_rate_limit(
+        request,
+        bucket="register",
+        max_attempts=_settings.rate_limit_auth_max_attempts,
+        window_seconds=_settings.rate_limit_auth_window_seconds,
+        identifier=body.email,
+    )
+
     existing_first = (
         await db.execute(select(User).limit(1))
     ).scalars().first()
@@ -465,7 +490,10 @@ async def register(
 
     await db.commit()
     await db.refresh(user)
-    _set_session_cookie(response, str(user.id))
+    _set_session_cookie(
+        response, str(user.id),
+        session_token_version=user.session_token_version,
+    )
     return MeResponse(
         id=str(user.id),
         email=user.email,
@@ -481,14 +509,29 @@ async def register(
 @router.post("/login")
 async def login(
     body: LoginRequest,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_session),
 ) -> MeResponse:
+    # HIGH-7: throttle password attempts per IP AND per email. Per-email
+    # so one account can't be brute-forced from a botnet undetected;
+    # per-IP so one host can't spray many accounts. The 429 fires before
+    # the argon2 verify, so a locked-out attacker also stops burning CPU.
+    await enforce_rate_limit(
+        request,
+        bucket="login",
+        max_attempts=_settings.rate_limit_auth_max_attempts,
+        window_seconds=_settings.rate_limit_auth_window_seconds,
+        identifier=body.email,
+    )
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    _set_session_cookie(response, str(user.id))
+    _set_session_cookie(
+        response, str(user.id),
+        session_token_version=user.session_token_version,
+    )
     return MeResponse(id=str(user.id), email=user.email, phi_consent_granted=user.phi_consent_granted)
 
 
@@ -740,9 +783,91 @@ async def set_active_record(
         response,
         str(user.id),
         active_record_id=str(target_id),
+        session_token_version=user.session_token_version,
     )
     return _compose_me_response(
         user=user,
         memberships=memberships,
         active_record_id=target_id,
     )
+
+
+class ChangePasswordRequest(BaseModel):
+    """Body of ``POST /api/auth/password`` — authenticated self-service
+    password change. Requires the current password so a stolen but
+    still-valid session can't silently rotate the credential."""
+    current_password: str
+    new_password: str
+
+
+@router.post("/password")
+async def change_password(
+    body: ChangePasswordRequest,
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change the authenticated user's password (HIGH-5).
+
+    Verifies the current password (argon2), sets the new hash, and
+    bumps ``session_token_version`` so every OTHER outstanding web
+    session for this user is invalidated on its next request. THIS
+    session's cookie is re-issued with the new version so the caller
+    stays signed in.
+
+    Deferred (HIGH-5, blocked on SMTP — see the Lapland tenant
+    workstream): there is intentionally NO email-based password RESET
+    here. A forgotten-password flow needs an out-of-band delivery
+    channel we don't have wired yet. This endpoint covers the
+    authenticated *change* case only; the unauthenticated *reset* case
+    lands with the tenant SMTP work.
+
+    NOTE: device bearer tokens are NOT revoked by a password change —
+    they are separately revocable via ``DELETE /api/auth/tokens/{id}``.
+    Bumping the version only affects cookie (web) sessions.
+    """
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "invalid_current_password",
+                "message": "Current password is incorrect.",
+            },
+        )
+    if len(body.new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "weak_password",
+                "message": "New password must be at least 8 characters.",
+            },
+        )
+    if body.new_password == body.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "password_unchanged",
+                "message": "New password must differ from the current one.",
+            },
+        )
+
+    user.password_hash = hash_password(body.new_password)
+    user.session_token_version = (user.session_token_version or 0) + 1
+    db.add(AuditEvent(
+        user_id=user.id,
+        person_record_id=user.default_person_record_id,
+        event_type="password_changed",
+        subject_type="user",
+        subject_id=str(user.id),
+        detail={"session_token_version": user.session_token_version},
+    ))
+    await db.commit()
+    await db.refresh(user)
+
+    # Re-issue THIS session's cookie at the new version so the caller
+    # isn't logged out by their own password change.
+    _set_session_cookie(
+        response, str(user.id),
+        session_token_version=user.session_token_version,
+    )
+    return {"ok": True}

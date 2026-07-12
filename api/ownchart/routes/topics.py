@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
+from ..core.demo_session import (
+    apply_demo_session_scope,
+    demo_scope_visible,
+    demo_seeded_or_owned_clause,
+)
 from ..llm import call_with_tool, get_registry
 from ..models.brief_message import BriefMessage
 from ..models.evidence_anchor import EvidenceAnchor
@@ -252,6 +257,7 @@ async def _fact_readouts(db: AsyncSession, facts: list[ExtractedFact]) -> list[F
 
 @router.get("")
 async def list_topics(
+    request: Request,
     q: str | None = Query(default=None, description="Match name, slug, or any alias (ILIKE)."),
     limit: int = Query(default=200, ge=1, le=500),
     ctx: AuthContext = Depends(get_auth_context),
@@ -265,6 +271,13 @@ async def list_topics(
         .order_by(Topic.name)
         .limit(limit)
     )
+    # MED-7: hide other demo visitors' save-as-topic dossiers. Seeded
+    # topics (scope NULL) stay visible to all; no-op outside demo mode.
+    _demo_clause = demo_seeded_or_owned_clause(
+        request, table="topics", json_col="scope",
+    )
+    if _demo_clause is not None:
+        stmt = stmt.where(_demo_clause)
     if q:
         pat = f"%{q.strip()}%"
         alias_match = _text(
@@ -282,6 +295,7 @@ async def list_topics(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_topic(
     body: CreateTopic,
+    request: Request,
     ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> TopicSummary:
@@ -313,6 +327,8 @@ async def create_topic(
         related_concepts=[],
         created_by=user.id,
         person_record_id=ctx.active_record_id,
+        # MED-7: per-visitor demo isolation marker (NULL outside demo).
+        scope=apply_demo_session_scope(None, request) or None,
     )
     db.add(t)
     await db.commit()
@@ -322,6 +338,7 @@ async def create_topic(
 
 async def _resolve_topic_or_404(
     db: AsyncSession, slug: str, *, person_record_id: uuid.UUID,
+    request: Request | None = None,
 ) -> Topic:
     """Resolve a topic by slug **scoped to the active record**.
 
@@ -330,6 +347,13 @@ async def _resolve_topic_or_404(
     each have their own "Pregnancy" dossier. This helper enforces
     record scope at every resolution point — cross-record slugs
     return 404, never the other record's row.
+
+    MED-7: when ``request`` is supplied and we're in demo mode, a Topic
+    another visitor created via save-as-topic (its ``scope`` carries a
+    different ``demo_session_id``) returns 404 too — the shared demo
+    account is single-record, so record scope alone can't isolate
+    visitors. Seeded Topics (scope NULL) stay resolvable by everyone.
+    Passing ``request`` is a no-op outside demo mode.
     """
     result = await db.execute(
         select(Topic)
@@ -338,6 +362,9 @@ async def _resolve_topic_or_404(
     )
     t = result.scalar_one_or_none()
     if t is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic not found")
+    if request is not None and not demo_scope_visible(t.scope, request):
+        # Don't disclose that another visitor's dossier exists.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic not found")
     return t
 
@@ -374,6 +401,7 @@ def _clean_cluster_header(rep_label: str) -> str:
 @router.get("/{slug}")
 async def get_topic_dossier(
     slug: str,
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> DossierResponse:
@@ -386,7 +414,7 @@ async def get_topic_dossier(
     `/clusters/{cluster_id}/facts`.
     """
     topic = await _resolve_topic_or_404(
-        db, slug, person_record_id=ctx.active_record_id,
+        db, slug, person_record_id=ctx.active_record_id, request=request,
     )
     clause = topic_membership_clause(topic)
     if clause is None:
@@ -528,6 +556,7 @@ async def get_topic_dossier(
 async def get_cluster_facts(
     slug: str,
     cluster_id: str,
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
     limit: int = 500,
@@ -540,7 +569,7 @@ async def get_cluster_facts(
     per-metric layer (#46) once that lands.
     """
     topic = await _resolve_topic_or_404(
-        db, slug, person_record_id=ctx.active_record_id,
+        db, slug, person_record_id=ctx.active_record_id, request=request,
     )
     clause = topic_membership_clause(topic)
     if clause is None:
@@ -625,6 +654,7 @@ async def _latest_brief(db: AsyncSession, topic_id: uuid.UUID) -> TopicBrief | N
 @router.get("/{slug}/brief")
 async def get_latest_brief(
     slug: str,
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> ExecBriefResponse | None:
@@ -635,7 +665,7 @@ async def get_latest_brief(
     been written.
     """
     topic = await _resolve_topic_or_404(
-        db, slug, person_record_id=ctx.active_record_id,
+        db, slug, person_record_id=ctx.active_record_id, request=request,
     )
     brief = await _latest_brief(db, topic.id)
     return _brief_response(topic.slug, brief)
@@ -644,6 +674,7 @@ async def get_latest_brief(
 @router.post("/{slug}/brief")
 async def generate_exec_brief(
     slug: str,
+    request: Request,
     ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> ExecBriefResponse:
@@ -655,7 +686,7 @@ async def generate_exec_brief(
     user = ctx.user
     require_phi_consent(user)
     topic = await _resolve_topic_or_404(
-        db, slug, person_record_id=ctx.active_record_id,
+        db, slug, person_record_id=ctx.active_record_id, request=request,
     )
     facts = await facts_for_topic(
         db, topic, person_record_id=ctx.active_record_id,
@@ -787,6 +818,7 @@ async def _thread_for_topic(db: AsyncSession, topic_id: uuid.UUID) -> list[Brief
 @router.get("/{slug}/thread")
 async def get_brief_thread(
     slug: str,
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[BriefMessageReadout]:
@@ -798,7 +830,7 @@ async def get_brief_thread(
     interact through /api/conversations/{id}/messages.
     """
     topic = await _resolve_topic_or_404(
-        db, slug, person_record_id=ctx.active_record_id,
+        db, slug, person_record_id=ctx.active_record_id, request=request,
     )
     msgs = await _thread_for_topic(db, topic.id)
     return [_msg_readout(m) for m in msgs]
@@ -822,6 +854,7 @@ class DossierConversationOut(BaseModel):
 @router.get("/{slug}/conversations", response_model=list[DossierConversationOut])
 async def list_topic_conversations(
     slug: str,
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> list[DossierConversationOut]:
@@ -850,7 +883,7 @@ async def list_topic_conversations(
     from ..models.conversation import Conversation
     user = ctx.user
     topic = await _resolve_topic_or_404(
-        db, slug, person_record_id=ctx.active_record_id,
+        db, slug, person_record_id=ctx.active_record_id, request=request,
     )
     rows = list((await db.execute(
         select(Conversation)
@@ -894,6 +927,7 @@ async def list_topic_conversations(
              status_code=status.HTTP_201_CREATED)
 async def get_or_create_topic_conversation(
     slug: str,
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> TopicConversationOut:
@@ -909,7 +943,7 @@ async def get_or_create_topic_conversation(
     from ..models.conversation import Conversation
     user = ctx.user
     topic = await _resolve_topic_or_404(
-        db, slug, person_record_id=ctx.active_record_id,
+        db, slug, person_record_id=ctx.active_record_id, request=request,
     )
 
     # Manual scope.topic_slug lookup — JSONB containment query.
@@ -953,6 +987,7 @@ class AttachConversationToTopicResponse(BaseModel):
 async def attach_conversation_to_topic_route(
     slug: str,
     body: AttachConversationToTopicRequest,
+    request: Request,
     ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> AttachConversationToTopicResponse:
@@ -978,7 +1013,7 @@ async def attach_conversation_to_topic_route(
 
     user = ctx.user
     topic = await _resolve_topic_or_404(
-        db, slug, person_record_id=ctx.active_record_id,
+        db, slug, person_record_id=ctx.active_record_id, request=request,
     )
     conv = await db.get(Conversation, body.conversation_id)
     # M02 perimeter: attach is only legal for a same-record
@@ -1027,6 +1062,7 @@ async def attach_conversation_to_topic_route(
 async def ask_followup(
     slug: str,
     body: FollowupRequest,
+    request: Request,
     ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> list[BriefMessageReadout]:
@@ -1045,7 +1081,7 @@ async def ask_followup(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty question")
 
     topic = await _resolve_topic_or_404(
-        db, slug, person_record_id=ctx.active_record_id,
+        db, slug, person_record_id=ctx.active_record_id, request=request,
     )
 
     # Self-harm input guard. The user message gets persisted (so the

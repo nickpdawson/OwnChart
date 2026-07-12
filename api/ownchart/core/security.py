@@ -2,13 +2,21 @@ import secrets
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from itsdangerous import BadSignature, URLSafeSerializer
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from .config import get_settings
 
 _ph = PasswordHasher()
 _settings = get_settings()
-_serializer = URLSafeSerializer(_settings.session_secret.get_secret_value(), salt="ownchart-session")
+# Timed serializer (HIGH-5): the signed payload now carries an issue
+# timestamp so a captured cookie can be expired server-side. Combined
+# with the `stv` (session_token_version) field embedded by the auth
+# layer, this gives us BOTH time-based expiry (a stolen cookie is
+# useless after SESSION_MAX_AGE_SECONDS) and instant revocation (bump
+# the user's session_token_version to invalidate every live cookie).
+_serializer = URLSafeTimedSerializer(
+    _settings.session_secret.get_secret_value(), salt="ownchart-session",
+)
 
 
 def hash_password(plain: str) -> str:
@@ -26,10 +34,22 @@ def sign_session(payload: dict) -> str:
     return _serializer.dumps(payload)
 
 
-def unsign_session(token: str) -> dict | None:
+def unsign_session(token: str, *, max_age: int | None = None) -> dict | None:
+    """Verify + decode a session cookie.
+
+    Enforces the signing timestamp: a cookie older than ``max_age``
+    seconds (default ``settings.session_max_age_seconds``) is rejected
+    exactly like a tampered signature — returns ``None``. Callers that
+    want an unbounded read (none currently) can pass ``max_age`` large,
+    but the default is the load-bearing expiry gate for web sessions.
+    """
+    if max_age is None:
+        max_age = _settings.session_max_age_seconds
     try:
-        return _serializer.loads(token)
-    except BadSignature:
+        return _serializer.loads(token, max_age=max_age)
+    except (SignatureExpired, BadSignature):
+        # SignatureExpired subclasses BadSignature, but list it
+        # explicitly so the intent (expiry is a hard failure) is clear.
         return None
 
 

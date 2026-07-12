@@ -26,13 +26,26 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Request,
+    status,
+)
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.auth_context import AuthContext, get_auth_context, require_role
+from ..core.config import get_settings
 from ..core.db import get_session
+from ..core.demo_session import (
+    demo_seeded_or_owned_clause,
+    demo_topic_clause_for_sid,
+    get_demo_session_id,
+)
 from ..llm.providers import available_providers
 from ..models.conversation import Conversation
 from ..models.episode import Episode
@@ -98,19 +111,41 @@ class HomeAiPartnerResponse(BaseModel):
     insight: HomeInsight | None = None
 
 
-# Insight cache: (user_id, person_record_id, YYYY-MM-DD) →
-# HomeInsight | None. None means "we tried today and the model
-# declined / failed — don't re-try until tomorrow". The
-# person_record_id dimension is load-bearing: caregivers switching
-# between Mom's and Dad's records must see different insights.
+# Insight cache: (user_id, person_record_id, YYYY-MM-DD, demo_session_id)
+# → HomeInsight | None (see _insight_cache_key). None means "we tried
+# today and the model declined / failed — don't re-try until tomorrow".
+# The person_record_id dimension is load-bearing: caregivers switching
+# between Mom's and Dad's records must see different insights. The
+# demo_session_id dimension (HIGH-8) keeps demo visitors' insights
+# separate on the shared demo account.
 # Single-process scope is fine for V1; if the API scales horizontally
 # we'd move this to Redis.
 _INSIGHT_CACHE: dict[tuple, HomeInsight | None] = {}
 
 
+def _insight_cache_key(
+    user_id: uuid.UUID,
+    person_record_id: uuid.UUID,
+    day_iso: str,
+    demo_session_id: str | None = None,
+) -> tuple:
+    """Cache key for the daily Home insight.
+
+    HIGH-8 / MED-13: in demo mode ``user_id`` + ``person_record_id`` are
+    the SAME shared demo account for every visitor, so without the
+    ``demo_session_id`` dimension visitor A's cached insight (built over
+    A's typed conversations/topics) is served to visitor B. Include the
+    per-visitor id so each visitor's insight is stored independently.
+    Outside demo mode ``demo_session_id`` is None and the key is
+    unchanged from the pre-fix (user, record, day) shape.
+    """
+    return (user_id, person_record_id, day_iso, demo_session_id)
+
+
 @router.get("/ai-partner", response_model=HomeAiPartnerResponse)
 async def get_home_ai_partner(
     background_tasks: BackgroundTasks,
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
 ) -> HomeAiPartnerResponse:
@@ -121,6 +156,12 @@ async def get_home_ai_partner(
     user = ctx.user
     out = HomeAiPartnerResponse(providers=available_providers())
     now = datetime.now(timezone.utc)
+    # Demo per-visitor isolation (HIGH-8): computed once up front so
+    # every visitor-writable reader below (topics, conversations,
+    # episodes, insight cache) can gate consistently. Both are inert
+    # outside demo mode.
+    demo = get_settings().demo_mode
+    demo_sid = get_demo_session_id(request) if demo else None
 
     # ---------------------------------------------------------------
     # Suggested questions — phrasings live in
@@ -171,11 +212,18 @@ async def get_home_ai_partner(
             "phrase": phrase,
         }
 
-    top_topic = (await db.execute(
+    top_topic_stmt = (
         select(Topic)
         .where(Topic.person_record_id == ctx.active_record_id)
         .order_by(Topic.created_at.asc()).limit(1)
-    )).scalar_one_or_none()
+    )
+    if demo:
+        top_topic_stmt = top_topic_stmt.where(
+            demo_seeded_or_owned_clause(
+                request, table="topics", json_col="scope",
+            )
+        )
+    top_topic = (await db.execute(top_topic_stmt)).scalar_one_or_none()
     topic_ctx: dict[str, Any] | None = None
     if top_topic is not None:
         topic_ctx = {
@@ -205,7 +253,10 @@ async def get_home_ai_partner(
     # ---------------------------------------------------------------
     # Recent conversations
     # ---------------------------------------------------------------
-    convs = list((await db.execute(
+    # Demo isolation (HIGH-8): the shared demo account would otherwise
+    # surface every prior visitor's typed Ask threads here. Mirror the
+    # conversations-list filter — a visitor with no cookie yet sees none.
+    conv_stmt = (
         select(Conversation)
         .where(Conversation.user_id == user.id)
         .where(Conversation.person_record_id == ctx.active_record_id)
@@ -213,7 +264,17 @@ async def get_home_ai_partner(
         .order_by(Conversation.last_message_at.desc().nullslast(),
                   Conversation.created_at.desc())
         .limit(5)
-    )).scalars().all())
+    )
+    if demo:
+        if demo_sid:
+            conv_stmt = conv_stmt.where(
+                text("conversations.scope->>'demo_session_id' = :dsid")
+                .bindparams(dsid=demo_sid)
+            )
+        else:
+            # No cookie yet — don't dump the shared list.
+            conv_stmt = conv_stmt.where(text("1 = 0"))
+    convs = list((await db.execute(conv_stmt)).scalars().all())
     out.recent_conversations = [
         RecentConversation(
             id=str(c.id),
@@ -229,12 +290,26 @@ async def get_home_ai_partner(
     # ---------------------------------------------------------------
     # Recent canonical Episodes — permanence on Home (2026-05-11 PM)
     # ---------------------------------------------------------------
-    eps = list((await db.execute(
+    ep_stmt = (
         select(Episode)
         .where(Episode.person_record_id == ctx.active_record_id)
         .order_by(Episode.date_start.desc().nullslast(), Episode.created_at.desc())
         .limit(6)
-    )).scalars().all())
+    )
+    if demo:
+        # Seeded episodes (created_by imported/llm/heuristic) stay
+        # visible to all; a visitor's own saved events are gated by
+        # payload->>demo_session_id. Mirrors routes/episodes.py.
+        if demo_sid:
+            ep_stmt = ep_stmt.where(
+                text(
+                    "(episodes.created_by != 'user' "
+                    "OR episodes.payload->>'demo_session_id' = :dsid)"
+                ).bindparams(dsid=demo_sid)
+            )
+        else:
+            ep_stmt = ep_stmt.where(text("episodes.created_by != 'user'"))
+    eps = list((await db.execute(ep_stmt)).scalars().all())
     out.recent_episodes = [
         RecentEpisode(
             id=str(e.id),
@@ -293,12 +368,21 @@ async def get_home_ai_partner(
     # recent fact-text matches via Topic.created_at + a count subquery
     # would be ideal, but for V1 we just list the two most-recent
     # topics — the topic-membership runtime is downstream of /dossier.
-    dossier_rows = list((await db.execute(
+    dossier_stmt = (
         select(Topic)
         .where(Topic.person_record_id == ctx.active_record_id)
         .order_by(Topic.created_at.desc())
         .limit(2)
-    )).scalars().all())
+    )
+    if demo:
+        # HIGH-8: don't surface another visitor's save-as-topic dossier
+        # as a make-sense target. Seeded topics (scope NULL) still show.
+        dossier_stmt = dossier_stmt.where(
+            demo_seeded_or_owned_clause(
+                request, table="topics", json_col="scope",
+            )
+        )
+    dossier_rows = list((await db.execute(dossier_stmt)).scalars().all())
     for t in dossier_rows:
         out.make_sense_targets.append(MakeSenseTarget(
             kind="dossier",
@@ -336,12 +420,24 @@ async def get_home_ai_partner(
         # intersects the recent set. JSON containment is expensive on
         # large tables; for V1 we approximate by listing recent
         # conversations and checking client-side.
-        conv_scopes = list((await db.execute(
+        opened_stmt = (
             select(Conversation.scope)
             .where(Conversation.user_id == user.id)
             .where(Conversation.person_record_id == ctx.active_record_id)
             .where(Conversation.created_at >= cutoff_30)
-        )).scalars().all())
+        )
+        if demo:
+            # Only THIS visitor's conversations decide which sources are
+            # "already opened" — otherwise visitor B's opened set would
+            # hide A's suggestions and vice versa.
+            if demo_sid:
+                opened_stmt = opened_stmt.where(
+                    text("conversations.scope->>'demo_session_id' = :dsid")
+                    .bindparams(dsid=demo_sid)
+                )
+            else:
+                opened_stmt = opened_stmt.where(text("1 = 0"))
+        conv_scopes = list((await db.execute(opened_stmt)).scalars().all())
         opened_ids: set[str] = set()
         for sc in conv_scopes:
             if not isinstance(sc, dict):
@@ -380,7 +476,11 @@ async def get_home_ai_partner(
     # caregiver switching records gets each record's insight
     # independently. Same user_id viewing two different records
     # must NOT see the same cached body.
-    key = (user.id, ctx.active_record_id, now.date().isoformat())
+    # HIGH-8: also key by the demo visitor id so one visitor's insight
+    # never renders for another on the shared demo account.
+    key = _insight_cache_key(
+        user.id, ctx.active_record_id, now.date().isoformat(), demo_sid,
+    )
     if key in _INSIGHT_CACHE:
         out.insight = _INSIGHT_CACHE[key]
     else:
@@ -389,13 +489,18 @@ async def get_home_ai_partner(
             user_id=user.id,
             person_record_id=ctx.active_record_id,
             day_iso=now.date().isoformat(),
+            demo_session_id=demo_sid,
         )
 
     return out
 
 
 async def _background_build_home_insight(
-    *, user_id: uuid.UUID, person_record_id: uuid.UUID, day_iso: str,
+    *,
+    user_id: uuid.UUID,
+    person_record_id: uuid.UUID,
+    day_iso: str,
+    demo_session_id: str | None = None,
 ) -> None:
     """Runs the home_insight prompt out-of-band so the home GET
     returns immediately. Opens its own DB session because the
@@ -405,6 +510,10 @@ async def _background_build_home_insight(
     is captured at schedule-time and passed in, so the background
     run can never drift to a different record's insight even if
     the user switches records before the background fires.
+
+    HIGH-8: the demo visitor id is likewise captured at schedule-time
+    and threaded through so the background build reads only this
+    visitor's conversations/topics and caches under the per-visitor key.
     """
     from ..core.db import SessionLocal
     from ..core.logger import get_logger
@@ -425,6 +534,7 @@ async def _background_build_home_insight(
             await _build_home_insight(
                 db, user, now,
                 person_record_id=person_record_id,
+                demo_session_id=demo_session_id,
             )
     except Exception as e:  # noqa: BLE001
         log.warning(
@@ -438,6 +548,7 @@ async def _build_home_insight(
     *,
     person_record_id: uuid.UUID,
     force_refresh: bool = False,
+    demo_session_id: str | None = None,
 ) -> HomeInsight | None:
     """Run the home_insight prompt over recent record state and cache
     the result for the rest of the UTC day. Returns None when the
@@ -452,8 +563,17 @@ async def _build_home_insight(
     only, no default). Every fact/conversation/topic query is scoped
     to the record; the cache key carries the record dimension so two
     records' insights are stored independently for the same user.
+
+    HIGH-8: `demo_session_id` (demo mode only) further partitions the
+    cache key AND filters the visitor-writable context (conversation
+    titles, active dossiers, topics) so a visitor's insight never mixes
+    in another visitor's typed content on the shared demo account.
     """
-    key = (user.id, person_record_id, now.date().isoformat())
+    demo = get_settings().demo_mode
+    key = _insight_cache_key(
+        user.id, person_record_id, now.date().isoformat(),
+        demo_session_id if demo else None,
+    )
     if not force_refresh and key in _INSIGHT_CACHE:
         return _INSIGHT_CACHE[key]
 
@@ -483,13 +603,15 @@ async def _build_home_insight(
         .limit(40)
     )).scalars().all())
 
-    topics_list = list((await db.execute(
+    # HIGH-8: in demo mode filter the visitor-writable context to THIS
+    # visitor. Seeded Topics (scope NULL) stay visible; a visitor's own
+    # save-as-topic dossiers and typed conversations are per-visitor.
+    topics_stmt = (
         select(Topic)
         .where(Topic.person_record_id == person_record_id)
         .order_by(Topic.created_at.asc())
-    )).scalars().all())
-
-    recent_convo_titles = list((await db.execute(
+    )
+    convo_titles_stmt = (
         select(Conversation.title)
         .where(Conversation.user_id == user.id)
         .where(Conversation.person_record_id == person_record_id)
@@ -498,6 +620,23 @@ async def _build_home_insight(
         .where(Conversation.created_at >= cutoff_30)
         .order_by(Conversation.created_at.desc())
         .limit(10)
+    )
+    if demo:
+        topics_stmt = topics_stmt.where(
+            demo_topic_clause_for_sid(demo_session_id)
+        )
+        if demo_session_id:
+            convo_titles_stmt = convo_titles_stmt.where(
+                text("conversations.scope->>'demo_session_id' = :dsid")
+                .bindparams(dsid=demo_session_id)
+            )
+        else:
+            convo_titles_stmt = convo_titles_stmt.where(text("1 = 0"))
+
+    topics_list = list((await db.execute(topics_stmt)).scalars().all())
+
+    recent_convo_titles = list((await db.execute(
+        convo_titles_stmt
     )).scalars().all())
 
     # If the record is too sparse to observe anything, don't even
@@ -613,6 +752,7 @@ async def _build_home_insight(
 
 @router.post("/insight/refresh", response_model=HomeInsight)
 async def refresh_home_insight(
+    request: Request,
     ctx: AuthContext = Depends(require_role("caregiver")),
     db: AsyncSession = Depends(get_session),
 ) -> HomeInsight:
@@ -630,10 +770,14 @@ async def refresh_home_insight(
     """
     user = ctx.user
     now = datetime.now(timezone.utc)
+    demo_sid = (
+        get_demo_session_id(request) if get_settings().demo_mode else None
+    )
     insight = await _build_home_insight(
         db, user, now,
         person_record_id=ctx.active_record_id,
         force_refresh=True,
+        demo_session_id=demo_sid,
     )
     if insight is None:
         raise HTTPException(

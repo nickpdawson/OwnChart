@@ -834,6 +834,11 @@ async def save_as_topic_route(
         related_concepts=[],
         created_by=user.id,
         person_record_id=ctx.active_record_id,
+        # MED-7: stamp the per-visitor demo session id so a Topic a demo
+        # visitor creates isn't visible to other visitors of the shared
+        # demo account (topics list / stats / fact-context / Home). NULL
+        # outside demo mode — non-demo Topics are unchanged.
+        scope=apply_demo_session_scope(None, request) or None,
     )
     db.add(topic)
     await db.flush()

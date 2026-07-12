@@ -26,13 +26,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.auth_context import AuthContext, get_auth_context
+from ..core.config import get_settings
 from ..core.db import get_session
+from ..core.demo_session import get_demo_session_id
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
@@ -367,6 +369,7 @@ def _source_event_date_expr():
 
 @router.get("")
 async def get_timeline(
+    request: Request,
     ctx: AuthContext = Depends(get_auth_context),
     db: AsyncSession = Depends(get_session),
     from_: datetime | None = Query(default=None, alias="from"),
@@ -631,14 +634,30 @@ async def get_timeline(
     # Canonical episodes that fall inside the window — bucket them
     # by start date so each year/period card carries its episode set.
     from ..models.episode import Episode
-    ep_rows = list((await db.execute(
+    ep_stmt = (
         select(Episode)
         .where(Episode.person_record_id == ctx.active_record_id)
         .where(Episode.date_start.isnot(None))
         .where(Episode.date_start >= from_)
         .where(Episode.date_start <= to_)
         .order_by(Episode.date_start.asc())
-    )).scalars().all())
+    )
+    if get_settings().demo_mode:
+        # HIGH-8: saved Episodes on the shared demo account must not
+        # bleed across visitors on the timeline. Seeded episodes
+        # (created_by != 'user') stay visible; a visitor's own saves are
+        # gated by payload->>demo_session_id. Mirrors routes/episodes.py.
+        _sid = get_demo_session_id(request)
+        if _sid:
+            ep_stmt = ep_stmt.where(
+                text(
+                    "(episodes.created_by != 'user' "
+                    "OR episodes.payload->>'demo_session_id' = :dsid)"
+                ).bindparams(dsid=_sid)
+            )
+        else:
+            ep_stmt = ep_stmt.where(text("episodes.created_by != 'user'"))
+    ep_rows = list((await db.execute(ep_stmt)).scalars().all())
     eps_by_bucket: dict[datetime, list[BucketEpisode]] = {}
     for ep in ep_rows:
         if ep.date_start is None:
