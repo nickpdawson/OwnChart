@@ -1,19 +1,19 @@
 # Privacy
 
-*Last updated: 2026-05-11*
+*Last updated: 2026-07-20*
 
 OwnChart is a self-hosted, patient-owned platform. The most important sentence in this policy:
 
-> **The developer of OwnChart does not operate a service that receives your health data.** The OwnChart iOS app and OwnChart server-side software talk only to a server you set up and control. Nothing about you, your record, or your activity reaches us — because there is no "us" running anything that could.
+> **Shift Human LLC, the developer of OwnChart, does not operate a service that receives your health data.** The OwnChart iOS app and OwnChart server-side software talk only to a server you set up and control. Nothing about you, your record, or your activity reaches us — because there is no "us" running anything that could.
 
-This document describes the narrow circumstances in which any data *is* handled by the project maintainer, and what is promised about it.
+This document describes the narrow circumstances in which any data *is* handled by Shift Human LLC, and what is promised about it.
 
 ## The short version
 
 - **The marketing site (`www.ownchart.me`)** — static pages served from Cloudflare's edge. No analytics. No tracking pixels. No cookies set by us.
 - **The OwnChart iOS app** — reads HealthKit data with your permission and sends it only to the OwnChart server URL you configure. We never receive it. There is no developer-operated backend.
 - **The OwnChart server software** — runs on hardware you control. Your data stays on your disk. AI features are off by default and require explicit consent per call.
-- **The public demo at `demo.ownchart.me`** — operated by the project maintainer for App Store review and curious visitors. Preloaded with synthetic FHIR-sandbox data; no real patient records. Web-server logs are kept ≤14 days for abuse prevention, then deleted.
+- **The public demo at `demo.ownchart.me`** — operated by Shift Human LLC for App Store review and curious visitors. Preloaded with synthetic FHIR-sandbox data; no real patient records. Web-server logs are kept ≤14 days for abuse prevention, then deleted.
 
 ## What the iOS app collects
 
@@ -44,7 +44,7 @@ Data is sent to your server on a schedule you control. The app maintains a local
 
 ## What the server software handles (on your own hardware)
 
-Your medical records and HealthKit data live on disk on the server *you* operate. The project maintainer does not have access. The complete source of the server software is open in this repository; the relevant doctrine and security model are documented in [PHILOSOPHY.md](./PHILOSOPHY.md) and [SECURITY.md](./SECURITY.md).
+Your medical records and HealthKit data live on disk on the server *you* operate. Shift Human LLC does not have access. The complete source of the server software is open in this repository; the relevant doctrine and security model are documented in [PHILOSOPHY.md](./PHILOSOPHY.md) and [SECURITY.md](./SECURITY.md).
 
 When you enable AI features on your server:
 
@@ -55,15 +55,15 @@ When you enable AI features on your server:
 
 ## What `demo.ownchart.me` handles
 
-This is the one surface where the project maintainer operates a service that touches user activity. It has been kept deliberately minimal:
+This is the one surface where Shift Human LLC operates a service that touches user activity. It has been kept deliberately minimal:
 
 - The demo server runs the same OwnChart software you would run yourself.
 - It is preloaded with synthetic FHIR-sandbox patient data. There is no real patient information.
 - The single shared `demo@ownchart.me` account is public; anyone may sign in.
 - Standard NGINX access logs are kept (IP address, timestamp, request path, user agent) for **no more than 14 days** for abuse mitigation. These logs are not joined to any identity, not analyzed for product purposes, not shared with third parties.
-- The demo server uses an LLM provider configured by the maintainer. AI features run against synthetic data with the standard consent gate.
+- The demo server uses an LLM provider configured by Shift Human LLC. AI features run against synthetic data with the standard consent gate.
 
-**Don't put real medical information into the demo.** Anything you type into a form on the demo (e.g., the Ask box) is processed by the demo's LLM provider; because the underlying record is synthetic and the account is shared, your input may also be visible to other people using the demo account after you.
+**Don't put real medical information into the demo.** Anything you type into the Ask box is processed by the demo's LLM provider and stored on the demo database for up to 24 hours, after which it is automatically purged. Per-visitor scoping prevents the next visitor from seeing your chat history, but the demo exists to evaluate the product, not to hold your own record.
 
 ## What the marketing site does
 
@@ -84,7 +84,7 @@ OwnChart is intended for adults managing their own (or a delegated person's) hea
 
 ## International data transfers
 
-Because no personal data is transferred to the project maintainer, this section is short. Cloudflare serves the marketing site from edge nodes worldwide. GitHub hosts the source on its own infrastructure. The demo server is located in the United States.
+Because no personal data is transferred to Shift Human LLC, this section is short. Cloudflare serves the marketing site from edge nodes worldwide. GitHub hosts the source on its own infrastructure. The demo server is located in the United States.
 
 ## Your rights
 
@@ -103,7 +103,7 @@ Material changes appear in the git history of `site/privacy.html` and `PRIVACY.m
 
 ## Contact
 
-For privacy questions, open an issue at <https://github.com/nickpdawson/OwnChart/issues>. For sensitive disclosures, open a private GitHub Security Advisory at <https://github.com/nickpdawson/OwnChart/security/advisories/new>.
+OwnChart is developed and maintained by **Shift Human LLC**. For privacy questions, open an issue at <https://github.com/nickpdawson/OwnChart/issues>. For sensitive disclosures, open a private GitHub Security Advisory at <https://github.com/nickpdawson/OwnChart/security/advisories/new>.
 
 ---
 
