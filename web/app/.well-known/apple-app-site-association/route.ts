@@ -11,11 +11,11 @@ import { NextResponse } from "next/server";
 // and it MUST be served as HTTP 200 with Content-Type: application/json,
 // no redirect and no auth, or Universal Links silently fail to register.
 //
-// TEAM ID: currently the PERSONAL Apple Developer account. This MUST be
-// swapped to the Shift Human LLC team ID once Nick supplies it (plan task
-// 1.5). It is the Apple Developer Team ID that prefixes the app's bundle
-// identifier to form the full appID. If this is wrong, iOS will refuse to
-// associate the domain and deep links open in Safari instead of the app.
+// TEAM ID: Shift Human LLC. The Apple account was converted in place from
+// the personal account to the LLC org (2026-07-20), so the Team ID carried
+// over unchanged — confirmed against Xcode Signing & Capabilities. It
+// prefixes the bundle identifier to form the full appID; if this is wrong,
+// iOS refuses to associate the domain and deep links open in Safari.
 export const APPLE_TEAM_ID = "3ELWNV29J2";
 
 // The app's bundle identifier. appID = <TEAM_ID>.<BUNDLE_ID>.
