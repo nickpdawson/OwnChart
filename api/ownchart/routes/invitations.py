@@ -10,9 +10,15 @@ single-use invite, copies the URL out of band, invitee registers."
                                     caller owns.
   DELETE /api/invitations/{id}      Revoke an invite (creator or
                                     record owner). Idempotent.
-  GET    /api/invitations/preview   UNAUTH. Takes ?token=... and
-                                    returns the invite shape for
-                                    the accept page.
+  POST   /api/invitations/preview   UNAUTH. Takes the token in the
+                                    JSON body and returns the invite
+                                    shape for the accept page. LINK-01:
+                                    body-not-query so the token never
+                                    lands in access logs.
+  GET    /api/invitations/preview   UNAUTH. DEPRECATED — same as the
+                                    POST variant but takes ?token=...
+                                    (leaks into access logs). Remove
+                                    once iOS 1.3 uses POST.
 
 Acceptance happens in `routes/auth.py::register` — the register
 route consumes `invite_token` and runs the membership/record
@@ -143,6 +149,17 @@ class InvitePreviewResponse(BaseModel):
     target_display_name: str | None
     proposed_record_name: str | None
     expires_at: datetime
+
+
+class PreviewInviteRequest(BaseModel):
+    """Body of `POST /api/invitations/preview` (LINK-01).
+
+    Carries the raw invite token in the JSON body instead of the URL
+    query string, so the token can't be captured by reverse-proxy or
+    web-server access logs the way a `?token=...` GET is. The response
+    shape and 410 no-state-leak behavior are identical to the GET
+    variant it supersedes."""
+    token: str
 
 
 # ---------------------------------------------------------------------------
@@ -559,25 +576,25 @@ async def revoke_invitation(
 
 
 # ---------------------------------------------------------------------------
-# GET /api/invitations/preview  (unauthenticated)
+# Invite preview  (unauthenticated) — GET (deprecated) + POST (LINK-01)
 
 
-@router.get("/preview")
-async def preview_invitation(
+async def _resolve_invite_preview(
     token: str,
     request: Request,
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession,
 ) -> InvitePreviewResponse:
-    """Public preview for the /invite/[token] accept page.
+    """Shared preview resolution for the GET and POST variants.
 
-    Looks up by lookup prefix, then verifies token hash. Returns
-    410 Gone for expired / accepted / revoked invites — the SAME
-    response shape regardless, so we don't leak which terminal
+    Looks up by lookup prefix, then verifies the token hash. Returns
+    410 Gone for expired / accepted / revoked / unknown invites — the
+    SAME response shape regardless, so we don't leak which terminal
     state the invite is in.
 
-    Never echoes the token back. Never leaks the inviter's
-    identity. Only the minimum the invitee needs to understand
-    the invite they're about to accept.
+    Applies the SAME per-IP `invite_preview` rate-limit bucket for both
+    entrypoints. Never echoes the token back, never logs it, never leaks
+    the inviter's identity. Only the minimum the invitee needs to
+    understand the invite they're about to accept.
     """
     from ..core.security import verify_invite_token
 
@@ -647,6 +664,37 @@ async def preview_invitation(
         proposed_record_name=invite.proposed_record_name,
         expires_at=invite.expires_at,
     )
+
+
+@router.post("/preview")
+async def preview_invitation_post(
+    body: PreviewInviteRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+) -> InvitePreviewResponse:
+    """Public preview for the /invite/[token] accept page (LINK-01).
+
+    The token travels in the JSON body, NOT the URL, so it is never
+    written to reverse-proxy / web-server access logs. This is the
+    preferred entrypoint; the GET variant below is deprecated.
+    """
+    return await _resolve_invite_preview(body.token, request, db)
+
+
+@router.get("/preview")
+async def preview_invitation(
+    token: str,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+) -> InvitePreviewResponse:
+    """DEPRECATED — use `POST /api/invitations/preview` (LINK-01).
+
+    The token rides in the query string here, which leaks it into
+    reverse-proxy / access logs. Kept only until the iOS 1.3 client
+    switches to the POST/body variant; remove this route once iOS 1.3
+    has shipped and no client calls GET .../preview anymore.
+    """
+    return await _resolve_invite_preview(token, request, db)
 
 
 # ---------------------------------------------------------------------------
