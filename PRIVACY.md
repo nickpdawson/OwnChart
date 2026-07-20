@@ -40,7 +40,7 @@ Only what you grant. Apple's HealthKit framework requires you to approve each da
 - Medications and symptoms logged in Apple Health
 - Mindfulness sessions
 
-Data is sent to your server on a schedule you control. The app maintains a local pending-upload queue if your server is offline; this queue is cleared on successful delivery and persists no longer than necessary.
+Data is sent to your server on a schedule you control. The app maintains a local pending-upload queue if your server is offline; the queue is cleared on successful delivery, and queued health uploads are kept on-device for **no more than 7 days** before being discarded. Signing out, switching servers, or deleting your account discards locally pending data and erases local sync state. Audio you record or import is staged locally only until the upload completes, is cancelled, or fails — the staging file is deleted in every case.
 
 ## What the server software handles (on your own hardware)
 
