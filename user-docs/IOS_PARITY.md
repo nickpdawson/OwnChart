@@ -235,9 +235,7 @@ Stop polling when:
 - `scope.status === "failed"` (background hit an error; the assistant message will explain), OR
 - 5 minutes elapsed (give up; surface a graceful timeout error).
 
-While polling, show "OwnChart is reading the record …" + one-line explainer (per A3, prefer concrete metric names over "wearable"):
-
-> "Pulling the procedure, anesthesia notes, discharge instructions, and the health-data windows (sleep, heart rate, workouts) around the date. Usually 30–60 seconds."
+While polling, show "Reading your record…" next to a progress spinner. The previous second-line copy that enumerated "procedure / anesthesia / discharge instructions / health-data windows" was surgery-specific and misleading for non-surgical questions; the spinner + headline carries the wait on its own.
 
 Server stamps `scope.anchor_fact_id` when the planner finishes resolving the anchor — clients can use that to navigate to the Event once the user has saved.
 
