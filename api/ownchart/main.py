@@ -84,6 +84,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 # defense; this is belt-and-suspenders + DB hygiene.
                 purged = await purge_stale_demo_state_if_needed(db)
                 log.info("demo_state_purged", **purged)
+            # P0-1: mint/clear the first-owner bootstrap setup token. Runs
+            # AFTER any demo seed so a seeded demo user correctly closes the
+            # bootstrap window. On a genuinely fresh self-host DB (zero
+            # users) this logs a one-time token the operator uses at /setup.
+            from sqlalchemy import func, select as _select
+            from .core.setup_token import provision_setup_token_if_needed
+            from .models.user import User as _User
+            user_count = (
+                await db.execute(_select(func.count()).select_from(_User))
+            ).scalar_one()
+            provision_setup_token_if_needed(has_users=user_count > 0)
     except Exception as e:  # noqa: BLE001
         log.warning("startup_seed_failed", error=str(e))
     yield

@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.agreements import load_latest_agreement, record_agreement_acceptance
@@ -41,6 +41,34 @@ from ..models.user import User
 router = APIRouter()
 _settings = get_settings()
 log = get_logger("ownchart.routes.auth")
+
+
+# P0-1: a stable, arbitrary 64-bit key for the transaction-level advisory
+# lock that serializes first-owner bootstrap. Any concurrent register that
+# reaches the empty-DB decision blocks here until the winner commits, then
+# sees a user exists and falls through to the invite / self-reg path.
+_BOOTSTRAP_ADVISORY_LOCK_KEY = 0x0C0C_0C01
+
+
+async def _serialize_bootstrap(db: AsyncSession) -> None:
+    """Hold a Postgres transaction-level advisory lock for the duration of
+    the registration transaction so exactly one first-owner bootstrap can
+    win under concurrency.
+
+    ``pg_advisory_xact_lock`` auto-releases at commit/rollback, so there is
+    nothing to unlock. Degrades to a no-op on any non-Postgres backend
+    (SQLite, the test fakes) — the lock only matters on the real DB, and
+    the setup-token gate is the primary takeover defense regardless."""
+    try:
+        dialect_name = db.get_bind().dialect.name
+    except Exception:  # noqa: BLE001 — test fakes have no bind; nothing to lock
+        return
+    if dialect_name != "postgresql":
+        return
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": _BOOTSTRAP_ADVISORY_LOCK_KEY},
+    )
 
 
 def _verification_expiry_note() -> str:
@@ -87,8 +115,14 @@ class RegisterRequest(LoginRequest):
     sends a non-empty `agreement_version` (+ the `consent_flags` the tester
     ticked), an `AgreementAcceptance` row is recorded. Omitting it is the
     default self-host path and changes nothing.
+
+    P0-1 (2026-07-20): the first-user (empty-DB) path now requires a
+    high-entropy `setup_token` — minted at API startup, logged once, and
+    written to `<data_dir>/setup_token`. Closes the bootstrap-takeover
+    race. The token is ignored on every non-bootstrap path.
     """
     invite_token: str | None = None
+    setup_token: str | None = None
     agreement_version: str | None = None
     consent_flags: dict | None = None
 
@@ -397,10 +431,43 @@ async def register(
         identifier=body.email,
     )
 
+    # P0-1: serialize the first-owner decision under a Postgres advisory
+    # lock BEFORE reading the user table, so two concurrent registers can't
+    # both observe an empty DB and both claim ownership. No-op off Postgres.
+    await _serialize_bootstrap(db)
+
     existing_first = (
         await db.execute(select(User).limit(1))
     ).scalars().first()
     is_first_user = existing_first is None
+
+    # P0-1: gate the bootstrap path on the one-time setup token. Neutral,
+    # enumeration-safe error codes; constant-time compare in verify.
+    if is_first_user:
+        from ..core.setup_token import verify_setup_token
+        if not body.setup_token:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "setup_token_required",
+                    "message": (
+                        "A setup token is required to create the owner "
+                        "account. Retrieve it from the API startup log or "
+                        "the data/setup_token file, then use the /setup page."
+                    ),
+                },
+            )
+        if not verify_setup_token(body.setup_token):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "setup_token_invalid",
+                    "message": (
+                        "That setup token is not valid. Check the API startup "
+                        "log or data/setup_token for the current token."
+                    ),
+                },
+            )
 
     cfg = get_app_config()
 
@@ -554,6 +621,13 @@ async def register(
 
     await db.commit()
     await db.refresh(user)
+
+    # P0-1: the owner now exists — invalidate the setup token so the
+    # bootstrap path can never be re-run. Delete after commit so a rolled-
+    # back transaction leaves the token usable for a genuine retry.
+    if is_first_user:
+        from ..core.setup_token import clear_setup_token
+        clear_setup_token()
 
     if verification_required:
         # Don't log the user in — they must verify first. Send the link

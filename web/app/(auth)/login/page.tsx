@@ -2,12 +2,12 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [mode, setMode] = useState<"login" | "register">("login");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -16,17 +16,14 @@ export default function LoginPage() {
     setError(null);
     setBusy(true);
     try {
-      const r = await fetch(`/api/auth/${mode}`, {
+      const r = await fetch(`/api/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email, password }),
         credentials: "include",
       });
       if (!r.ok) {
-        if (r.status === 403 && mode === "register") {
-          setError("Owner account already exists. Use Sign in.");
-          setMode("login");
-        } else if (r.status === 401) {
+        if (r.status === 401) {
           setError("Invalid credentials.");
         } else {
           setError("Something went wrong.");
@@ -64,7 +61,7 @@ export default function LoginPage() {
           <input
             type="password"
             required
-            autoComplete={mode === "register" ? "new-password" : "current-password"}
+            autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             className="mt-1 w-full rounded-lg border border-muted/30 bg-surface px-3 py-2"
@@ -78,17 +75,17 @@ export default function LoginPage() {
           disabled={busy}
           className="mt-2 rounded-lg bg-accent px-4 py-2 text-surface disabled:opacity-50"
         >
-          {busy ? "…" : mode === "login" ? "Sign in" : "Create owner account"}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setMode(mode === "login" ? "register" : "login")}
-          className="mt-2 text-sm text-muted underline-offset-4 hover:underline"
-        >
-          {mode === "login" ? "First time? Create the owner account." : "Already have an account? Sign in."}
+          {busy ? "…" : "Sign in"}
         </button>
       </form>
+
+      <p className="mt-8 text-sm text-muted">
+        Setting up this server?{" "}
+        <Link href="/setup" className="underline-offset-4 hover:underline">
+          Create the owner account
+        </Link>
+        .
+      </p>
     </main>
   );
 }

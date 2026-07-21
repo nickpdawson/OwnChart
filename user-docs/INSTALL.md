@@ -153,15 +153,38 @@ OwnChart's account-creation model is **"first registration creates
 the owner; everyone else needs an invite."**
 
 - On a fresh DB, the **first** call to `POST /api/auth/register`
-  succeeds. The new account is flagged `is_instance_admin=true`,
-  gets a personal `person_record`, and an `owner` membership on
-  that record — all in one transaction. This is the bootstrap
-  path; no invite token is required and no separate setup step.
+  creates the owner account — flagged `is_instance_admin=true`,
+  with a personal `person_record` and an `owner` membership on
+  that record, all in one transaction. This bootstrap call
+  **requires a one-time setup token** (see below). No invite
+  token is needed on this path.
 - Once any user exists, subsequent calls to `/api/auth/register`
   **require a valid `invite_token`** by default. Public
   unauthenticated registration is closed unless an operator
   explicitly opens it (see the `auth.allow_self_registration`
   knob below).
+
+**The setup token.** Without a gate, anyone who reaches the
+instance in the window between "DB is up" and "you registered"
+could claim ownership — a takeover race. To close it, the API
+mints a high-entropy **setup token** on startup, but *only* while
+the DB has zero users. Retrieve it either way:
+
+```sh
+# From the container log (minted once per unclaimed restart):
+docker compose -f infra/docker-compose.yml logs api | grep setup_token
+
+# Or from the data dir the api process owns (mode 0600):
+cat data/setup_token
+```
+
+The token is required to create the owner and is **invalidated
+the instant the owner exists** (the `data/setup_token` file is
+deleted and the bootstrap path closes permanently). If you
+restart before claiming it, a fresh token is minted — an old one
+glimpsed in a rotated log stops working. For unattended
+provisioning you can pin it with `OWNCHART_SETUP_TOKEN` in
+`infra/.env` instead of using the random per-boot value.
 - Invites are owner-issued, single-use, hashed at rest, and
   expire after 24h / 7d / 30d (owner picks at creation). The
   owner copies the resulting URL out of band — there is no
@@ -170,10 +193,14 @@ the owner; everyone else needs an invite."**
   case the invite flow enables. See [SHIPPED_VS_ROADMAP.md](./SHIPPED_VS_ROADMAP.md).
 
 **Creating the owner account.** Visit
-`https://your-instance.example.com/` (or `http://localhost:8800/`
-for a no-proxy local trial — set `OWNCHART_ENV=dev` in `.env` so the
-session cookie isn't `Secure`-required) and click **First time?
-Create the owner account.** on the login page.
+`https://your-instance.example.com/setup` (or
+`http://localhost:8800/setup` for a no-proxy local trial — set
+`OWNCHART_ENV=dev` in `.env` so the session cookie isn't
+`Secure`-required). The login page also links there via
+**Setting up this server? Create the owner account.** Paste the
+setup token, pick your owner email + password, and submit. The
+login page no longer offers a bare "create account" button — owner
+creation only happens through the token-gated `/setup` flow.
 
 **Inviting a family member or caregiver.** Sign in as an owner.
 Go to **Settings → Records → New invite**. Pick:
