@@ -462,6 +462,29 @@ async def process_personal_photo(ctx: dict[str, Any], source_id: str) -> dict[st
     }
 
 
+async def worker_heartbeat_cron(ctx: dict[str, Any]) -> None:
+    """Refresh the worker liveness key (P1-7) so ``/readyz`` can report
+    worker health without coupling the api to the worker's process state.
+
+    One cheap ``SET`` per minute with a TTL just over the cron interval; a
+    dead worker's key expires on its own and ``/readyz`` reports the worker
+    degraded (an async lane — this never fails readiness by itself).
+    """
+    import time
+
+    from ..routes.health import (
+        WORKER_HEARTBEAT_KEY,
+        WORKER_HEARTBEAT_TTL_SECONDS,
+    )
+
+    redis = ctx["redis"]
+    await redis.set(
+        WORKER_HEARTBEAT_KEY,
+        str(int(time.time())),
+        ex=WORKER_HEARTBEAT_TTL_SECONDS,
+    )
+
+
 async def purge_exports_cron(ctx: dict[str, Any]) -> dict[str, Any]:
     """Hourly arq cron (HIGH-6): hard-delete expired completed exports
     and sweep failed jobs' partial files.
@@ -505,6 +528,10 @@ class WorkerSettings:
     # only `minute` set fires once per hour (arq matches any hour/day).
     cron_jobs = [
         cron(purge_exports_cron, minute=0, run_at_startup=False),
+        # P1-7: refresh the worker liveness key every minute (unset time
+        # fields ⇒ fires at second 0 of every minute) + immediately at
+        # startup so /readyz sees a live worker as soon as it boots.
+        cron(worker_heartbeat_cron, run_at_startup=True),
     ]
     on_startup = _reenqueue_stranded_jobs
     max_jobs = 2  # one extraction is plenty heavy; cap concurrency
