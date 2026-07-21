@@ -130,7 +130,9 @@ _UNIFORM_410 = {
 # Happy path
 
 
-def test_post_preview_happy_new_record(app_fixture):
+def test_post_preview_happy_new_record_is_masked(app_fixture):
+    # P0-4: the pre-auth preview returns a MASKED email + role + target_kind
+    # + expiry, and NOTHING else — no full email, no person/record label.
     token = generate_invite_token()
     invite = _invite(token, create_new_record=True, role="owner")
     c = _client(app_fixture, _FakeSession(execute_rows=[invite]))
@@ -140,19 +142,23 @@ def test_post_preview_happy_new_record(app_fixture):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body == {
-        "invited_email": "b@example.com",
+        "invited_email_masked": "b***@e***.com",
         "role": "owner",
         "target_kind": "new_record",
-        "target_display_name": None,
-        "proposed_record_name": "New Person",
-        "expires_at": body["expires_at"],  # shape asserted below
+        "expires_at": body["expires_at"],  # presence asserted below
     }
     assert body["expires_at"]  # present
+    # The full address is never in the response body.
+    assert "b@example.com" not in r.text
+    # The proposed person name is never leaked pre-auth.
+    assert "New Person" not in r.text
     # Never echo the token back.
     assert token not in r.text
 
 
-def test_post_preview_happy_existing_record_shows_display_name(app_fixture):
+def test_post_preview_existing_record_hides_record_label(app_fixture):
+    # An existing-record invite must NOT reveal the record's display name to
+    # an unauthenticated caller — only the generic target_kind.
     token = generate_invite_token()
     rid = uuid.uuid4()
     invite = _invite(
@@ -169,9 +175,28 @@ def test_post_preview_happy_existing_record_shows_display_name(app_fixture):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["target_kind"] == "existing_record"
-    assert body["target_display_name"] == "Mom"
     assert body["role"] == "caregiver"
+    assert body["invited_email_masked"] == "b***@e***.com"
+    # No record/person label and no full email anywhere in the response.
+    assert "target_display_name" not in body
+    assert "Mom" not in r.text
+    assert "b@example.com" not in r.text
     assert token not in r.text
+
+
+def test_mask_email_shapes():
+    from ownchart.routes.invitations import mask_email
+
+    assert mask_email("nick@example.com") == "n***@e***.com"
+    assert mask_email("b@example.com") == "b***@e***.com"
+    assert mask_email("a@b.co.uk") == "a***@b***.uk"
+    # No dot in the domain (rare, but total): mask the domain too.
+    assert mask_email("x@localhost") == "x***@l***"
+    # Malformed / empty inputs collapse to a fully-masked token, never raise
+    # and never echo the raw value.
+    assert mask_email("not-an-email") == "***"
+    assert mask_email("") == "***"
+    assert mask_email("@example.com") == "***@e***.com"
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,10 @@
+Your invitation was accepted
+
+The invitation you sent to {{invited_email}} ({{role}}) on {{instance_name}}
+has been accepted. They now have access at that role.
+
+If you didn't expect this, or the person shouldn't have access, you can
+revoke their membership from Settings → Records.
+
+--
+{{instance_name}} · patient-owned health records

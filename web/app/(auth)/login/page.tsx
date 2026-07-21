@@ -79,6 +79,15 @@ export default function LoginPage() {
         </button>
       </form>
 
+      <p className="mt-4 text-sm text-muted">
+        <Link
+          href="/forgot-password"
+          className="underline-offset-4 hover:underline"
+        >
+          Forgot your password?
+        </Link>
+      </p>
+
       <p className="mt-8 text-sm text-muted">
         Setting up this server?{" "}
         <Link href="/setup" className="underline-offset-4 hover:underline">

@@ -52,8 +52,14 @@ from ..core.security import (
     verify_reset_token,
 )
 from ..models.audit_event import AuditEvent
+from ..models.invitation import Invitation
 from ..models.password_reset_token import PasswordResetToken
+from ..models.person_record import PersonRecord
 from ..models.user import User
+from .auth import (
+    _materialize_invite_membership,
+    notify_inviter_of_acceptance,
+)
 
 router = APIRouter()
 log = get_logger("ownchart.routes.auth_recovery")
@@ -340,9 +346,11 @@ async def verify_email(
     if user.email.lower().strip() != str(payload.get("email", "")).lower().strip():
         raise invalid
 
+    now = datetime.now(timezone.utc)
+    did_change = False
     if not user.email_verified:
         user.email_verified = True
-        user.email_verified_at = datetime.now(timezone.utc)
+        user.email_verified_at = now
         db.add(AuditEvent(
             user_id=user.id,
             person_record_id=user.default_person_record_id,
@@ -351,5 +359,53 @@ async def verify_email(
             subject_id=str(user.id),
             detail={},
         ))
+        did_change = True
+
+    # P0-4 mailbox-ownership gate: materialize any membership that was
+    # deferred at registration until this mailbox was proven. The invite was
+    # already consumed at register; `pending_accept_user_id` is the debt. We
+    # create the membership now and clear the marker so a repeat verify is a
+    # no-op.
+    materialized_invite = await _materialize_pending_invite(db, user, now)
+    if materialized_invite is not None:
+        did_change = True
+
+    if did_change:
         await db.commit()
+
+    if materialized_invite is not None:
+        await notify_inviter_of_acceptance(db, materialized_invite)
     return {"ok": True, "email_verified": True}
+
+
+async def _materialize_pending_invite(
+    db: AsyncSession, user: User, now: datetime,
+) -> Invitation | None:
+    """Create the deferred membership for an invite this user consumed at
+    registration but couldn't activate until verifying their mailbox.
+
+    Returns the materialized invite (for the inviter receipt), or None when
+    there is nothing pending. Idempotent — clears ``pending_accept_user_id``
+    once done, so a second verify finds nothing.
+    """
+    invite = (await db.execute(
+        select(Invitation)
+        .where(Invitation.pending_accept_user_id == user.id)
+    )).scalars().first()
+    if invite is None:
+        return None
+
+    # For an existing-record invite the target may have been deleted or
+    # disconnected between register and verify. Don't FK-fail — just clear the
+    # marker; the user lands on the no-records recovery screen and can be
+    # re-invited.
+    if not invite.create_new_record:
+        target_id = invite.target_person_record_id
+        record = await db.get(PersonRecord, target_id) if target_id else None
+        if record is None or record.disconnected_at is not None:
+            invite.pending_accept_user_id = None
+            return None
+
+    await _materialize_invite_membership(db, user=user, invite=invite, now=now)
+    invite.pending_accept_user_id = None
+    return invite

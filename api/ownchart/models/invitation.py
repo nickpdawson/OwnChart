@@ -96,6 +96,18 @@ class Invitation(Base):
         DateTime(timezone=True), nullable=True,
     )
 
+    # Mailbox-ownership gate (P0-4, 2026-07-20). When email verification is
+    # required, registering against this invite consumes it (stamps
+    # `accepted_at`) but defers membership creation — this holds the
+    # unverified user who must verify their mailbox before the membership is
+    # materialized (at `/verify-email`). Cleared to NULL once materialized,
+    # so a repeat verify is a no-op. NULL on every non-verification path.
+    pending_accept_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     @property
     def is_active(self) -> bool:
         from datetime import datetime as _dt, timezone as _tz

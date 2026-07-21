@@ -185,7 +185,129 @@ export function SettingsClient({
       {error && (
         <p className="text-sm text-caution">Couldn&apos;t save: {error}</p>
       )}
+
+      <DeleteAccountSection email={email} />
     </div>
+  );
+}
+
+function DeleteAccountSection({ email }: { email: string | null }) {
+  const [open, setOpen] = useState(false);
+  const [confirmEmail, setConfirmEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const emailMatches =
+    !!email && confirmEmail.trim().toLowerCase() === email.toLowerCase();
+  const canDelete = emailMatches && password.length > 0 && !busy;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (!emailMatches) {
+      setError("Type your account email exactly to confirm.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await fetch("/api/account", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ current_password: password }),
+      });
+      if (r.status === 204) {
+        // Session cookie was cleared server-side. Hard-navigate so no stale
+        // client state survives into the confirmation page.
+        window.location.assign("/account-deleted");
+        return;
+      }
+      if (r.status === 403) {
+        setError("That password is incorrect.");
+      } else {
+        setError(`Couldn't delete your account (HTTP ${r.status}).`);
+      }
+    } catch {
+      setError("Something went wrong. Check your connection and try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <h2 className="text-xs uppercase tracking-widest text-caution">
+        Danger zone
+      </h2>
+      <p className="mt-1 max-w-2xl text-sm text-muted">
+        Delete your account and the data you solely own. Records shared with
+        another owner survive; everything only you own is permanently erased.
+        This can&rsquo;t be undone.
+      </p>
+
+      {!open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="mt-3 inline-block rounded-md border border-caution/40 px-3 py-1.5 text-sm text-caution hover:bg-caution/10"
+        >
+          Delete account…
+        </button>
+      ) : (
+        <form
+          onSubmit={submit}
+          className="mt-3 max-w-md space-y-3 rounded-xl border border-caution/30 bg-surface p-4"
+        >
+          <label className="block text-sm">
+            Type your email (<span className="font-mono text-xs">{email ?? "—"}</span>) to confirm
+            <input
+              type="email"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={confirmEmail}
+              onChange={(e) => setConfirmEmail(e.target.value)}
+              className="mt-1 w-full rounded-md border border-muted/30 bg-bg/40 px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="block text-sm">
+            Current password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="mt-1 w-full rounded-md border border-muted/30 bg-bg/40 px-3 py-2 text-sm"
+            />
+          </label>
+
+          {error && <p className="text-sm text-caution">{error}</p>}
+
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={!canDelete}
+              className="rounded-md border border-caution/50 bg-caution/10 px-4 py-2 text-sm font-medium text-caution transition-colors hover:bg-caution/20 disabled:opacity-50"
+            >
+              {busy ? "Deleting…" : "Permanently delete my account"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                setError(null);
+                setConfirmEmail("");
+                setPassword("");
+              }}
+              className="rounded-md border border-muted/30 px-4 py-2 text-sm text-muted hover:bg-muted/10"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
   );
 }
 

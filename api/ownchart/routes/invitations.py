@@ -51,6 +51,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.agreements import record_agreement_acceptance
+from ..core.app_config import get_app_config
 from ..core.auth_context import AuthContext, get_auth_context
 from ..core.config import get_settings
 from ..core.device_auth import (
@@ -140,15 +141,43 @@ class CreateInviteResponse(InviteOut):
 
 
 class InvitePreviewResponse(BaseModel):
-    """Public-facing preview for the accept page. Says only enough
-    for the invitee to understand what they're being invited to.
-    Never echoes the token, never leaks the inviter's identity."""
-    invited_email: str
+    """Public-facing preview for the accept page (P0-4 hardened).
+
+    Unauthenticated, so it reveals the MINIMUM: a MASKED invited email
+    (enough for the real invitee to recognize their own address, not enough
+    to hand an attacker the full address), the granted role, whether the
+    invite creates a new record vs joins a shared one, and the expiry. It
+    deliberately does NOT expose the record's display name, the proposed
+    person name, the inviter's identity, or the raw token — those are
+    person/record labels that must not leak before the accepter has proven
+    they are entitled to the membership (authenticated + email match)."""
+    invited_email_masked: str
     role: str
     target_kind: _TARGET_KIND
-    target_display_name: str | None
-    proposed_record_name: str | None
     expires_at: datetime
+
+
+def mask_email(email: str) -> str:
+    """Mask an email for an unauthenticated preview: ``nick@example.com`` →
+    ``n***@e***.com``.
+
+    Reveals the first character of the local part and of the domain name,
+    plus the public TLD suffix, and nothing else. Pure + total: any
+    malformed input collapses to a fully-masked ``***`` rather than raising
+    or echoing the raw value. Deterministic so it's unit-testable.
+    """
+    raw = (email or "").strip()
+    if "@" not in raw:
+        return "***"
+    local, _, domain = raw.partition("@")
+    local_masked = (local[0] + "***") if local else "***"
+    if not domain:
+        return f"{local_masked}@***"
+    if "." in domain:
+        name, _, tld = domain.rpartition(".")
+        name_masked = (name[0] + "***") if name else "***"
+        return f"{local_masked}@{name_masked}.{tld}"
+    return f"{local_masked}@{(domain[0] + '***') if domain else '***'}"
 
 
 class PreviewInviteRequest(BaseModel):
@@ -646,22 +675,15 @@ async def _resolve_invite_preview(
             },
         )
 
-    target_record: PersonRecord | None = None
-    if invite.target_person_record_id is not None:
-        target_record = await db.get(
-            PersonRecord, invite.target_person_record_id,
-        )
-
+    # P0-4: mask the email and omit every record/person label. The record's
+    # display name is intentionally NOT looked up here — a pre-auth caller is
+    # not entitled to know whose record this is.
     return InvitePreviewResponse(
-        invited_email=invite.invited_email,
+        invited_email_masked=mask_email(invite.invited_email),
         role=invite.role,
         target_kind=(
             "new_record" if invite.create_new_record else "existing_record"
         ),
-        target_display_name=(
-            target_record.display_name if target_record else None
-        ),
-        proposed_record_name=invite.proposed_record_name,
         expires_at=invite.expires_at,
     )
 
@@ -723,6 +745,7 @@ class AcceptInviteResponse(BaseModel):
 @router.post("/accept")
 async def accept_invitation(
     body: AcceptInviteRequest,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> AcceptInviteResponse:
@@ -754,6 +777,38 @@ async def accept_invitation(
     switcher / `X-OwnChart-Person-Record`. Joining a record must not
     silently repoint their default.
     """
+    # HIGH-7 / P0-4: throttle the authenticated accept path per IP + per
+    # caller so a stolen device token can't be used to grind invite tokens
+    # against a signed-in identity.
+    _s = get_settings()
+    await enforce_rate_limit(
+        request,
+        bucket="invite_accept",
+        max_attempts=_s.rate_limit_auth_max_attempts,
+        window_seconds=_s.rate_limit_auth_window_seconds,
+        identifier=str(user.id),
+    )
+
+    # P0-4 mailbox-ownership gate: on a verification-required instance an
+    # existing user must have a verified email before they can join a record.
+    # `_consume_invite` already binds the invite to the caller's email, so a
+    # verified-and-matching email proves both entitlement and mailbox
+    # ownership. Login is already gated on verification, so a web caller here
+    # is verified in practice; this closes the device-token path.
+    cfg = get_app_config()
+    from .auth import verification_is_required
+    if verification_is_required(cfg) and not user.email_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "email_not_verified",
+                "message": (
+                    "Verify your email address before joining a shared "
+                    "record. Check your inbox for the verification link."
+                ),
+            },
+        )
+
     now = datetime.now(timezone.utc)
 
     # Same verification + single-use lock as registration. Binds to the
@@ -872,6 +927,11 @@ async def accept_invitation(
     )
 
     await db.commit()
+
+    # Acceptance receipt to the inviter (P0-4). Best-effort; never fails
+    # the accept.
+    from .auth import notify_inviter_of_acceptance
+    await notify_inviter_of_acceptance(db, invite)
 
     return AcceptInviteResponse(
         person_record_id=str(target_id),

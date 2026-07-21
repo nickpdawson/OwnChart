@@ -58,11 +58,12 @@ export type InvitationCreated = Invitation & {
 };
 
 export type InvitationPreview = {
-  invited_email: string;
+  // P0-4: the pre-auth preview is masked. Only a masked email hint, the
+  // role, whether it creates a new record, and the expiry — never the full
+  // address or a record/person label.
+  invited_email_masked: string;
   role: InviteRole;
   target_kind: InviteTargetKind;
-  target_display_name: string | null;
-  proposed_record_name: string | null;
   expires_at: string;
 };
 
@@ -79,11 +80,15 @@ export async function listInvitations(): Promise<Invitation[]> {
 export async function getInvitationPreview(
   token: string,
 ): Promise<{ preview: InvitationPreview | null; error: string | null }> {
-  // Server-side fetch from the /invite/[token] page. No auth.
-  const r = await fetch(
-    `${INTERNAL_API}/api/invitations/preview?token=${encodeURIComponent(token)}`,
-    { cache: "no-store" },
-  );
+  // Server-side fetch from the /invite/[token] page. No auth. LINK-01:
+  // token travels in the POST body, not the query string, so it never
+  // lands in reverse-proxy access logs.
+  const r = await fetch(`${INTERNAL_API}/api/invitations/preview`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token }),
+    cache: "no-store",
+  });
   if (r.status === 410) {
     return {
       preview: null,

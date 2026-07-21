@@ -186,6 +186,29 @@ async def send_password_reset_email(*, to: str, reset_url: str, expiry_note: str
     )
 
 
+async def send_invite_accepted_email(*, to: str, invited_email: str, role: str) -> bool:
+    """Notify an inviter that their invitation was accepted (P0-4 receipt).
+
+    Sent to the inviter's own address. Carries the invited email + granted
+    role so they can reconcile it against the invite they issued. No link —
+    it's a notification, not an action."""
+    name = _instance_name()
+    html_body, text_body = render_email(
+        "invitation_accepted",
+        {
+            "instance_name": name,
+            "invited_email": invited_email,
+            "role": role,
+        },
+    )
+    return await send_email(
+        to=to,
+        subject=f"Your {name} invitation was accepted",
+        html_body=html_body,
+        text_body=text_body,
+    )
+
+
 async def send_email_verification_email(*, to: str, verify_url: str, expiry_note: str) -> bool:
     name = _instance_name()
     html_body, text_body = render_email(

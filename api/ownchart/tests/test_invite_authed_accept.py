@@ -291,6 +291,63 @@ def test_authed_accept_email_mismatch_propagates_403(app_fixture, monkeypatch):
     assert session.commits == 0
 
 
+def test_authed_accept_blocked_when_email_unverified(app_fixture, monkeypatch):
+    # P0-4: on a verification-required instance an existing user with an
+    # unverified mailbox can't join a shared record. Gate fires BEFORE the
+    # token is consumed, so nothing is committed.
+    from ownchart.core import email as email_mod
+    from ownchart.core.app_config import AppConfig, AuthConfig
+    from ownchart.routes import invitations as inv_mod
+
+    monkeypatch.setattr(
+        inv_mod, "get_app_config",
+        lambda: AppConfig(auth=AuthConfig(require_email_verification=True)),
+    )
+    monkeypatch.setattr(email_mod, "is_smtp_configured", lambda: True)
+    # _consume_invite must NOT be reached — make it explode if it is.
+    async def _boom(*a, **k):
+        raise AssertionError("consume reached despite unverified gate")
+    monkeypatch.setattr(inv, "_consume_invite", _boom)
+
+    session = _FakeSession()
+    _override_session(app_fixture, session)
+    # Synthetic user has email_verified unset (falsy) → unverified.
+    c = authed_client(app_fixture, user_id=uuid.uuid4(), role="owner")
+    r = c.post("/api/invitations/accept", json={"token": "a-real-looking-token"})
+
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "email_not_verified"
+    assert session.commits == 0
+
+
+def test_authed_accept_rate_limited(app_fixture, monkeypatch):
+    # P0-4: the accept path is throttled. Tighten the cap, fix the IP + user
+    # so both rate dimensions accumulate, then cross it.
+    from ownchart.core.config import get_settings
+
+    s = get_settings()
+    monkeypatch.setattr(s, "rate_limit_auth_max_attempts", 3)
+    # Terminal token keeps each pre-limit call cheap (410), never committing.
+    _patch_consume(monkeypatch, raises=HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail={"code": "invitation_unavailable", "message": "gone"},
+    ))
+    session = _FakeSession()
+    _override_session(app_fixture, session)
+    uid = uuid.uuid4()
+    c = authed_client(app_fixture, user_id=uid, role="owner")
+    ip = {"X-Forwarded-For": "203.0.113.90"}
+
+    codes = [
+        c.post("/api/invitations/accept", json={"token": "t"}, headers=ip).status_code
+        for _ in range(3)
+    ]
+    assert codes == [410, 410, 410], codes
+    r4 = c.post("/api/invitations/accept", json={"token": "t"}, headers=ip)
+    assert r4.status_code == 429, r4.text
+    assert r4.json()["detail"]["code"] == "rate_limited"
+
+
 def test_authed_accept_requires_authentication(app_fixture):
     from fastapi.testclient import TestClient
 

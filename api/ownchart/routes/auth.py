@@ -299,6 +299,149 @@ async def _bootstrap_self_record(
     return record
 
 
+def verification_is_required(cfg) -> bool:
+    """True when this instance actually enforces email verification.
+
+    The flag alone is meaningless without a mail path — an instance with
+    ``require_email_verification=true`` but no SMTP would brick every login
+    with no way to verify. Both must hold. Centralized so the register,
+    login, and invite-accept gates agree on one definition.
+    """
+    from ..core.email import is_smtp_configured
+    return bool(cfg.auth.require_email_verification and is_smtp_configured())
+
+
+async def _materialize_invite_membership(
+    db: AsyncSession,
+    *,
+    user: User,
+    invite: Invitation,
+    now: datetime,
+) -> None:
+    """Create the membership (and, for a new-record invite, the record) an
+    invite grants, stamp the invite consumed, and write the audit trail.
+
+    Extracted from ``register`` so the deferred (verify-email) materialization
+    path can reuse the exact same logic. Runs inside the caller's transaction;
+    the caller owns the commit. Sets ``user.default_person_record_id`` so the
+    invitee lands on their new record on first sign-in.
+    """
+    if invite.create_new_record:
+        display_name = (
+            invite.proposed_record_name
+            or (user.email.split("@")[0] if user.email else None)
+            or "Me"
+        )
+        record = PersonRecord(
+            display_name=display_name,
+            is_self=True,
+            created_by_user_id=user.id,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(record)
+        await db.flush()
+        membership = Membership(
+            user_id=user.id,
+            person_record_id=record.id,
+            role="owner",
+            invited_by_user_id=invite.created_by_user_id,
+            invited_at=invite.created_at,
+            accepted_at=now,
+            created_at=now,
+        )
+        db.add(membership)
+        user.default_person_record_id = record.id
+        db.add(AuditEvent(
+            user_id=user.id,
+            person_record_id=record.id,
+            event_type="membership_created",
+            subject_type="membership",
+            subject_id=str(membership.id),
+            detail={
+                "role": "owner",
+                "granted_via": "invitation",
+                "invitation_id": str(invite.id),
+            },
+        ))
+    else:
+        assert invite.target_person_record_id is not None
+        membership = Membership(
+            user_id=user.id,
+            person_record_id=invite.target_person_record_id,
+            role=invite.role,
+            invited_by_user_id=invite.created_by_user_id,
+            invited_at=invite.created_at,
+            accepted_at=now,
+            created_at=now,
+        )
+        db.add(membership)
+        user.default_person_record_id = invite.target_person_record_id
+        db.add(AuditEvent(
+            user_id=user.id,
+            person_record_id=invite.target_person_record_id,
+            event_type="membership_created",
+            subject_type="membership",
+            subject_id=str(membership.id),
+            detail={
+                "role": invite.role,
+                "granted_via": "invitation",
+                "invitation_id": str(invite.id),
+            },
+        ))
+
+    invite.accepted_at = now
+    invite.accepted_by_user_id = user.id
+    email_hash = hashlib.sha256(invite.invited_email.encode()).hexdigest()
+    db.add(AuditEvent(
+        user_id=user.id,
+        person_record_id=user.default_person_record_id,
+        event_type="invitation_accepted",
+        subject_type="invitation",
+        subject_id=str(invite.id),
+        detail={
+            "invited_email_hash": email_hash,
+            "role": invite.role,
+            "target_kind": (
+                "new_record" if invite.create_new_record else "existing_record"
+            ),
+        },
+    ))
+
+
+async def notify_inviter_of_acceptance(
+    db: AsyncSession, invite: Invitation,
+) -> None:
+    """Best-effort acceptance receipt to the user who issued the invite.
+
+    P0-4 (2026-07-20): the inviter should learn when their invite is used.
+    No-ops when SMTP is unconfigured; a send failure is swallowed and logged
+    so a flaky MTA never turns a successful accept into a 500. Never blocks
+    or fails the calling flow. The invitee's own client already shows the
+    success, so we only push a server-side notification to the inviter.
+    """
+    from ..core.email import is_smtp_configured, send_invite_accepted_email
+    if not is_smtp_configured():
+        return
+    try:
+        inviter = await db.get(User, invite.created_by_user_id)
+    except Exception:  # noqa: BLE001
+        inviter = None
+    if inviter is None or not inviter.email:
+        return
+    try:
+        await send_invite_accepted_email(
+            to=inviter.email,
+            invited_email=invite.invited_email,
+            role=invite.role,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "invitation_accepted_email_failed",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
 def _classify_invite_for_accept(
     invite: Invitation | None,
     invitee_email: str,
@@ -494,12 +637,7 @@ async def register(
     # there'd be no way to verify and login enforcement would brick everyone.
     # The first user (bootstrap) is always auto-verified, mirroring how the
     # invite token is ignored on that path.
-    from ..core.email import is_smtp_configured
-    verification_required = (
-        not is_first_user
-        and cfg.auth.require_email_verification
-        and is_smtp_configured()
-    )
+    verification_required = not is_first_user and verification_is_required(cfg)
     now_reg = datetime.now(timezone.utc)
 
     user = User(
@@ -518,94 +656,49 @@ async def register(
         )
     elif invite is not None:
         now = datetime.now(timezone.utc)
-        if invite.create_new_record:
-            # Create a new record + owner membership for the new user.
-            display_name = (
-                invite.proposed_record_name
-                or body.email.split("@")[0]
-                or "Me"
-            )
-            record = PersonRecord(
-                display_name=display_name,
-                is_self=True,
-                created_by_user_id=user.id,
-                created_at=now,
-                updated_at=now,
-            )
-            db.add(record)
-            await db.flush()
-            membership = Membership(
-                user_id=user.id,
-                person_record_id=record.id,
-                role="owner",
-                invited_by_user_id=invite.created_by_user_id,
-                invited_at=invite.created_at,
-                accepted_at=now,
-                created_at=now,
-            )
-            db.add(membership)
-            user.default_person_record_id = record.id
+        if verification_required:
+            # P0-4 mailbox-ownership gate: the invitee has NOT proven they own
+            # the invited mailbox yet. Consume the invite (stamp accepted so it
+            # can't be reused) but DEFER the membership — it is materialized
+            # only when this user verifies their email. `pending_accept_user_id`
+            # marks the debt; no membership row exists in the interim, so the
+            # invitee has no active access until the mailbox is proven.
+            invite.accepted_at = now
+            invite.accepted_by_user_id = user.id
+            invite.pending_accept_user_id = user.id
+            email_hash = hashlib.sha256(
+                invite.invited_email.encode()
+            ).hexdigest()
             db.add(AuditEvent(
                 user_id=user.id,
-                person_record_id=record.id,
-                event_type="membership_created",
-                subject_type="membership",
-                subject_id=str(membership.id),
+                person_record_id=invite.target_person_record_id,
+                event_type="invitation_accept_pending_verification",
+                subject_type="invitation",
+                subject_id=str(invite.id),
                 detail={
-                    "role": "owner",
-                    "granted_via": "invitation",
-                    "invitation_id": str(invite.id),
+                    "invited_email_hash": email_hash,
+                    "role": invite.role,
+                    "target_kind": (
+                        "new_record" if invite.create_new_record
+                        else "existing_record"
+                    ),
                 },
             ))
         else:
-            # Existing record — create membership at the invite's role.
-            assert invite.target_person_record_id is not None
-            membership = Membership(
-                user_id=user.id,
-                person_record_id=invite.target_person_record_id,
-                role=invite.role,
-                invited_by_user_id=invite.created_by_user_id,
-                invited_at=invite.created_at,
-                accepted_at=now,
-                created_at=now,
+            # SMTP unconfigured or verification off — mailbox ownership can't
+            # be enforced. Preserve the established behavior (membership is
+            # live immediately) but log the un-gated grant so a hosted
+            # operator can see it in the audit stream.
+            from ..core.email import is_smtp_configured
+            if not is_smtp_configured():
+                log.warning(
+                    "invite_accept_without_mailbox_verification",
+                    invitation_id=str(invite.id),
+                    reason="smtp_unconfigured",
+                )
+            await _materialize_invite_membership(
+                db, user=user, invite=invite, now=now,
             )
-            db.add(membership)
-            user.default_person_record_id = invite.target_person_record_id
-            db.add(AuditEvent(
-                user_id=user.id,
-                person_record_id=invite.target_person_record_id,
-                event_type="membership_created",
-                subject_type="membership",
-                subject_id=str(membership.id),
-                detail={
-                    "role": invite.role,
-                    "granted_via": "invitation",
-                    "invitation_id": str(invite.id),
-                },
-            ))
-
-        invite.accepted_at = now
-        invite.accepted_by_user_id = user.id
-        email_hash = hashlib.sha256(
-            invite.invited_email.encode()
-        ).hexdigest()
-        db.add(AuditEvent(
-            user_id=user.id,
-            person_record_id=(
-                user.default_person_record_id
-            ),
-            event_type="invitation_accepted",
-            subject_type="invitation",
-            subject_id=str(invite.id),
-            detail={
-                "invited_email_hash": email_hash,
-                "role": invite.role,
-                "target_kind": (
-                    "new_record" if invite.create_new_record
-                    else "existing_record"
-                ),
-            },
-        ))
 
     # Art. 9 consent evidence — records a row only when the client sent a
     # non-empty agreement_version. Absent payload = default self-host path,
@@ -628,6 +721,12 @@ async def register(
     if is_first_user:
         from ..core.setup_token import clear_setup_token
         clear_setup_token()
+
+    # Acceptance receipt to the inviter (P0-4). Only on the immediate-grant
+    # path — the deferred path notifies at verify-email time, once the
+    # mailbox is proven. Best-effort; never fails registration.
+    if invite is not None and not verification_required:
+        await notify_inviter_of_acceptance(db, invite)
 
     if verification_required:
         # Don't log the user in — they must verify first. Send the link

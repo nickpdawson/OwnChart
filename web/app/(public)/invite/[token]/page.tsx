@@ -47,9 +47,7 @@ export default async function InviteAcceptPage({ params }: PageProps) {
   const targetCopy =
     preview.target_kind === "new_record"
       ? "You'll get your own new record"
-      : preview.target_display_name
-        ? `You'll join the record "${preview.target_display_name}"`
-        : "You'll join an existing record";
+      : "You'll join a shared health record";
 
   return (
     <div>
@@ -57,21 +55,17 @@ export default async function InviteAcceptPage({ params }: PageProps) {
       <h1 className="mt-3 font-serif text-3xl">You&rsquo;re invited</h1>
       <div className="mt-6 rounded-md border border-muted/15 bg-surface p-4 text-sm">
         <dl className="grid grid-cols-1 gap-2 sm:grid-cols-[7rem_1fr]">
-          <dt className="text-muted">Email</dt>
-          <dd className="text-ink">{preview.invited_email}</dd>
+          <dt className="text-muted">Invited</dt>
+          <dd className="text-ink">
+            {preview.invited_email_masked}
+            <span className="ml-2 text-xs text-muted">
+              (confirm your address below)
+            </span>
+          </dd>
           <dt className="text-muted">Role</dt>
           <dd className="text-ink">{roleLabel(preview.role)}</dd>
-          <dt className="text-muted">Record</dt>
-          <dd className="text-ink">
-            {targetCopy}
-            {preview.target_kind === "new_record" &&
-              preview.proposed_record_name && (
-                <span className="text-muted">
-                  {" "}
-                  · suggested name &ldquo;{preview.proposed_record_name}&rdquo;
-                </span>
-              )}
-          </dd>
+          <dt className="text-muted">Access</dt>
+          <dd className="text-ink">{targetCopy}</dd>
           <dt className="text-muted">Expires</dt>
           <dd className="text-ink">
             {new Date(preview.expires_at).toLocaleString()}
@@ -99,7 +93,7 @@ export default async function InviteAcceptPage({ params }: PageProps) {
 
       <InviteAcceptClient
         token={token}
-        invitedEmail={preview.invited_email}
+        maskedEmail={preview.invited_email_masked}
       />
     </div>
   );

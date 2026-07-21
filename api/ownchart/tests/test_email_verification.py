@@ -63,8 +63,12 @@ class _FakeSession:
 
     async def flush(self):
         # Real Postgres applies the model's server/column defaults at INSERT.
-        # Mirror the one the register response reads so the fake round-trips.
+        # Mirror the ones the register/materialize paths read back so the fake
+        # round-trips: the primary-key UUID (used for downstream FKs) and the
+        # phi_consent_granted default.
         for obj in self.added:
+            if hasattr(obj, "id") and getattr(obj, "id", None) is None:
+                obj.id = uuid.uuid4()
             if getattr(obj, "phi_consent_granted", None) is None:
                 obj.phi_consent_granted = False
 
@@ -293,6 +297,113 @@ def test_register_flag_on_unverified_no_login_sends_email(app_fixture, monkeypat
     assert "ownchart_session" not in r.headers.get("set-cookie", "")
     # Verification email was dispatched.
     assert sent == ["newbie@example.com"]
+
+
+def test_register_with_invite_defers_membership_until_verified(app_fixture, monkeypatch):
+    # P0-4: registering against an invite on a verification-required instance
+    # consumes the invite but does NOT create a membership. It records the
+    # pending-accept debt; the membership is materialized only at verify time.
+    import uuid as _uuid
+    from datetime import datetime, timedelta, timezone
+
+    from ownchart.models.invitation import Invitation
+    from ownchart.models.membership import Membership
+
+    now = datetime.now(timezone.utc)
+    invite = Invitation(
+        id=_uuid.uuid4(),
+        invited_email="newbie@example.com",
+        target_person_record_id=None,
+        create_new_record=True,
+        proposed_record_name="New Person",
+        role="owner",
+        token_hash="x", token_lookup_prefix="abcdef12",
+        expires_at=now + timedelta(days=1),
+        created_by_user_id=_uuid.uuid4(),
+        created_at=now,
+        accepted_at=None, accepted_by_user_id=None, revoked_at=None,
+    )
+
+    async def _fake_consume(db, *, raw_token, invitee_email):
+        return invite
+    monkeypatch.setattr(auth_routes, "_consume_invite", _fake_consume)
+
+    async def _fake_send(*, to, verify_url, expiry_note):
+        return True
+
+    existing = _user(email="first@example.com", verified=True)
+    session = _FakeSession(execute_rows=[existing])
+    _override_session(app_fixture, session)
+    _patch_register(
+        monkeypatch,
+        cfg=_cfg(require_verification=True, allow_self_reg=False),
+        smtp_configured=True,
+        send_recorder=_fake_send,
+    )
+    c = TestClient(app_fixture)
+
+    r = c.post(
+        "/api/auth/register",
+        json={
+            "email": "newbie@example.com",
+            "password": "longenough",
+            "invite_token": "a-real-looking-token",
+        },
+        headers={"x-forwarded-for": "198.51.100.60"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["email_verified"] is False
+    # Invite consumed + pending marker set, but NO membership yet.
+    assert invite.accepted_at is not None
+    assert invite.pending_accept_user_id is not None
+    # No Membership object was added to the session — access is deferred.
+    assert not [o for o in session.added if isinstance(o, Membership)]
+
+
+def test_verify_email_materializes_pending_invite(app_fixture):
+    # P0-4: verifying the mailbox materializes the deferred membership and
+    # clears the pending marker so a repeat verify is a no-op.
+    import uuid as _uuid
+    from datetime import datetime, timedelta, timezone
+
+    from ownchart.models.invitation import Invitation
+    from ownchart.models.membership import Membership
+
+    user = _user(email="pending@example.com", verified=False)
+    now = datetime.now(timezone.utc)
+    invite = Invitation(
+        id=_uuid.uuid4(),
+        invited_email="pending@example.com",
+        target_person_record_id=None,
+        create_new_record=True,
+        proposed_record_name="New Person",
+        role="owner",
+        token_hash="x", token_lookup_prefix="abcdef12",
+        expires_at=now + timedelta(days=1),
+        created_by_user_id=_uuid.uuid4(),
+        created_at=now,
+        accepted_at=now, accepted_by_user_id=user.id, revoked_at=None,
+        pending_accept_user_id=user.id,
+    )
+    tok = security.make_email_verification_token(str(user.id), user.email)
+    session = _FakeSession(get_map={user.id: user}, execute_rows=[invite])
+    _override_session(app_fixture, session)
+    c = TestClient(app_fixture)
+
+    r = c.post(
+        "/api/auth/verify-email", json={"token": tok},
+        headers={"x-forwarded-for": "198.51.100.61"},
+    )
+    assert r.status_code == 200, r.text
+    assert user.email_verified is True
+    # Membership materialized, default record pointer set, marker cleared.
+    mems = [o for o in session.added if isinstance(o, Membership)]
+    assert len(mems) == 1
+    assert mems[0].user_id == user.id
+    assert mems[0].role == "owner"
+    assert invite.pending_accept_user_id is None
+    assert user.default_person_record_id is not None
+    assert session.commits == 1
 
 
 def test_register_flag_off_verified_and_logged_in(app_fixture, monkeypatch):

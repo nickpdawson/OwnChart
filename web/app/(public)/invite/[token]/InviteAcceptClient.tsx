@@ -3,16 +3,21 @@
 import { useState } from "react";
 
 // Invite acceptance form. POSTs to /api/auth/register with the
-// invite_token. The email is pinned to the invite's invited_email
-// — server-side check enforces this, the readonly input is
-// belt-and-suspenders UX.
+// invite_token.
+//
+// P0-4: the invited email is MASKED in the preview, so the invitee types
+// their own address to confirm ownership. The server binds the invite to
+// that email (case-insensitive) and rejects a mismatch — typing the wrong
+// address can't grant access, and the masked hint lets a legitimate
+// invitee recognize which address is expected.
 
 type Props = {
   token: string;
-  invitedEmail: string;
+  maskedEmail: string;
 };
 
-export function InviteAcceptClient({ token, invitedEmail }: Props) {
+export function InviteAcceptClient({ token, maskedEmail }: Props) {
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
@@ -21,6 +26,10 @@ export function InviteAcceptClient({ token, invitedEmail }: Props) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (!email.trim()) {
+      setError("Enter the email this invite was sent to.");
+      return;
+    }
     if (password.length < 8) {
       setError("Pick a password at least 8 characters long.");
       return;
@@ -36,7 +45,7 @@ export function InviteAcceptClient({ token, invitedEmail }: Props) {
         headers: { "content-type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          email: invitedEmail,
+          email: email.trim(),
           password,
           invite_token: token,
         }),
@@ -49,7 +58,7 @@ export function InviteAcceptClient({ token, invitedEmail }: Props) {
           if (typeof detail === "object" && detail?.code) {
             if (detail.code === "invite_email_mismatch") {
               msg =
-                "This invite's email doesn't match what we tried to register. Ask the inviter to issue a new invite.";
+                "That email doesn't match the one this invite was sent to. Check the address and try again.";
             } else if (detail.code === "invitation_unavailable") {
               msg =
                 "This invite is no longer available. It may have expired or already been used.";
@@ -66,7 +75,15 @@ export function InviteAcceptClient({ token, invitedEmail }: Props) {
         }
         throw new Error(msg);
       }
-      // Server set the session cookie; layout redirect will route us
+      const me = await r.json();
+      // On a verification-required instance the server does NOT sign us in —
+      // it sends a verification email and `email_verified` is false. Route
+      // to a "check your email" screen instead of the app.
+      if (me?.email_verified === false) {
+        window.location.assign("/verify-email/sent");
+        return;
+      }
+      // Otherwise the session cookie is set; the layout redirect routes us
       // to /consent or /dashboard depending on PHI consent state.
       window.location.assign("/consent");
     } catch (e) {
@@ -78,15 +95,27 @@ export function InviteAcceptClient({ token, invitedEmail }: Props) {
   return (
     <form onSubmit={submit} className="mt-6 space-y-4">
       <div>
-        <label className="block text-xs uppercase tracking-widest text-muted">
-          Email
+        <label
+          className="block text-xs uppercase tracking-widest text-muted"
+          htmlFor="invite-email"
+        >
+          Your email
         </label>
         <input
+          id="invite-email"
           type="email"
-          value={invitedEmail}
-          readOnly
-          className="mt-1 w-full cursor-not-allowed rounded-md border border-muted/15 bg-bg/40 px-3 py-2 text-sm text-muted"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+          autoComplete="email"
+          autoCapitalize="none"
+          spellCheck={false}
+          placeholder={maskedEmail}
+          className="mt-1 w-full rounded-md border border-muted/30 bg-surface px-3 py-2 text-sm"
         />
+        <span className="mt-1 block text-xs text-muted">
+          Confirm the address this invite was sent to ({maskedEmail}).
+        </span>
       </div>
       <div>
         <label
