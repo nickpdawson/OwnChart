@@ -42,6 +42,7 @@ from ..ingest import fhir_attachments, pdf as pdf_ingest, provider_directory, st
 from ..ingest.fact_classifier import review_state_for_fhir
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
+from ..models.membership import Membership
 from ..models.oauth_session import OAuthSession
 from ..models.provider_connection import ProviderConnection
 from ..models.provider_connector import ProviderConnector
@@ -698,6 +699,31 @@ async def oauth_callback(
     # from the SIGNED state, not the request.
     bound_person_record_id = payload.person_record_id
 
+    # P1-11: re-verify the user still holds an ACTIVE membership binding them
+    # to the record this grant will write into. Membership can be revoked
+    # between connect-start and this callback; without this re-check a
+    # just-revoked user's EHR tokens would still be persisted against the
+    # record. Done BEFORE the token exchange so a revoked user's code is never
+    # even redeemed. iOS/web surface the 403 as a lost-access state.
+    active_membership = (await db.execute(
+        select(Membership)
+        .where(Membership.user_id == user.id)
+        .where(Membership.person_record_id == bound_person_record_id)
+        .where(Membership.revoked_at.is_(None))
+        .limit(1)
+    )).scalar_one_or_none()
+    if active_membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "record_access_revoked",
+                "message": (
+                    "Your access to this record was revoked. Reconnect the "
+                    "provider once access is restored."
+                ),
+            },
+        )
+
     try:
         tok = await fhir_ingest.exchange_code_for_token(
             token_endpoint=connector.token_endpoint,
@@ -763,13 +789,16 @@ async def oauth_callback(
     await db.delete(sess)
     await db.commit()
 
+    # P1-11: do NOT log the FHIR patient identifier (tok.patient) — it's an
+    # externally-meaningful health-record identifier. The opaque connection id
+    # is enough to correlate this grant in the logs.
     log.info(
         "connector_oauth_complete",
         connector=connector.slug,
         user_id=str(user.id),
         person_record_id=str(bound_person_record_id),
         has_refresh=bool(tok.refresh_token),
-        patient=tok.patient,
+        connection_id=str(existing.id),
     )
     return RedirectResponse(
         url=f"{redirect_to}?connected={connector.slug}",

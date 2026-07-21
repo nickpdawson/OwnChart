@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.account_deletion import delete_user_account
@@ -25,6 +26,7 @@ from ..core.db import get_session
 from ..core.logger import get_logger
 from ..core.security import verify_password
 from ..models.user import User
+from .admin import ensure_admin_self_deletion_allowed, serialize_admin_mutation
 from .auth import get_current_user
 
 router = APIRouter()
@@ -65,6 +67,29 @@ async def delete_account(
                 "code": "invalid_current_password",
                 "message": "Current password is incorrect.",
             },
+        )
+
+    # P2-1: an admin can't delete themselves out of the last-enabled-admin
+    # slot while other users remain (serialized so concurrent deletes can't
+    # both slip through). Solo self-host is always allowed — see
+    # ``ensure_admin_self_deletion_allowed`` for the App Store 5.1.1(v)
+    # carve-out. Only runs for an admin, so the common non-admin delete (and
+    # the fake-session route tests) never touch the DB here.
+    if user.is_instance_admin:
+        await serialize_admin_mutation(db)
+        other_active_admins = int((await db.execute(
+            select(func.count()).select_from(User)
+            .where(User.is_instance_admin.is_(True))
+            .where(User.disabled.is_(False))
+            .where(User.id != user.id)
+        )).scalar_one())
+        other_users = int((await db.execute(
+            select(func.count()).select_from(User).where(User.id != user.id)
+        )).scalar_one())
+        ensure_admin_self_deletion_allowed(
+            deleter_is_active_admin=not bool(getattr(user, "disabled", False)),
+            other_active_admins=other_active_admins,
+            other_users=other_users,
         )
 
     await delete_user_account(db, user)

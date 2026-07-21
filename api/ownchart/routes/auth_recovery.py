@@ -30,7 +30,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import get_settings
@@ -41,17 +41,20 @@ from ..core.email import (
     send_password_reset_email,
 )
 from ..core.logger import get_logger
+from ..core.password_policy import enforce_password_policy
 from ..core.rate_limit import enforce_rate_limit
 from ..core.security import (
     generate_reset_token,
     hash_password,
     hash_reset_token,
+    normalize_email,
     read_email_verification_token,
     reset_lookup_prefix,
     verify_password,
     verify_reset_token,
 )
 from ..models.audit_event import AuditEvent
+from ..models.device_token import DeviceToken
 from ..models.invitation import Invitation
 from ..models.password_reset_token import PasswordResetToken
 from ..models.person_record import PersonRecord
@@ -123,8 +126,12 @@ def classify_reset_token(
 
 
 async def _find_user_by_email(db: AsyncSession, email: str) -> User | None:
+    # P1-9: case-insensitive so a differently-cased request address (and any
+    # legacy mixed-case row) resolves. ``email`` is already normalized.
     return (
-        await db.execute(select(User).where(User.email == email))
+        await db.execute(
+            select(User).where(func.lower(User.email) == email)
+        )
     ).scalar_one_or_none()
 
 
@@ -206,7 +213,7 @@ async def request_password_reset(
         window_seconds=s.rate_limit_auth_window_seconds,
         identifier=body.email,
     )
-    email = body.email.lower().strip()
+    email = normalize_email(body.email)
     if is_smtp_configured():
         user = await _find_user_by_email(db, email)
         if user is not None:
@@ -241,14 +248,9 @@ async def reset_password(
         window_seconds=s.rate_limit_auth_window_seconds,
     )
 
-    if len(body.new_password) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "code": "weak_password",
-                "message": "New password must be at least 8 characters.",
-            },
-        )
+    # P1-9: single password policy (min 8, max 256, not blank) — fires before
+    # any token lookup so a weak password can't probe token state via timing.
+    enforce_password_policy(body.new_password)
 
     token_row = await _lookup_reset_token(db, body.token)
     verdict = classify_reset_token(token_row)
@@ -289,13 +291,29 @@ async def reset_password(
     user.password_hash = hash_password(body.new_password)
     user.session_token_version = (user.session_token_version or 0) + 1
     token_row.consumed_at = now
+
+    # P1-10: revoke ALL of the user's device bearer tokens in the same
+    # transaction as the password change. The stv bump only kills web (cookie)
+    # sessions; a stolen iOS/device bearer would otherwise survive a recovery.
+    # iOS treats the resulting 401 as "re-pair" by doctrine, so this is safe.
+    revoked = await db.execute(
+        update(DeviceToken)
+        .where(DeviceToken.user_id == user.id)
+        .where(DeviceToken.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    device_tokens_revoked = getattr(revoked, "rowcount", 0) or 0
+
     db.add(AuditEvent(
         user_id=user.id,
         person_record_id=user.default_person_record_id,
         event_type="password_reset",
         subject_type="user",
         subject_id=str(user.id),
-        detail={"session_token_version": user.session_token_version},
+        detail={
+            "session_token_version": user.session_token_version,
+            "device_tokens_revoked": int(device_tokens_revoked),
+        },
     ))
     await db.commit()
     return {"ok": True}

@@ -19,6 +19,17 @@ _serializer = URLSafeTimedSerializer(
 )
 
 
+def normalize_email(email: str | None) -> str:
+    """Canonical email form for storage + lookup: stripped + lowercased.
+
+    Applied at every register / login / reset / invite-match site (P1-9) so
+    ``Nick@x`` and ``nick@x`` resolve to one account. Paired with the
+    case-insensitive unique index (migration 0056) and case-insensitive
+    lookups (``func.lower(User.email) == normalize_email(...)``) so legacy
+    mixed-case rows still authenticate."""
+    return (email or "").strip().lower()
+
+
 def hash_password(plain: str) -> str:
     return _ph.hash(plain)
 

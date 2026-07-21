@@ -33,7 +33,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session
@@ -85,6 +85,35 @@ async def require_instance_admin(
 
 
 # ---------------------------------------------------------------------------
+# Serialization of admin-count-reducing mutations (P2-1 / P1-11)
+#
+# Concurrent revoke-admin / disable-admin / admin-self-deletion each read the
+# admin count, decide it's safe, then write. Without serialization two of them
+# can both pass the last-admin check and strand the instance with zero
+# administrators (or zero *active* administrators). A transaction-level
+# advisory lock forces them to run one at a time so the second sees the first's
+# committed effect. Distinct key from bootstrap's 0x0C0C0C01. Mirrors
+# ``routes/auth.py::_serialize_bootstrap`` — no-op off Postgres (test fakes /
+# SQLite), where there is no real concurrency to guard.
+
+_ADMIN_MUTATION_LOCK_KEY = 0x0C0C_0C02
+
+
+async def serialize_admin_mutation(db: AsyncSession) -> None:
+    """Hold the admin-mutation advisory lock for this transaction."""
+    try:
+        dialect_name = db.get_bind().dialect.name
+    except Exception:  # noqa: BLE001 — test fakes have no bind; nothing to lock
+        return
+    if dialect_name != "postgresql":
+        return
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": _ADMIN_MUTATION_LOCK_KEY},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Pure guards (unit-tested without a DB)
 
 
@@ -117,6 +146,67 @@ def ensure_admin_remains(*, target_is_admin: bool, total_admin_count: int) -> No
                 "message": (
                     "This is the only instance administrator. Grant admin "
                     "to another account before revoking this one."
+                ),
+            },
+        )
+
+
+def ensure_active_admin_remains(
+    *, target_is_active_admin: bool, active_admin_count: int,
+) -> None:
+    """Refuse disabling the last *enabled* admin (409).
+
+    A disabled admin still carries ``is_instance_admin`` but can no longer
+    log in, so the load-bearing count for "can anyone still administer the
+    instance" is the ENABLED admin count. ``active_admin_count`` includes the
+    target; if the target is the only enabled admin, disabling it would leave
+    the instance with no one able to administer it.
+    """
+    if target_is_active_admin and active_admin_count <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "last_active_admin",
+                "message": (
+                    "This is the only enabled instance administrator. Enable "
+                    "or grant admin to another account before disabling this "
+                    "one."
+                ),
+            },
+        )
+
+
+async def _active_admin_count(db: AsyncSession) -> int:
+    """Enabled (non-disabled) instance admins."""
+    return int((await db.execute(
+        select(func.count())
+        .select_from(User)
+        .where(User.is_instance_admin.is_(True))
+        .where(User.disabled.is_(False))
+    )).scalar_one())
+
+
+def ensure_admin_self_deletion_allowed(
+    *, deleter_is_active_admin: bool, other_active_admins: int, other_users: int,
+) -> None:
+    """Refuse an admin deleting their own account when it would leave the
+    instance with zero enabled admins WHILE other users remain (409).
+
+    Solo carve-out: with no other users, self-deletion is ALWAYS allowed —
+    App Store 5.1.1(v) requires a reachable in-app deletion path, and a
+    single-user self-host must be able to erase itself. Only a multi-user
+    instance where this is the last enabled admin is blocked, with a
+    "transfer admin first" message.
+    """
+    if deleter_is_active_admin and other_active_admins == 0 and other_users > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "last_admin_transfer_required",
+                "message": (
+                    "You are the only enabled administrator and other users "
+                    "remain on this instance. Grant admin to another account "
+                    "before deleting yours."
                 ),
             },
         )
@@ -512,6 +602,16 @@ async def _set_disabled(
         # Idempotent — already in the requested state. No stv churn.
         return AdminActionResult(ok=True, id=str(target.id), disabled=disabled)
 
+    if disabled and target.is_instance_admin:
+        # P2-1: disabling an admin reduces the ENABLED-admin count. Serialize
+        # + refuse if this would disable the last enabled admin (a disabled
+        # admin can't log in, so it would lock out instance administration).
+        await serialize_admin_mutation(db)
+        ensure_active_admin_remains(
+            target_is_active_admin=True,
+            active_admin_count=await _active_admin_count(db),
+        )
+
     target.disabled = disabled
     if disabled:
         # Kill live cookie sessions immediately (device tokens die via the
@@ -615,6 +715,9 @@ async def revoke_admin(
         # Idempotent — nothing to revoke.
         return AdminActionResult(ok=True, id=str(target.id), is_instance_admin=False)
 
+    # P2-1: serialize so two concurrent revokes can't both pass the
+    # last-admin check and strand the instance with zero admins.
+    await serialize_admin_mutation(db)
     total_admins = await _admin_count(db)
     ensure_admin_remains(target_is_admin=True, total_admin_count=total_admins)
 

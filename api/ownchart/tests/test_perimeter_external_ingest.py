@@ -362,6 +362,34 @@ def test_connectors_callback_db_row_record_binding_check():
     assert "sess.person_record_id != payload.person_record_id" in src
 
 
+def test_connectors_callback_rechecks_active_membership_before_persisting():
+    """P1-11: membership can be revoked between connect-start and the
+    callback. The callback must re-verify an ACTIVE membership binding the
+    user to the bound record, BEFORE the token exchange, and refuse with a
+    stable 403 record_access_revoked (no tokens persisted). Source-level, in
+    the same style as the other callback assertions (a signed state is not
+    easily round-tripped via TestClient)."""
+    from ownchart.routes.connectors import oauth_callback
+    src = inspect.getsource(oauth_callback)
+    # Re-checks an active (non-revoked) membership for the bound record.
+    assert "Membership.revoked_at.is_(None)" in src
+    assert "Membership.person_record_id == bound_person_record_id" in src
+    # The recheck happens BEFORE the code→token exchange.
+    assert src.index("active_membership") < src.index("exchange_code_for_token")
+    # Refuses with the stable code, no token persistence.
+    assert '"code": "record_access_revoked"' in src
+
+
+def test_connectors_callback_does_not_log_fhir_patient_id():
+    """P1-11: the completion log line must not carry the FHIR patient
+    identifier (tok.patient) — an externally-meaningful health-record id.
+    The opaque connection id is logged instead."""
+    from ownchart.routes.connectors import oauth_callback
+    src = inspect.getsource(oauth_callback)
+    assert "patient=tok.patient" not in src
+    assert "connection_id=str(existing.id)" in src
+
+
 # ---------------------------------------------------------------------------
 # Connectors — sync / disconnect
 

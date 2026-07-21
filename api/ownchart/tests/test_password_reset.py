@@ -48,8 +48,10 @@ class _FakeSession:
         self._execute_rows = execute_rows or []
         self.added = []
         self.commits = 0
+        self.executed = []  # record statements for assertions
 
-    async def execute(self, *a, **k):
+    async def execute(self, statement=None, *a, **k):
+        self.executed.append(statement)
         return _FakeResult(self._execute_rows)
 
     async def get(self, model, pk):
@@ -251,6 +253,11 @@ def test_reset_consumes_token_and_rotates_password(app_fixture, monkeypatch):
     # Token single-use enforced.
     assert token.consumed_at is not None
     assert session.commits == 1
+    # P1-10: the reset also revokes the user's device bearer tokens in the
+    # same transaction (a stolen device token must not survive a recovery).
+    assert any(
+        "device_tokens" in str(stmt).lower() for stmt in session.executed
+    ), session.executed
 
 
 def test_reset_rejects_expired_token(app_fixture, monkeypatch):
@@ -312,7 +319,8 @@ def test_reset_rejects_weak_password(app_fixture, monkeypatch):
         headers={"x-forwarded-for": "198.51.100.23"},
     )
     assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "weak_password"
+    # P1-9: unified policy code across every set-password site.
+    assert r.json()["detail"]["code"] == "password_policy"
     assert called["n"] == 0
 
 

@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.agreements import load_latest_agreement, record_agreement_acceptance
@@ -24,10 +24,12 @@ from ..core.auth_context import (
 from ..core.config import get_settings
 from ..core.db import get_session
 from ..core.logger import get_logger
+from ..core.password_policy import enforce_password_policy
 from ..core.rate_limit import enforce_rate_limit
 from ..core.security import (
     hash_password,
     invite_lookup_prefix,
+    normalize_email,
     sign_session,
     verify_invite_token,
     verify_password,
@@ -574,6 +576,11 @@ async def register(
         identifier=body.email,
     )
 
+    # P1-9: single password policy at every set-password site — this is the
+    # register/bootstrap/invite-accept one. (min 8, max 256, not blank.)
+    enforce_password_policy(body.password)
+    email_normalized = normalize_email(body.email)
+
     # P0-1: serialize the first-owner decision under a Postgres advisory
     # lock BEFORE reading the user table, so two concurrent registers can't
     # both observe an empty DB and both claim ownership. No-op off Postgres.
@@ -617,7 +624,7 @@ async def register(
     invite: Invitation | None = None
     if not is_first_user and body.invite_token:
         invite = await _consume_invite(
-            db, raw_token=body.invite_token, invitee_email=body.email,
+            db, raw_token=body.invite_token, invitee_email=email_normalized,
         )
     elif not is_first_user:
         if not cfg.auth.allow_self_registration:
@@ -641,7 +648,7 @@ async def register(
     now_reg = datetime.now(timezone.utc)
 
     user = User(
-        email=body.email,
+        email=email_normalized,
         password_hash=hash_password(body.password),
         is_instance_admin=is_first_user,
         email_verified=not verification_required,
@@ -784,7 +791,12 @@ async def login(
         window_seconds=_settings.rate_limit_auth_window_seconds,
         identifier=body.email,
     )
-    result = await db.execute(select(User).where(User.email == body.email))
+    # P1-9: case-insensitive lookup so a differently-cased login still
+    # resolves the (lowercase-normalized) stored account, and legacy
+    # mixed-case rows keep authenticating.
+    result = await db.execute(
+        select(User).where(func.lower(User.email) == normalize_email(body.email))
+    )
     user = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
@@ -1152,14 +1164,8 @@ async def change_password(
                 "message": "Current password is incorrect.",
             },
         )
-    if len(body.new_password) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "code": "weak_password",
-                "message": "New password must be at least 8 characters.",
-            },
-        )
+    # P1-9: same policy as register/reset (min 8, max 256, not blank).
+    enforce_password_policy(body.new_password)
     if body.new_password == body.current_password:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
