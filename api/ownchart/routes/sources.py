@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -35,7 +35,7 @@ from ..ingest.auto_export_persist import (
     existing_client_sample_keys,
 )
 from ..ingest import ccda as ccda_ingest
-from ..ingest import images, pdf, storage
+from ..ingest import images, limits, pdf, storage
 from ..ingest.fact_classifier import review_state_for_fhir
 from ..core.arq_pool import enqueue_extraction_job, enqueue_personal_photo_vision
 from ..models.evidence_anchor import EvidenceAnchor
@@ -232,6 +232,7 @@ _PHOTO_MIN_BYTES = 8 * 1024  # 8 KB
 
 @router.post("/photo", status_code=status.HTTP_201_CREATED)
 async def upload_photo(
+    request: Request,
     file: UploadFile = File(...),
     caption: str | None = Form(default=None),
     event_date: datetime | None = Form(default=None),
@@ -257,13 +258,16 @@ async def upload_photo(
             detail=f"Unsupported content-type: {file.content_type}",
         )
 
-    # Buffer once for hashing + thumbnail generation. Photos are typically
-    # under 50MB; if we ever stream larger media we'll switch to spooled
-    # tempfiles. Worth revisiting before DICOM.
+    # Resource boundary (P0-5): fast Content-Length reject, then a streaming
+    # byte-capped read. Bounds the resident-memory cost of buffering and
+    # rejects an oversized upload before any decode / thumbnail / vision work.
+    limits.reject_if_declared_length_over(request, limits.max_attachment_bytes())
     try:
-        raw = await file.read()
+        raw = await limits.read_upload_capped(file)
+    except HTTPException:
+        raise
     except Exception as e:  # noqa: BLE001
-        log.exception("photo_upload_read_failed", filename=file.filename)
+        log.exception("photo_upload_read_failed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Couldn't read uploaded file: {e.__class__.__name__}",
@@ -283,6 +287,11 @@ async def upload_photo(
             ),
         )
 
+    # Signature check (P0-5): the declared content-type must match the real
+    # bytes. A PDF or HTML page renamed to .png is rejected before Pillow
+    # touches it. Stable 422 unsupported_media_type on positive mismatch.
+    limits.verify_upload_signature(raw, file.content_type, kind="image")
+
     # Persist raw bytes content-addressed.
     suffix = Path(file.filename or "").suffix.lower()
 
@@ -292,8 +301,7 @@ async def upload_photo(
     try:
         blob = await storage.write_blob(_stream(), suffix=suffix)
     except OSError as e:
-        log.exception("photo_upload_storage_failed",
-                      filename=file.filename, size_bytes=len(raw))
+        log.exception("photo_upload_storage_failed", size_bytes=len(raw))
         raise HTTPException(
             status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
             detail=f"Couldn't write to evidence vault: {e.__class__.__name__}",
@@ -304,6 +312,18 @@ async def upload_photo(
     src_id = uuid.uuid4()
     try:
         meta = images.analyze_and_thumbnail(raw, str(src_id))
+    except limits.PixelLimitExceeded as e:
+        # Decompression-bomb guard: rejected before decode. Stable 422.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": limits.CODE_IMAGE_TOO_LARGE,
+                "message": (
+                    "Image dimensions exceed the allowed pixel count."
+                ),
+                "max_pixels": e.max_pixels,
+            },
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -314,7 +334,7 @@ async def upload_photo(
         # decode failures land here. So do disk-write failures during
         # thumbnail save. Treat decode-class as 415, disk-class as 507.
         log.exception("photo_upload_image_processing_failed",
-                      filename=file.filename, size_bytes=len(raw),
+                      size_bytes=len(raw),
                       content_type=file.content_type)
         # Heuristic: errno set → real I/O error; no errno → PIL identify
         if getattr(e, "errno", None):
@@ -332,7 +352,7 @@ async def upload_photo(
         ) from e
     except Exception as e:  # noqa: BLE001
         log.exception("photo_upload_image_unexpected_failure",
-                      filename=file.filename, size_bytes=len(raw),
+                      size_bytes=len(raw),
                       content_type=file.content_type)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -514,11 +534,11 @@ async def upload_photo(
 # fixes from the dead-code removal so the diff stays minimal.
 
 _AUDIO_MIME_PREFIXES = ("audio/",)
-_VOICE_MAX_BYTES = 50 * 1024 * 1024  # 50MB; ~80 min of m4a
 
 
 @router.post("/voice", status_code=status.HTTP_201_CREATED)
 async def upload_voice(
+    request: Request,
     file: UploadFile = File(...),
     transcript: str | None = Form(default=None),
     title: str | None = Form(default=None),
@@ -543,15 +563,12 @@ async def upload_voice(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=f"Unsupported content-type: {file.content_type}; expected audio/*",
         )
-    raw = await file.read()
+    # Resource boundary (P0-5): CL fast-reject + streaming byte cap.
+    limits.reject_if_declared_length_over(request, limits.max_attachment_bytes())
+    raw = await limits.read_upload_capped(file)
     if not raw:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Empty audio file",
-        )
-    if len(raw) > _VOICE_MAX_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Audio exceeds {_VOICE_MAX_BYTES // (1024 * 1024)}MB",
         )
 
     suffix = Path(file.filename or "").suffix.lower() or ".m4a"
@@ -647,6 +664,7 @@ async def upload_voice(
 
 @router.post("/pdf", status_code=status.HTTP_201_CREATED)
 async def upload_pdf(
+    request: Request,
     file: UploadFile = File(...),
     source_label: str | None = Form(default=None),
     ctx: AuthContext = Depends(require_role("caregiver")),
@@ -659,9 +677,13 @@ async def upload_pdf(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=f"Unsupported content-type: {file.content_type}",
         )
-    raw = await file.read()
-    if not raw or raw[:5] != b"%PDF-":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not a PDF")
+    # Resource boundary (P0-5): CL fast-reject + streaming byte cap, then a
+    # signature check so a non-PDF renamed to .pdf is rejected before render.
+    limits.reject_if_declared_length_over(request, limits.max_attachment_bytes())
+    raw = await limits.read_upload_capped(file)
+    if not raw:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file")
+    limits.verify_upload_signature(raw, file.content_type, kind="pdf")
 
     suffix = ".pdf"
 
@@ -833,6 +855,7 @@ async def _ingest_one_ccda(
 
 @router.post("/ccda", status_code=status.HTTP_201_CREATED)
 async def upload_ccda(
+    request: Request,
     files: list[UploadFile] = File(...),
     source_label: str | None = Form(default=None),
     ctx: AuthContext = Depends(require_role("caregiver")),
@@ -856,6 +879,11 @@ async def upload_ccda(
     if not files:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No files")
 
+    # Resource boundary (P0-5): file-count cap + total-body fast reject up
+    # front; each file is then read through the streaming byte cap.
+    limits.enforce_file_count(files)
+    limits.reject_if_declared_length_over(request, limits.max_attachment_bytes())
+
     items: list[CcdaImportItem] = []
     parsed_n = 0
     skipped_n = 0
@@ -863,8 +891,20 @@ async def upload_ccda(
     total_facts = 0
 
     for f in files:
-        raw = await f.read()
         fname = f.filename
+        try:
+            raw = await limits.read_upload_capped(f)
+        except HTTPException as e:
+            # Keep the batch's partial-success contract: an oversized single
+            # file is skipped with a stable reason, the rest still process.
+            if e.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE:
+                items.append(CcdaImportItem(
+                    filename=fname, status="skipped",
+                    reason="file exceeds size limit",
+                ))
+                skipped_n += 1
+                continue
+            raise
         if not raw:
             items.append(CcdaImportItem(
                 filename=fname, status="skipped", reason="empty file",
@@ -892,9 +932,10 @@ async def upload_ccda(
             await db.refresh(src)
         except Exception as e:  # noqa: BLE001
             await db.rollback()
-            log.warning("ccda_ingest_failed", filename=fname, error=str(e))
+            log.warning("ccda_ingest_failed", exc_type=e.__class__.__name__)
             items.append(CcdaImportItem(
-                filename=fname, status="error", reason=f"parse/ingest failed: {e}",
+                filename=fname, status="error",
+                reason="could not parse as a CCDA/XML document",
             ))
             error_n += 1
             continue
@@ -1005,6 +1046,7 @@ async def upload_note(
 
 @router.post("/auto-export", status_code=status.HTTP_201_CREATED)
 async def upload_auto_export(
+    request: Request,
     file: UploadFile = File(...),
     source_label: str | None = Form(default=None),
     ctx: AuthContext = Depends(require_role("caregiver")),
@@ -1023,7 +1065,9 @@ async def upload_auto_export(
     belong in the clinical lane (FHIR/CCDA), not the wearable lane.
     """
     user = ctx.user
-    raw = await file.read()
+    # Resource boundary (P0-5): CL fast-reject + streaming byte cap.
+    limits.reject_if_declared_length_over(request, limits.max_attachment_bytes())
+    raw = await limits.read_upload_capped(file)
     if not raw:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file")
 
@@ -1040,11 +1084,11 @@ async def upload_auto_export(
     import json as _json
     try:
         payload = _json.loads(raw.decode("utf-8"))
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Auto Export JSON parse failed: {e}",
-        ) from e
+    except Exception:  # noqa: BLE001
+        # Stable code, no parser exception text in the response (P0-5 / P1-13).
+        limits.reject_unprocessable(
+            "Could not parse the upload as Health Auto Export JSON."
+        )
 
     parsed = auto_export_ingest.parse_health_auto_export(payload)
 

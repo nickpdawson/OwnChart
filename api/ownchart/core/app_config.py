@@ -76,8 +76,14 @@ class PrivacyConfig(BaseModel):
 
 
 class IngestConfig(BaseModel):
-    max_attachment_bytes: int = 50 * 1024 * 1024  # 50 MB per FHIR attachment
-    max_pdf_pages: int = 200
+    # Resource boundary for every upload / extraction lane (P0-5, release
+    # review 2026-07-20). These YAML values are the single source of truth;
+    # they are read + enforced by `ingest/limits.py` on every ingest path
+    # (photo, PDF, CCDA, voice, note, auto-export file + REST push).
+    max_attachment_bytes: int = 50 * 1024 * 1024  # 50 MB per uploaded file / body
+    max_pdf_pages: int = 200                       # render/OCR at most this many pages
+    max_image_pixels: int = 100 * 1000 * 1000      # 100 MP decompression-bomb guard
+    max_files_per_request: int = 50                # file-count cap on multi-file endpoints
     vision_extraction_enabled: bool = True
     cost_warning_pages: int = 20
 

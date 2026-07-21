@@ -24,8 +24,15 @@ from pillow_heif import register_heif_opener
 
 from ..core.config import get_settings
 from ..core.logger import get_logger
+from .limits import PixelLimitExceeded, max_image_pixels
 
 register_heif_opener()  # idempotent
+
+# Decompression-bomb guard (P0-5). Set Pillow's own ceiling explicitly rather
+# than relying on its ~178 MP default so the cap tracks config. Pillow raises
+# Image.DecompressionBombError past 2× this; we also do an exact pre-decode
+# dimension check below so we reject at the configured cap, not 2× it.
+Image.MAX_IMAGE_PIXELS = max_image_pixels()
 
 log = get_logger("ownchart.ingest.images")
 
@@ -128,9 +135,23 @@ def analyze_and_thumbnail(blob_bytes: bytes, source_id: str) -> ImageMetadata:
     Caller is responsible for persisting the SourceDocument row and
     setting captured_at + exif_metadata from the returned object.
     """
-    with Image.open(io.BytesIO(blob_bytes)) as img:
+    try:
+        img_cm = Image.open(io.BytesIO(blob_bytes))
+    except Image.DecompressionBombError as e:
+        # Pillow's own bomb tripwire (dimensions past 2× the cap) fired before
+        # we could measure. Surface as the same pixel-limit signal.
+        raise PixelLimitExceeded(-1, max_image_pixels()) from e
+    with img_cm as img:
         if img.format not in SUPPORTED_FORMATS:
             raise ValueError(f"Unsupported image format: {img.format!r}")
+
+        # Decompression-bomb guard: `Image.open` is lazy and reads the header
+        # only, so width*height is known before any pixel is decoded. Reject
+        # oversized images here, before exif_transpose / thumbnail allocate.
+        cap = max_image_pixels()
+        pixels = int(img.width) * int(img.height)
+        if pixels > cap:
+            raise PixelLimitExceeded(pixels, cap)
 
         # Honor EXIF orientation when generating thumbnails.
         try:

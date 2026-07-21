@@ -49,7 +49,7 @@ from ..core.auto_export_auth import (
 from ..core.config import get_settings
 from ..core.db import SessionLocal, get_session
 from ..core.logger import get_logger
-from ..ingest import storage
+from ..ingest import limits, storage
 from ..models.auto_export_token import AutoExportToken
 from ..models.source_document import SourceDocument
 
@@ -278,7 +278,11 @@ async def push_auto_export(
             db, authorization_header=authorization,
         )
 
-        raw = await request.body()
+        # Resource boundary (P0-5): fast Content-Length reject, then a
+        # streaming byte-capped read of the raw body. Unlike `request.body()`
+        # this aborts mid-stream so a runaway push never fully buffers.
+        limits.reject_if_declared_length_over(request, limits.max_attachment_bytes())
+        raw = await limits.read_body_capped(request)
         if not raw:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty body")
 

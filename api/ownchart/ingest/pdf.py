@@ -24,6 +24,7 @@ from ..core.logger import get_logger
 from ..extract import ocr as ocr_extract
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.source_document import SourceDocument
+from .limits import max_pdf_pages
 from .text_sanitize import strip_nul
 
 log = get_logger("ownchart.ingest.pdf")
@@ -39,32 +40,48 @@ class PageRender:
 
 @dataclass
 class PdfIngest:
-    page_count: int
+    page_count: int                        # pages actually rendered (== len(pages))
     pages: list[PageRender] = field(default_factory=list)
     pdf_metadata: dict[str, object] = field(default_factory=dict)
+    total_page_count: int = 0              # pages in the source PDF (>= page_count)
+    truncated: bool = False                # True when total_page_count > cap
 
 
 def _renders_dir(source_id: str) -> Path:
     return get_settings().data_dir / "renders" / source_id
 
 
-def render_pdf(blob_bytes: bytes, source_id: str, dpi: int = 200) -> PdfIngest:
-    """Render every page of a PDF to PNG and capture any embedded text layer.
+def render_pdf(
+    blob_bytes: bytes,
+    source_id: str,
+    dpi: int = 200,
+    max_pages: int | None = None,
+) -> PdfIngest:
+    """Render up to ``max_pages`` pages of a PDF to PNG and capture text layers.
 
     Args:
       blob_bytes: full PDF bytes
       source_id: SourceDocument.id (str) — used as the renders subdirectory
       dpi: render DPI; 200 is a good fax-readable default
+      max_pages: hard cap on pages rendered/OCR'd (P0-5). Defaults to
+        ``ingest.max_pdf_pages`` from config. A PDF with more pages is rendered
+        up to the cap and marked truncated so provenance stays honest — we
+        never silently claim to have read pages we skipped.
     """
+    cap = max_pdf_pages() if max_pages is None else max_pages
     out_dir = _renders_dir(source_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     doc = pymupdf.open(stream=blob_bytes, filetype="pdf")
     try:
+        total_pages = doc.page_count
+        truncated = total_pages > cap
         zoom = dpi / 72.0
         matrix = pymupdf.Matrix(zoom, zoom)
         pages: list[PageRender] = []
         for i, page in enumerate(doc, start=1):
+            if i > cap:
+                break
             png_path = out_dir / f"page-{i:04d}.png"
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             pix.save(png_path)
@@ -88,6 +105,9 @@ def render_pdf(blob_bytes: bytes, source_id: str, dpi: int = 200) -> PdfIngest:
         # every value before it lands in raw_metadata JSONB.
         meta = {
             "page_count": len(pages),
+            "total_page_count": total_pages,
+            "pages_truncated": truncated,
+            "max_pdf_pages": cap,
             "title": strip_nul(doc.metadata.get("title")) if doc.metadata else None,
             "author": strip_nul(doc.metadata.get("author")) if doc.metadata else None,
             "creator": strip_nul(doc.metadata.get("creator")) if doc.metadata else None,
@@ -98,9 +118,17 @@ def render_pdf(blob_bytes: bytes, source_id: str, dpi: int = 200) -> PdfIngest:
             "pdf_rendered",
             source_id=source_id,
             page_count=len(pages),
+            total_page_count=total_pages,
+            truncated=truncated,
             any_text=meta["any_page_has_text"],
         )
-        return PdfIngest(page_count=len(pages), pages=pages, pdf_metadata=meta)
+        return PdfIngest(
+            page_count=len(pages),
+            pages=pages,
+            pdf_metadata=meta,
+            total_page_count=total_pages,
+            truncated=truncated,
+        )
     finally:
         doc.close()
 
@@ -195,6 +223,8 @@ async def process_pdf_source(
     )
     return {
         "page_count": ingest.page_count,
+        "total_page_count": ingest.total_page_count,
+        "truncated": ingest.truncated,
         "any_page_has_text": ingest.pdf_metadata.get("any_page_has_text", False),
         "ocr_ran": ocr_summary.get("ran", False),
         "ocr_total_words": ocr_summary.get("total_words"),

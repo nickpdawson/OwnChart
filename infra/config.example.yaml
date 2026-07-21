@@ -57,9 +57,19 @@ privacy:
   exif_strip_gps_default: false
 
 ingest:
-  # Per-attachment cap when fetching FHIR Binary content
+  # Resource boundary — enforced on EVERY upload/extraction lane (photo,
+  # PDF, CCDA, voice, note, auto-export file + REST push) via ingest/limits.py.
+  # Per-file / per-body byte cap. Streamed and counted; oversize → 413.
   max_attachment_bytes: 52428800  # 50 MB
+  # Pages rendered/OCR'd per PDF. Extra pages are skipped and the source is
+  # marked truncated in raw_metadata (provenance stays honest) rather than
+  # rendering thousands of pages at 200 DPI.
   max_pdf_pages: 200
+  # Decompression-bomb guard: images past this pixel count are rejected
+  # before decode (422). 100 MP ~= 10000x10000.
+  max_image_pixels: 100000000
+  # File-count cap on multi-file endpoints (e.g. CCDA batch) → 413.
+  max_files_per_request: 50
   # Toggle to globally disable Claude Vision extraction without redeploying.
   # Per-source consent gate still applies.
   vision_extraction_enabled: true
