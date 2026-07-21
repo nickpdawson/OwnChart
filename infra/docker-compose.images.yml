@@ -5,7 +5,7 @@
 # from source locally. The base infra/docker-compose.yml is unchanged and
 # still builds by default; this file is opt-in.
 #
-# Pin a specific release and run WITHOUT --build:
+# ── Option A: pin by TAG (simple) ────────────────────────────────────────────
 #
 #   export OWNCHART_IMAGE_TAG=v0.1.0-alpha   # defaults to `latest` if unset
 #   docker compose \
@@ -19,18 +19,60 @@
 #     --env-file infra/.env \
 #     up -d
 #
+# ── Option B: pin by DIGEST (reproducible — recommended for prod) ─────────────
+#
+# A tag can be re-pushed; a digest cannot. The release workflow attaches an
+# SBOM, max provenance, and a signed build-provenance attestation to every
+# pushed image, and only promotes `latest` after the image passes a Trivy scan
+# — so deploying a *verified digest* is the strongest posture.
+#
+#   # 1. Resolve the digest for the tag you intend to ship:
+#   docker buildx imagetools inspect ghcr.io/nickpdawson/ownchart-api:v0.1.0-alpha
+#   docker buildx imagetools inspect ghcr.io/nickpdawson/ownchart-web:v0.1.0-alpha
+#
+#   # 2. (recommended) Verify provenance before trusting the digest:
+#   gh attestation verify \
+#     oci://ghcr.io/nickpdawson/ownchart-api@sha256:<api-digest> \
+#     --repo nickpdawson/ownchart
+#
+#   # 3. Pin the refs (api + worker share the api image) and deploy WITHOUT --build:
+#   export OWNCHART_API_REF="@sha256:<api-digest>"
+#   export OWNCHART_WEB_REF="@sha256:<web-digest>"
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.images.yml \
+#     --env-file infra/.env pull
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.images.yml \
+#     --env-file infra/.env up -d
+#
+# When OWNCHART_API_REF / OWNCHART_WEB_REF are unset (the default), each image
+# falls back to `:${OWNCHART_IMAGE_TAG:-latest}` — i.e. the exact tag behaviour
+# above, unchanged. Setting a `@sha256:…` ref overrides the tag for that image.
+#
 # `worker` shares the api image (same Dockerfile, different command), so both
-# point at ownchart-api. Postgres and Redis already run published upstream
-# images in the base file and need no override here.
+# point at ownchart-api. Postgres and Redis run published upstream images in
+# the base file (see the TODO at the bottom to digest-pin those too).
 
 name: ownchart
 
 services:
   api:
-    image: ghcr.io/nickpdawson/ownchart-api:${OWNCHART_IMAGE_TAG:-latest}
+    image: ghcr.io/nickpdawson/ownchart-api${OWNCHART_API_REF:-:${OWNCHART_IMAGE_TAG:-latest}}
 
   worker:
-    image: ghcr.io/nickpdawson/ownchart-api:${OWNCHART_IMAGE_TAG:-latest}
+    image: ghcr.io/nickpdawson/ownchart-api${OWNCHART_API_REF:-:${OWNCHART_IMAGE_TAG:-latest}}
 
   web:
-    image: ghcr.io/nickpdawson/ownchart-web:${OWNCHART_IMAGE_TAG:-latest}
+    image: ghcr.io/nickpdawson/ownchart-web${OWNCHART_WEB_REF:-:${OWNCHART_IMAGE_TAG:-latest}}
+
+# ── TODO (operator): digest-pin the third-party base images ───────────────────
+# Postgres (pgvector) and Redis are pinned by tag in infra/docker-compose.yml
+# (`pgvector/pgvector:pg16`, `redis:7-alpine`). Tags are mutable; pin them to
+# immutable digests for reproducible prod deploys. Resolve current digests with:
+#
+#   docker buildx imagetools inspect pgvector/pgvector:pg16 --format '{{.Manifest.Digest}}'
+#   docker buildx imagetools inspect redis:7-alpine        --format '{{.Manifest.Digest}}'
+#
+# then either edit the two `image:` lines in infra/docker-compose.yml to
+# `pgvector/pgvector:pg16@sha256:…` / `redis:7-alpine@sha256:…`, or add matching
+# `postgres:` / `redis:` service stanzas to THIS override file with the pinned
+# refs. (Left unpinned here rather than hard-coding a digest that couldn't be
+# resolved offline at authoring time — no network in the build env.)

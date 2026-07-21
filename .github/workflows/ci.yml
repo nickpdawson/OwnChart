@@ -15,6 +15,16 @@
 #
 # --frozen / npm ci both fail loudly if a lockfile is missing or out of sync
 # with its manifest, which is the whole point of committing the lockfiles.
+#
+#   dep-audit  — blocking vulnerability audit of the *locked* dependency sets:
+#                pip-audit against the exported api/uv.lock, and `npm audit`
+#                against web/package-lock.json (prod deps, high+). A newly
+#                disclosed CVE in a pinned dep fails the build so it can't ride
+#                a release tag. To waive a specific unfixable advisory, add
+#                `--ignore-vuln GHSA-xxxx-...` (pip) or bump the npm audit level.
+#
+# Third-party actions are pinned by commit SHA (supply-chain hardening); the
+# trailing `# vX.Y.Z` comment is the human-readable tag Dependabot bumps.
 
 name: CI
 
@@ -23,6 +33,10 @@ on:
     branches: [dev, main]
   pull_request:
     branches: [dev, main]
+
+# Least privilege for the whole workflow; jobs may narrow further but never widen.
+permissions:
+  contents: read
 
 # A newer push to the same ref cancels the older in-flight run.
 concurrency:
@@ -33,14 +47,16 @@ jobs:
   api-tests:
     name: API — uv sync --frozen + pytest
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: api
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install uv (pinned)
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           version: "0.8.15"
           enable-cache: true
@@ -55,14 +71,16 @@ jobs:
   web-build:
     name: Web — npm ci + next build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -75,3 +93,38 @@ jobs:
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
+
+  dep-audit:
+    name: Dependency audit (pip-audit + npm audit)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install uv (pinned)
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.8.15"
+          enable-cache: true
+          cache-dependency-glob: api/uv.lock
+
+      # Export the fully-resolved, locked prod deps and audit exactly those
+      # versions. `--no-emit-project` drops the local package itself; `--no-dev`
+      # scopes to what actually ships in the image (mirrors `npm audit --omit=dev`).
+      - name: Export locked API requirements
+        working-directory: api
+        run: uv export --frozen --no-dev --no-emit-project --no-hashes -o requirements.audit.txt
+
+      - name: Audit Python dependencies (pip-audit)
+        working-directory: api
+        run: uvx pip-audit --strict --requirement requirements.audit.txt
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      # Blocking on high+ advisories in the shipped (non-dev) npm tree.
+      - name: Audit web dependencies (npm audit)
+        run: npm --prefix web audit --omit=dev --audit-level=high

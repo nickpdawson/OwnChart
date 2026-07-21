@@ -5,14 +5,30 @@
 #   ghcr.io/nickpdawson/ownchart-api
 #   ghcr.io/nickpdawson/ownchart-web
 #
-# Each is tagged with the git tag AND `latest`. A self-hoster pins a release
-# by using infra/docker-compose.images.yml as an override and setting
-# OWNCHART_IMAGE_TAG=v0.1.0-alpha (see that file's header).
+# Pipeline (fail-closed at every gate):
+#   1. verify-ci — refuse to publish a tag whose commit has not passed the CI
+#      workflow (api-tests + web-build + dep-audit) on that exact SHA. If CI
+#      never ran on the tagged commit, this fails loudly. Tag only commits that
+#      have already gone green on dev/main.
+#   2. publish   — multi-arch (linux/amd64 + linux/arm64) build+push with an
+#      SBOM and max provenance attached to the image, PLUS a signed GitHub
+#      build-provenance attestation. The just-built image (by digest) is then
+#      Trivy-scanned; only after the scan passes is the `latest` tag promoted
+#      to that digest. A scan failure leaves `latest` on the previous release.
 #
-# Auth: the built-in GITHUB_TOKEN logs in to GHCR — no PAT needed. The job
-# grants itself `packages: write`. On the first publish the package is created
-# private; make it public (or grant pull) from the repo's Packages settings
-# if self-hosters need anonymous pulls.
+# Verifying provenance before deploy (self-hoster / levi):
+#   gh attestation verify \
+#     oci://ghcr.io/nickpdawson/ownchart-api@sha256:<digest> \
+#     --repo nickpdawson/ownchart
+#   (resolve <digest> with `docker buildx imagetools inspect ghcr.io/nickpdawson/ownchart-api:vX.Y.Z`)
+#
+# Auth: the built-in GITHUB_TOKEN logs in to GHCR — no PAT needed. On the first
+# publish the package is created private; make it public (or grant pull) from
+# the repo's Packages settings if self-hosters need anonymous pulls
+# (see infra/DEPLOYMENT-production-beta.md §4b).
+#
+# Third-party actions are pinned by commit SHA (supply-chain hardening); the
+# trailing `# vX.Y.Z` comment is the human-readable tag Dependabot bumps.
 
 name: Release images
 
@@ -21,13 +37,54 @@ on:
     tags:
       - "v*"
 
+# Least privilege at the top; each job grants only what it needs.
+permissions:
+  contents: read
+
 jobs:
-  publish:
-    name: Build + push ${{ matrix.name }}
+  # --- Gate: the tagged commit must have passed CI ------------------------------
+  verify-ci:
+    name: Verify CI passed for the tagged commit
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      actions: read # read CI workflow-run history for this SHA
+    steps:
+      - name: Require a successful CI run for ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          echo "Tag ${GITHUB_REF_NAME} points at commit ${SHA}"
+          echo "Looking for a completed CI (ci.yml) run on that exact commit…"
+          runs=$(gh api \
+            "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=completed" \
+            --jq '.workflow_runs')
+          total=$(echo "${runs}" | jq 'length')
+          if [ "${total}" -eq 0 ]; then
+            echo "::error::No completed CI run found for ${SHA}. Only tag commits that have already passed CI on dev/main."
+            exit 1
+          fi
+          success=$(echo "${runs}" | jq '[.[] | select(.conclusion == "success")] | length')
+          if [ "${success}" -eq 0 ]; then
+            latest=$(echo "${runs}" | jq -r '.[0].conclusion')
+            echo "::error::CI did not succeed for ${SHA} (found ${total} completed run(s), 0 successful; most recent conclusion: ${latest})."
+            exit 1
+          fi
+          echo "CI green for ${SHA} (${success} successful run(s) of ci.yml). Proceeding to publish."
+
+  # --- Publish: multi-arch build, SBOM/provenance/attestation, scan, promote ----
+  publish:
+    name: Build + push ${{ matrix.name }}
+    needs: verify-ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # OIDC token for provenance signing
+      attestations: write # write the build-provenance attestation
     strategy:
       fail-fast: false
       matrix:
@@ -39,34 +96,73 @@ jobs:
             context: web
             image: ghcr.io/nickpdawson/ownchart-web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Only the immutable version tag here; `latest` is promoted AFTER the scan
+      # passes (flavor latest=false disables metadata-action's auto-latest).
       - name: Derive image tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
         with:
           images: ${{ matrix.image }}
+          flavor: latest=false
           tags: |
             type=ref,event=tag
-            type=raw,value=latest
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - name: Build and push (multi-arch, SBOM + provenance)
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.context }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # Scan the exact image we just pushed, by digest. Fail on fixable
+      # CRITICAL/HIGH; unfixed advisories are ignored so a distro backlog can't
+      # wedge a release. Auth via the GHCR creds set by login-action above.
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ matrix.image }}@${{ steps.build.outputs.digest }}
+          format: table
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # Only images that passed Trivy get the moving `latest` tag.
+      - name: Promote scanned image to :latest
+        run: |
+          docker buildx imagetools create \
+            -t ${{ matrix.image }}:latest \
+            ${{ matrix.image }}@${{ steps.build.outputs.digest }}

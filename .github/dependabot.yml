@@ -1,0 +1,51 @@
+# Dependabot — weekly dependency updates for the three ecosystems OwnChart
+# ships from. Minor/patch bumps are grouped into a single PR per ecosystem to
+# keep review noise low; majors open individually so breaking changes get a
+# dedicated review. Security updates always open regardless of schedule.
+#
+# The `pip` ecosystem understands uv projects (pyproject.toml + uv.lock).
+version: 2
+updates:
+  # Backend — FastAPI/SQLAlchemy/etc, resolved via api/uv.lock
+  - package-ecosystem: pip
+    directory: /api
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(api)"
+    groups:
+      api-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Web — Next.js app, resolved via web/package-lock.json
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(web)"
+    groups:
+      web-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # CI — the pinned third-party actions in .github/workflows/*
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(actions)"
+    groups:
+      actions-all:
+        patterns:
+          - "*"
