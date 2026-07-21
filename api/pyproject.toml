@@ -8,14 +8,14 @@ dependencies = [
   "uvicorn[standard]>=0.32",
   "pydantic[email]>=2.9",
   "email-validator>=2.2",
-  "pydantic-settings>=2.6",
+  "pydantic-settings>=2.14.2",
   "sqlalchemy[asyncio]>=2.0.36",
   "asyncpg>=0.30",
   "alembic>=1.14",
   "pgvector>=0.3.6",
   "argon2-cffi>=23.1",
   "itsdangerous>=2.2",
-  "python-multipart>=0.0.20",
+  "python-multipart>=0.0.31",
   "anthropic>=0.40",
   "arq>=0.26",
   "redis>=5.2",
@@ -25,12 +25,12 @@ dependencies = [
   "lxml>=5.3",
   "pymupdf>=1.24",
   # Image ingestion: JPEG/PNG/GIF/TIFF native via Pillow; HEIC via pillow-heif.
-  "pillow>=11.0",
+  "pillow>=12.3.0",
   "pillow-heif>=0.20",
   # Tesseract bindings — OCR for fax_pdf pages without a text layer.
   "pytesseract>=0.3.13",
   # AES-256-GCM for OAuth token at-rest encryption.
-  "cryptography>=43.0",
+  "cryptography>=48.0.1",
 ]
 
 [dependency-groups]

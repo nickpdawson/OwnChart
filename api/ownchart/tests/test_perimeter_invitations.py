@@ -99,11 +99,12 @@ def test_preview_route_has_no_auth_dependency(app_fixture):
     """
     from ownchart.core.auth_context import get_auth_context
     from ownchart.core.device_auth import get_user_from_device_token_or_session
+    from ownchart.tests.conftest import iter_api_routes
 
     preview_route = next(
         (
-            r for r in app_fixture.routes
-            if getattr(r, "path", None) == "/api/invitations/preview"
+            r for path, r in iter_api_routes(app_fixture)
+            if path == "/api/invitations/preview"
         ),
         None,
     )

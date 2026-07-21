@@ -45,6 +45,31 @@ def _import_app():
     return app
 
 
+def iter_api_routes(app):
+    """Yield ``(full_path, route)`` for every APIRoute reachable from
+    ``app``.
+
+    FastAPI 0.139 changed ``include_router`` so that included routers are
+    no longer flattened into ``app.routes`` — each shows up as a single
+    ``_IncludedRouter`` wrapper (``.original_router`` holds the real
+    ``APIRoute`` objects, ``.include_context.prefix`` holds the mount
+    prefix). Walk through those wrappers so route-introspection tests see
+    the effective path regardless of how FastAPI stores the tree.
+    """
+
+    def _walk(routes, prefix):
+        for r in routes:
+            orig = getattr(r, "original_router", None)
+            if orig is not None:
+                ctx = getattr(r, "include_context", None)
+                sub_prefix = getattr(ctx, "prefix", "") or ""
+                yield from _walk(orig.routes, prefix + sub_prefix)
+            elif getattr(r, "path", None) is not None:
+                yield prefix + r.path, r
+
+    yield from _walk(app.routes, "")
+
+
 def _synthetic_user(
     *,
     user_id: uuid.UUID | None = None,

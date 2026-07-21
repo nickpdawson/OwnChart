@@ -302,10 +302,11 @@ def test_both_preview_routes_have_no_auth_dependency(app_fixture):
     from ownchart.core.device_auth import (
         get_user_from_device_token_or_session,
     )
+    from ownchart.tests.conftest import iter_api_routes
 
     preview_routes = [
-        r for r in app_fixture.routes
-        if getattr(r, "path", None) == "/api/invitations/preview"
+        r for path, r in iter_api_routes(app_fixture)
+        if path == "/api/invitations/preview"
     ]
     # Both GET and POST must be registered.
     methods = set()
