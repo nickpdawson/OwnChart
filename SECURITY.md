@@ -212,10 +212,20 @@ Headers the proxy should set or pass:
 
 Headers OwnChart sets:
 
-- `Strict-Transport-Security` (when `OWNCHART_ENV=prod`).
+Web tier (every response):
+
+- `Strict-Transport-Security: max-age=63072000; includeSubDomains` — sent unconditionally; browsers only honor it over HTTPS, so it is a no-op on a plain-HTTP dev instance and correct on every TLS-terminated deployment.
 - `X-Content-Type-Options: nosniff`.
-- `X-Frame-Options: DENY`.
-- `Content-Security-Policy` — restrictive default; configurable for forks adding embeds.
+- `Referrer-Policy: strict-origin-when-cross-origin`.
+- `Permissions-Policy: camera=(), microphone=(), geolocation=()`.
+- `Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'self'` — clickjacking + base-tag hardening (the modern replacement for `X-Frame-Options: DENY`). A full `script-src` lockdown is a tracked follow-up — Next.js's inline bootstrap needs nonces/hashes wired through — so this CSP is **not** yet a script allowlist.
+
+API tier (every `/api/*` response):
+
+- `X-Content-Type-Options: nosniff`.
+- `Cache-Control: private, no-store` — PHI behind `/api` is never retained by a shared or browser cache.
+
+Behind a proxy you control, set `server.trusted_proxies` in `config.yaml` to that proxy's egress IP/CIDR so per-IP rate limits and audit logs attribute the real client (an untrusted peer's `X-Forwarded-For` is ignored).
 
 ## 10. Backups and recovery
 

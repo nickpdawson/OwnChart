@@ -18,6 +18,18 @@ instance:
   # Optional. Surfaced in /tos as the legal/abuse contact.
   owner_contact: you@example.com
 
+server:
+  # Reverse proxies allowed to set X-Forwarded-For / CF-Connecting-IP, as
+  # plain IPs or CIDR blocks. Client-IP attribution (rate limiting, audit)
+  # trusts those forwarded headers ONLY when the direct socket peer matches
+  # an entry here; an untrusted peer's forwarded headers are ignored and the
+  # socket peer is used. Empty (default) = trust nothing. If you terminate
+  # TLS at NPM/Caddy/Cloudflare, list the proxy's egress range(s) so per-IP
+  # limits see the real client instead of the proxy.
+  trusted_proxies: []
+  #  - 10.25.1.182/32       # e.g. your NPM host
+  #  - 173.245.48.0/20      # e.g. a Cloudflare egress range
+
 auth:
   # V1 is single-tenant by design. Flip true once you've added email
   # verification (requires smtp.enabled=true).

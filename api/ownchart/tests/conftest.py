@@ -106,6 +106,26 @@ def _synthetic_record(
     )
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Reset the module-singleton rate limiter's in-process counter around
+    each test.
+
+    P1-8a made X-Forwarded-For untrusted by default, so the old
+    isolation trick (a unique synthetic ``X-Forwarded-For`` per call) no
+    longer separates buckets — the TestClient socket peer collapses every
+    call into one bucket. Clearing the shared counter per test is the
+    robust isolation mechanism and keeps the module singleton from bleeding
+    counts across tests.
+    """
+    from ownchart.core.rate_limit import get_rate_limiter
+
+    limiter = get_rate_limiter()
+    limiter._inproc._hits.clear()
+    yield
+    limiter._inproc._hits.clear()
+
+
 @pytest.fixture
 def app_fixture():
     """Yield the FastAPI app, then clear any dependency overrides

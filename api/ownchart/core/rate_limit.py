@@ -25,11 +25,13 @@ with a ``Retry-After`` header when any dimension is over its limit.
 
 from __future__ import annotations
 
+import ipaddress
 import time
 from dataclasses import dataclass
 
 from fastapi import HTTPException, Request, status
 
+from ..core.app_config import get_app_config
 from ..core.config import get_settings
 from ..core.logger import get_logger
 
@@ -212,22 +214,106 @@ def get_rate_limiter() -> RateLimiter:
     return _limiter
 
 
-def client_ip(request: Request) -> str:
-    """Best-effort client IP.
+# ---------------------------------------------------------------------------
+# Trusted-proxy client-IP resolution (P1-8a)
+#
+# The old code took X-Forwarded-For's LEFTMOST value unconditionally, which
+# is attacker-controlled: any client can send `X-Forwarded-For: 1.2.3.4` and
+# evade a per-IP limit. The rule now is: only believe forwarded headers when
+# the direct socket peer is a configured trusted proxy; otherwise use the
+# peer verbatim and ignore the headers entirely.
 
-    Behind the demo/tenant reverse proxy the socket peer is the proxy,
-    so honor ``X-Forwarded-For``'s first hop when present. Falls back to
-    the socket peer. Never raises — an unknown IP collapses to a shared
-    ``"unknown"`` bucket rather than bypassing the limit.
+
+def _parse_networks(cidrs: list[str]) -> list:
+    """Parse a trusted-proxy allowlist into ip_network objects. Tolerant —
+    a malformed entry is skipped (never a crash, never a silent trust-all)."""
+    nets = []
+    for raw in cidrs:
+        entry = (raw or "").strip()
+        if not entry:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            log.warning("rate_limit_bad_trusted_proxy", value=entry[:64])
+    return nets
+
+
+def _ip_in_networks(ip_str: str, networks: list) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return any(addr in net for net in networks)
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def extract_client_ip(
+    *,
+    peer: str | None,
+    xff: str | None,
+    cf_connecting_ip: str | None,
+    trusted_cidrs: list[str],
+) -> str:
+    """Resolve the real client IP under a trusted-proxy model. Pure.
+
+    - No socket peer at all → ``"unknown"`` (a bounded shared bucket, never
+      a bypass).
+    - Peer is NOT a trusted proxy → return the peer; forwarded headers are
+      attacker-controlled and are ignored.
+    - Peer IS a trusted proxy →
+        * honor ``CF-Connecting-IP`` if present + valid (Cloudflare's
+          single-value real-client header), else
+        * walk ``X-Forwarded-For`` right-to-left and return the first hop
+          that is a valid IP and is NOT itself a trusted proxy, else
+        * fall back to the peer.
     """
-    xff = request.headers.get("x-forwarded-for")
+    if not peer:
+        return "unknown"
+    networks = _parse_networks(trusted_cidrs)
+    if not _ip_in_networks(peer, networks):
+        # Direct client (or an unconfigured proxy) — trust only the peer.
+        return peer[:64]
+
+    # Peer is trusted: forwarded headers are meaningful.
+    if cf_connecting_ip:
+        cf = cf_connecting_ip.strip()
+        if _is_ip(cf):
+            return cf[:64]
+
     if xff:
-        first = xff.split(",")[0].strip()
-        if first:
-            return first[:64]
-    if request.client and request.client.host:
-        return request.client.host[:64]
-    return "unknown"
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        for hop in reversed(hops):
+            if _is_ip(hop) and not _ip_in_networks(hop, networks):
+                return hop[:64]
+
+    # Every forwarded hop was itself a trusted proxy (or absent/invalid) —
+    # the most honest remaining signal is the peer.
+    return peer[:64]
+
+
+def client_ip(request: Request) -> str:
+    """Best-effort real client IP for rate-limit bucketing. Never raises —
+    an unknown IP collapses to a shared ``"unknown"`` bucket rather than
+    bypassing the limit. See :func:`extract_client_ip` for the trust rule."""
+    try:
+        peer = request.client.host if request.client else None
+        return extract_client_ip(
+            peer=peer,
+            xff=request.headers.get("x-forwarded-for"),
+            cf_connecting_ip=request.headers.get("cf-connecting-ip"),
+            trusted_cidrs=get_app_config().server.trusted_proxies,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("rate_limit_client_ip_error", error=f"{type(exc).__name__}: {exc}")
+        return "unknown"
 
 
 async def enforce_rate_limit(

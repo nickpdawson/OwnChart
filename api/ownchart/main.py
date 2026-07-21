@@ -186,6 +186,23 @@ app.middleware("http")(_demo_readonly_middleware)
 app.add_middleware(DemoSessionMiddleware)
 
 
+# P1-8b: security headers on every /api response. The web tier sets the
+# browser-facing headers (HSTS/CSP/etc, see web/next.config.mjs); here we
+# harden the API surface itself — nosniff, and `private, no-store` so PHI
+# behind /api is never retained by a shared cache. Registered LAST so it is
+# the outermost user middleware and also stamps demo-guard 403s and the
+# exception-handler error responses. `setdefault` leaves any explicit
+# per-route Cache-Control intact (there are no public-cacheable /api routes
+# today — the FileResponse endpoints serve PHI and want no-store too).
+@app.middleware("http")
+async def _api_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api"):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Cache-Control", "private, no-store")
+    return response
+
+
 # Catch-all exception handler. Without this, an unhandled exception in
 # any route lets uvicorn return a plain-text "Internal Server Error"
 # (21 bytes), which iOS can't decode into OCError.detail — the user

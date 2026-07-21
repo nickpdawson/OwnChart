@@ -41,6 +41,23 @@ class InstanceConfig(BaseModel):
     owner_contact: str | None = None
 
 
+class ServerConfig(BaseModel):
+    """Network / reverse-proxy trust (P1-8a).
+
+    ``trusted_proxies`` is the allowlist of reverse proxies that sit in
+    front of OwnChart, as plain IPs or CIDR blocks (e.g.
+    ``["10.25.1.182/32", "173.245.48.0/20"]``). Client-IP attribution
+    (rate limiting, audit) trusts ``X-Forwarded-For`` / ``CF-Connecting-IP``
+    ONLY when the direct socket peer matches one of these — otherwise the
+    forwarded headers are attacker-controlled and are ignored in favour of
+    the socket peer. Empty (the default) = trust nothing; always use the
+    socket peer. Operators terminating TLS at NPM/Cloudflare should set the
+    proxy's egress range(s) here so per-IP limits see the real client.
+    """
+
+    trusted_proxies: list[str] = Field(default_factory=list)
+
+
 class AuthConfig(BaseModel):
     allow_self_registration: bool = False  # V1 single-tenant
     require_email_verification: bool = False  # only meaningful with smtp.enabled
@@ -97,6 +114,7 @@ class RetentionConfig(BaseModel):
 
 class AppConfig(BaseModel):
     instance: InstanceConfig = Field(default_factory=InstanceConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     smtp: SmtpConfig = Field(default_factory=SmtpConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)

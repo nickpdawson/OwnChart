@@ -18,6 +18,34 @@ const nextConfig = {
     // 03:17 UTC. Bumped to 240s for headroom.
     proxyTimeout: 240_000,
   },
+  async headers() {
+    // P1-8b security headers. Applied to every response the web tier
+    // serves. Deliberately conservative on CSP: we set frame-ancestors /
+    // object-src / base-uri (safe for Next.js) but do NOT attempt a full
+    // script-src lockdown in this pass — Next's inline bootstrap + chunk
+    // loading would need nonces/hashes wired through, a separate change.
+    //
+    // HSTS is sent unconditionally: browsers only honor it over HTTPS, so
+    // it's a no-op for a plain-HTTP localhost dev instance and correct for
+    // every TLS-terminated deployment.
+    const securityHeaders = [
+      {
+        key: "Strict-Transport-Security",
+        value: "max-age=63072000; includeSubDomains",
+      },
+      { key: "X-Content-Type-Options", value: "nosniff" },
+      { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+      {
+        key: "Permissions-Policy",
+        value: "camera=(), microphone=(), geolocation=()",
+      },
+      {
+        key: "Content-Security-Policy",
+        value: "frame-ancestors 'none'; object-src 'none'; base-uri 'self'",
+      },
+    ];
+    return [{ source: "/:path*", headers: securityHeaders }];
+  },
   async rewrites() {
     // The web container talks to the api container over the docker network.
     // Browser-originated /api/* calls are proxied to the FastAPI service,

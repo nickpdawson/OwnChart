@@ -145,12 +145,27 @@ async def test_enforce_noop_when_disabled():
         )
 
 
-def test_client_ip_prefers_forwarded_for():
+def test_client_ip_untrusted_peer_ignores_forwarded_for():
+    # P1-8a: default config has no trusted proxies, so a spoofable
+    # X-Forwarded-For is ignored and the socket peer wins.
     req = SimpleNamespace(
         headers={"x-forwarded-for": "203.0.113.7, 10.0.0.1"},
         client=SimpleNamespace(host="10.0.0.1"),
     )
-    assert rl.client_ip(req) == "203.0.113.7"
+    assert rl.client_ip(req) == "10.0.0.1"
+
+
+def test_client_ip_trusted_peer_extracts_forwarded_for():
+    # When the peer IS a configured trusted proxy, walk XFF for the client.
+    fake_cfg = SimpleNamespace(
+        server=SimpleNamespace(trusted_proxies=["10.0.0.1/32"]),
+    )
+    with patch.object(rl, "get_app_config", lambda: fake_cfg):
+        req = SimpleNamespace(
+            headers={"x-forwarded-for": "203.0.113.7, 10.0.0.1"},
+            client=SimpleNamespace(host="10.0.0.1"),
+        )
+        assert rl.client_ip(req) == "203.0.113.7"
 
 
 def test_client_ip_falls_back_to_peer():
