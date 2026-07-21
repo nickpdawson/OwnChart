@@ -32,6 +32,7 @@ from .routes import (
     connectors,
     consent,
     conversations,
+    data_map,
     discover,
     episodes,
     exports,
@@ -42,6 +43,7 @@ from .routes import (
     instance,
     invitations,
     llm_providers,
+    model_runs,
     sensemaking,
     settings as settings_routes,
     sources,
@@ -263,6 +265,8 @@ async def _http_exception_handler(
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(account.router, prefix="/api/account", tags=["account"])
+app.include_router(data_map.router, prefix="/api/account", tags=["account"])
+app.include_router(model_runs.router, prefix="/api/model-runs", tags=["model-runs"])
 app.include_router(auth_device.router, prefix="/api/auth/device", tags=["auth-device"])
 app.include_router(auth_recovery.router, prefix="/api/auth", tags=["auth"])
 app.include_router(consent.router, prefix="/api/consent", tags=["consent"])
