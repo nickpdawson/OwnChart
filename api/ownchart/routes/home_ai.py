@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.config import get_settings
 from ..core.db import get_session
+from ..core.logger import get_logger
 from ..core.demo_session import (
     demo_seeded_or_owned_clause,
     demo_topic_clause_for_sid,
@@ -58,6 +59,7 @@ from ..models.topic import Topic
 from ..models.user import User
 
 router = APIRouter()
+log = get_logger("ownchart.routes.home_ai")
 
 
 class SuggestedQuestion(BaseModel):
@@ -743,13 +745,17 @@ async def _build_home_insight(
         _INSIGHT_CACHE[key] = None
         return None
 
+    # Only ids the model was actually shown (audit item 7): the prompt
+    # listed recent_major + recent_all[:20], nothing else.
+    from ..llm.citations import filter_fact_ids
+    shown_ids = {f.id for f in recent_major} | {f.id for f in recent_all[:20]}
+    related, dropped = filter_fact_ids(out.get("related_fact_ids") or [], shown_ids)
+    if dropped:
+        log.warning("home_insight_related_ids_dropped", dropped=dropped)
     insight = HomeInsight(
         body=str(out.get("body", "")).strip(),
         question=(str(out["question"]).strip() if out.get("question") else None),
-        related_fact_ids=[
-            str(fid) for fid in (out.get("related_fact_ids") or [])
-            if isinstance(fid, str)
-        ],
+        related_fact_ids=related,
         generated_at=now,
     )
     _INSIGHT_CACHE[key] = insight

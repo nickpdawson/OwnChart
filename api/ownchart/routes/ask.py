@@ -12,6 +12,8 @@ rejected if it contains nothing else.
 
 from __future__ import annotations
 
+import uuid
+
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -27,8 +29,7 @@ from ..core.demo_session import apply_demo_session_scope
 from ..core.logger import get_logger
 from ..core.rate_limit import enforce_demo_ai_budget
 from ..llm import call_with_tool, get_registry
-from ..models.conversation import Conversation, ConversationMessage
-from ..models.extracted_fact import ExtractedFact
+from ..models.conversation import Conversation, ConversationCitation, ConversationMessage
 from ..retrieval.calendar_life_context import (
     fetch_calendar_life_context,
     format_calendar_context_block,
@@ -270,14 +271,37 @@ async def ask(
             role="user",
             content=body.question,
         ))
-        db.add(ConversationMessage(
+        assistant_msg = ConversationMessage(
             conversation_id=conv.id,
             user_id=user.id,
             person_record_id=ctx.active_record_id,
             role="assistant",
             content=answer_text,
             model_run_id=result.model_run_id,
-        ))
+            structured_output={
+                **out,
+                "citations": [c.model_dump() for c in citations_filtered],
+                "citation_audit": {
+                    "accepted": len(citations_filtered),
+                    "dropped": max(len(citations_in) - len(citations_filtered), 0),
+                },
+            },
+        )
+        db.add(assistant_msg)
+        await db.flush()
+        # Audit item 7: the saved thread must carry the same evidence
+        # links the caller received, or the research artifact silently
+        # loses its citations the moment it is opened in /chat.
+        for ord_, c in enumerate(citations_filtered):
+            db.add(ConversationCitation(
+                message_id=assistant_msg.id,
+                citation_type="fact",
+                subject_id=uuid.UUID(c.fact_id),
+                claim_label=out.get("claim_label"),
+                note=c.note,
+                ordinal=ord_,
+                created_at=now,
+            ))
         await db.commit()
         conv_id_out = str(conv.id)
 

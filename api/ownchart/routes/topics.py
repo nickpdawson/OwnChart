@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.auth_context import AuthContext, get_auth_context, require_role
 from ..core.consent import require_phi_consent
 from ..core.db import get_session
+from ..core.logger import get_logger
 from ..core.demo_session import (
     apply_demo_session_scope,
     demo_scope_visible,
@@ -57,6 +58,7 @@ _SELF_HARM_RESPONSE = (
 )
 
 router = APIRouter()
+log = get_logger("ownchart.routes.topics")
 
 
 class TopicSummary(BaseModel):
@@ -754,16 +756,34 @@ async def generate_exec_brief(
     )
     out = result.tool_input or {}
 
+    # Audit item 7: a brief may cite only the facts it was given. Fact
+    # ids from elsewhere (another record, hallucinated) are stripped;
+    # statements left without support are flagged `unsupported` for the
+    # UI to qualify.
+    from ..llm.citations import filter_fact_ids, filter_statements
+    allowed_ids = {f.id for f in facts}
+    well_supported, d1 = filter_statements(out.get("well_supported") or [], allowed_ids)
+    uncertain, d2 = filter_statements(out.get("uncertain") or [], allowed_ids)
+    raw_citations = [c for c in (out.get("citations") or []) if isinstance(c, dict)]
+    kept_ids, d3 = filter_fact_ids([c.get("fact_id") for c in raw_citations], allowed_ids)
+    kept_set = set(kept_ids)
+    brief_citations = [c for c in raw_citations if str(c.get("fact_id")) in kept_set]
+    if d1 or d2 or d3:
+        log.warning(
+            "brief_citations_dropped", topic=topic.slug,
+            dropped_statement_ids=d1 + d2, dropped_citations=d3,
+        )
+
     brief = TopicBrief(
         topic_id=topic.id,
         person_record_id=ctx.active_record_id,
         model_run_id=result.model_run_id,
         prompt_version=prompt.version_tag,
         narrative=out.get("narrative"),
-        well_supported=out.get("well_supported", []) or [],
-        uncertain=out.get("uncertain", []) or [],
+        well_supported=well_supported,
+        uncertain=uncertain,
         suggested_questions=out.get("suggested_questions", []) or [],
-        citations=out.get("citations", []) or [],
+        citations=brief_citations,
         safety_response=out.get("safety_response"),
         error=result.error,
     )

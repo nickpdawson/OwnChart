@@ -956,44 +956,49 @@ async def add_user_message_and_reply(
 
     # Persist citations as their own rows, deduped on (type, subject_id).
     #
-    # M02 perimeter (Batch 5): citations the LLM emits must point at
-    # subjects that live on the active record. We pre-compute the
-    # in-scope `fact` and `source` id sets from the evidence we just
-    # gathered and drop any citation whose subject_id isn't in it.
-    # Other citation types (`anchor`, `episode`, `candidate`, `event`)
-    # pass through — they don't surface across records in V1, but if
-    # a future LLM emits one we don't silently insert it without
-    # being scoped. Validate those separately when we light them up.
+    # M02 perimeter (Batch 5) + audit item 7 (2026-11-10): every citation
+    # type is checked against the evidence the model was shown — facts,
+    # their sources, and the anchors behind those facts. Types we cannot
+    # verify are dropped, and the count of removals is stored on the
+    # message as `citation_audit` so the saved artifact does not present
+    # a quietly shortened source list as complete.
+    from .citations import filter_citations
     in_scope_fact_ids = {f.id for f in facts}
     in_scope_source_ids = {s.id for s in sources}
-    seen: set[tuple[str, uuid.UUID]] = set()
-    for ord_, c in enumerate(citations_in):
-        ctype = c.get("citation_type")
-        sid = c.get("subject_id")
-        if not ctype or not sid:
-            continue
-        try:
-            subject_id = uuid.UUID(str(sid))
-        except (TypeError, ValueError):
-            continue
-        if (ctype, subject_id) in seen:
-            continue
-        if ctype == "fact" and subject_id not in in_scope_fact_ids:
-            # Hallucinated or out-of-record fact id — drop silently.
-            continue
-        if ctype == "source" and subject_id not in in_scope_source_ids:
-            continue
-        seen.add((ctype, subject_id))
+    in_scope_anchor_ids = {
+        aid for f in facts for aid in (f.evidence_anchor_ids or [])
+    }
+    accepted, audit = filter_citations(
+        citations_in,
+        fact_ids=in_scope_fact_ids,
+        source_ids=in_scope_source_ids,
+        anchor_ids=in_scope_anchor_ids,
+    )
+    for ord_, c in enumerate(accepted):
         db.add(ConversationCitation(
             message_id=assistant_msg.id,
-            citation_type=ctype,
-            subject_id=subject_id,
+            citation_type=c["citation_type"],
+            subject_id=uuid.UUID(c["subject_id"]),
             claim_label=c.get("claim_label"),
             excerpt=c.get("excerpt"),
             note=c.get("note"),
             ordinal=ord_,
             created_at=datetime.now(timezone.utc),
         ))
+    # The stored structured output must match the persisted rows: keep
+    # only accepted citations there too, plus the audit.
+    assistant_msg.structured_output = {
+        **(assistant_msg.structured_output or {}),
+        "citations": accepted,
+        "citation_audit": audit.as_dict(),
+    }
+    if audit.dropped:
+        log.warning(
+            "citations_dropped",
+            conversation_id=str(conv.id),
+            dropped=audit.dropped,
+            reasons=audit.reasons,
+        )
 
     # Denormalize last provider/model on the conversation header.
     conv.provider = result.provider
