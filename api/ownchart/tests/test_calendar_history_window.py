@@ -217,7 +217,9 @@ def test_ask_route_imports_calendar_life_context():
     # the calendar block to form context_block. The exact variable
     # names matter less than the property that calendar text reaches
     # context_block.
-    assert "_format_context(facts)" in src
+    # Facts are projected through retrieval/effective.py (patient
+    # corrections) before formatting; the formatter call itself stays.
+    assert "fact_block = _format_context(" in src
     assert "format_calendar_context_block(" in src
     # Both component blocks land in the same context_block string
     # that's passed to the LLM.

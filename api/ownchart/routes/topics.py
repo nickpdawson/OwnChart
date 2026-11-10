@@ -26,7 +26,12 @@ from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.topic import Topic
 from ..models.topic_brief import TopicBrief
-from ..models.user_assertion import UserAssertion
+from ..retrieval.effective import (
+    EffectiveFact,
+    apply_assertions,
+    effective_facts,
+    load_assertions,
+)
 from ..retrieval.topics import (
     facts_for_topic,
     hidden_review_states,
@@ -198,13 +203,18 @@ async def _fact_readouts(db: AsyncSession, facts: list[ExtractedFact]) -> list[F
     if not facts:
         return []
     fact_ids = [c.id for c in facts]
-    canon_q = await db.execute(
-        select(UserAssertion).where(UserAssertion.related_fact_id.in_(fact_ids))
+    # Deterministic latest-effective merge of every assertion on the fact
+    # (retrieval/effective.py). The old code kept whichever UserAssertion
+    # row the database happened to return last, so two corrections could
+    # resolve to the older one.
+    record_ids = {c.person_record_id for c in facts}
+    assertions_by_fact = await load_assertions(
+        db, fact_ids,
+        person_record_id=next(iter(record_ids)) if len(record_ids) == 1 else None,
     )
-    by_fact: dict[uuid.UUID, UserAssertion] = {}
-    for a in canon_q.scalars().all():
-        if a.related_fact_id is not None:
-            by_fact[a.related_fact_id] = a
+    effective_by_fact: dict[uuid.UUID, EffectiveFact] = {
+        c.id: apply_assertions(c, assertions_by_fact.get(c.id, ())) for c in facts
+    }
 
     # Batch-load the first evidence anchor for each fact to expose source/page links.
     all_anchor_ids: list[uuid.UUID] = []
@@ -222,14 +232,16 @@ async def _fact_readouts(db: AsyncSession, facts: list[ExtractedFact]) -> list[F
 
     out = []
     for c in facts:
-        canon = by_fact.get(c.id)
+        ef = effective_by_fact[c.id]
         anchor = anchors_by_id.get(first_anchor_for.get(c.id, uuid.UUID(int=0)))
         out.append(
             FactReadout(
                 id=str(c.id),
                 fact_type=c.fact_type,
                 label=c.label,
-                display_label=c.display_label,
+                # The patient's correction wins for display; the original
+                # stays in `label` so the UI can show "source said".
+                display_label=ef.display_label if ef.corrected else c.display_label,
                 description=c.description,
                 date_start=c.date_start,
                 date_end=c.date_end,
@@ -239,9 +251,13 @@ async def _fact_readouts(db: AsyncSession, facts: list[ExtractedFact]) -> list[F
                 extraction_method=c.extraction_method,
                 body_site=c.body_site,
                 laterality=c.laterality,
-                canonical_label=canon.canonical_label if canon else None,
-                canonical_description=canon.canonical_description if canon else None,
-                canonical_date_start=canon.canonical_date_start if canon else None,
+                canonical_label=ef.label if ef.label_changed else None,
+                canonical_description=(
+                    ef.description
+                    if ef.corrected and ef.description != ef.original_description
+                    else None
+                ),
+                canonical_date_start=ef.date_start if ef.date_changed else None,
                 source_id=str(anchor.source_document_id) if anchor else None,
                 source_page=anchor.page_number if anchor else None,
                 source_anchor_id=str(anchor.id) if anchor else None,
@@ -626,20 +642,46 @@ async def get_cluster_facts(
     return await _fact_readouts(db, facts)
 
 
-def _format_facts_block(facts: list[ExtractedFact]) -> str:
+def _format_facts_block(facts: list[EffectiveFact]) -> str:
+    """Prompt block for the topic brief, from effective (corrected) facts."""
     lines = []
-    for c in facts:
+    for ef in facts:
+        c = ef.fact
         date_str = ""
-        if c.date_start:
-            date_str = c.date_start.date().isoformat()
-            if c.date_precision and c.date_precision != "day":
+        if ef.date_start:
+            date_str = ef.date_start.date().isoformat()
+            if c.date_precision and c.date_precision != "day" and not ef.date_changed:
                 date_str = f"{date_str} ({c.date_precision})"
-        body = c.description or c.label
-        lines.append(
-            f"- fact_id={c.id} type={c.fact_type} date={date_str or '?'} confidence={c.confidence or '?'}\n"
-            f"  label: {c.label}\n  excerpt: {body[:300]}"
+        body = ef.description or ef.label
+        line = (
+            f"- fact_id={c.id} type={c.fact_type} date={date_str or '?'} "
+            f"confidence={c.confidence or '?'} class={ef.claim_class}\n"
+            f"  label: {ef.label}\n  excerpt: {body[:300]}"
         )
+        note = ef.correction_note()
+        if note:
+            line += f"\n  correction: {note}"
+            if ef.label_changed:
+                line += f"\n  original_label: {ef.original_label}"
+        lines.append(line)
     return "\n".join(lines) if lines else "(no facts yet)"
+
+
+def _format_assertions_block(facts: list[EffectiveFact]) -> str:
+    """Honest summary of how corrections were applied in the facts block."""
+    corrected = sum(1 for ef in facts if ef.corrected)
+    confirmed = sum(1 for ef in facts if ef.confirmed and not ef.corrected)
+    rejected = sum(1 for ef in facts if ef.rejected)
+    if not (corrected or confirmed or rejected):
+        return "(the patient has not corrected, confirmed or rejected any of these facts)"
+    return (
+        f"{corrected} fact(s) carry the patient's corrections — their label/date/"
+        "description above ARE the corrected values and each has a `correction:` "
+        f"line with the source's original. {confirmed} confirmed unchanged. "
+        f"{rejected} rejected by the patient — do not present those as true. "
+        "Corrections are this person's working record; the source original is "
+        "kept for reference and may be mentioned as what the record said."
+    )
 
 
 async def _latest_brief(db: AsyncSession, topic_id: uuid.UUID) -> TopicBrief | None:
@@ -692,12 +734,15 @@ async def generate_exec_brief(
         db, topic, person_record_id=ctx.active_record_id,
     )
 
+    effective = await effective_facts(
+        db, facts, person_record_id=ctx.active_record_id,
+    )
     prompt = get_registry().get("dossier_brief")
     user_vars = {
         "topic_name": topic.name,
         "topic_aliases": ", ".join(topic.aliases or []) or "(none)",
-        "facts_block": _format_facts_block(facts),
-        "assertions_block": "(canonical assertions are merged into facts at retrieval; nothing extra here for V1)",
+        "facts_block": _format_facts_block(effective),
+        "assertions_block": _format_assertions_block(effective),
     }
     result = await call_with_tool(
         db, user, prompt,

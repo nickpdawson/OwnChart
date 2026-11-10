@@ -571,6 +571,7 @@ _TIER_RANK: dict[str, int] = {
 def _evidence_block(
     facts: list[ExtractedFact],
     fact_source_meta: dict[uuid.UUID, dict[str, Any]] | None = None,
+    effective: dict[uuid.UUID, Any] | None = None,
 ) -> str:
     """Render the retrieved-evidence block for the Ask LLM.
 
@@ -579,23 +580,40 @@ def _evidence_block(
     the LLM can rank citations (P0-3 from 2026-05-15 PM read: ACL
     answer was citing Stanford pre-op surgical history instead of the
     OrthoVirginia primary record).
+
+    `effective` maps fact_id → EffectiveFact (retrieval/effective.py).
+    When present, the label, date and description are the patient's
+    corrected values and a `correction:` line names what changed. Until
+    2026-11-10 this block sent the original extracted wording after a
+    correction, so Chat contradicted what the patient had fixed.
     """
     if not facts:
         return "(none retrieved)"
     lines: list[str] = []
     for f in facts:
-        date = f.date_start.date().isoformat() if f.date_start else "?"
-        label = f.display_label or f.label
+        ef = (effective or {}).get(f.id)
+        eff_date_start = ef.date_start if ef is not None else f.date_start
+        date = eff_date_start.date().isoformat() if eff_date_start else "?"
+        label = ef.display_label if ef is not None else (f.display_label or f.label)
+        description = ef.description if ef is not None else f.description
         sig = f.significance or "background"
         meta = (fact_source_meta or {}).get(f.id) or {}
         src_label = meta.get("source_label") or ""
         src_file = meta.get("original_filename") or ""
         quality = meta.get("source_quality") or "unknown"
+        claim = ef.claim_class if ef is not None else "source_backed"
         head = (
             f"- fact_id={f.id} type={f.fact_type} date={date} sig={sig}"
-            f" quality={quality}"
+            f" quality={quality} class={claim}"
         )
         body = f"  label: {label}"
+        note = ef.correction_note() if ef is not None else None
+        if note:
+            body += f"\n  correction: {note}"
+            if ef is not None and ef.label_changed:
+                body += f"\n  original_label: {ef.original_label}"
+        if ef is not None and ef.annotations:
+            body += "\n  patient_note: " + " | ".join(a[:160] for a in ef.annotations[:3])
         # Section C Phase 1 — include date provenance so the LLM
         # doesn't claim "happened in 2026" for a fact whose date is
         # only an encounter-proximate or report-issued timestamp.
@@ -632,8 +650,8 @@ def _evidence_block(
             )
         if src_label or src_file:
             body += f"\n  source: {src_label or '?'} · {src_file or '?'}"
-        if f.description:
-            body += f"\n  desc: {f.description[:200]}"
+        if description:
+            body += f"\n  desc: {description[:200]}"
         lines.append(head + "\n" + body)
     return "\n".join(lines)
 
@@ -833,7 +851,12 @@ async def add_user_message_and_reply(
                     "tier_rank": _TIER_RANK.get(tier, 4),
                 }
     prompt = get_registry().get("general_ask")
-    fact_block = _evidence_block(facts, fact_source_meta)
+    # Patient corrections govern the working record (audit item 5).
+    from ..retrieval.effective import effective_by_id, effective_facts
+    effective = effective_by_id(
+        await effective_facts(db, facts, person_record_id=conv_record_id)
+    )
+    fact_block = _evidence_block(facts, fact_source_meta, effective)
     calendar_block = format_calendar_context_block(calendar_items)
     wearable_block = format_wearable_summary_block(
         wearable_summaries,

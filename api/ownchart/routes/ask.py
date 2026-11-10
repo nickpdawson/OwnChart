@@ -84,18 +84,29 @@ class AskResponse(BaseModel):
     conversation_id: str | None = None
 
 
-def _format_context(facts: list[ExtractedFact]) -> str:
+def _format_context(facts: list) -> str:
+    """Prompt block from EffectiveFact rows (retrieval/effective.py): the
+    patient's corrected label/date/description, with the original named
+    on a `correction:` line."""
     if not facts:
         return "(no relevant facts found in your record)"
     lines = []
-    for c in facts:
-        date_str = c.date_start.date().isoformat() if c.date_start else "?"
-        excerpt = (c.description or c.label)[:300]
-        lines.append(
+    for ef in facts:
+        c = ef.fact
+        date_str = ef.date_start.date().isoformat() if ef.date_start else "?"
+        excerpt = (ef.description or ef.label)[:300]
+        line = (
             f"- fact_id={c.id} type={c.fact_type} date={date_str} "
-            f"review_state={c.review_state} confidence={c.confidence or '?'}\n"
-            f"  label: {c.label}\n  excerpt: {excerpt}"
+            f"review_state={c.review_state} confidence={c.confidence or '?'} "
+            f"class={ef.claim_class}\n"
+            f"  label: {ef.label}\n  excerpt: {excerpt}"
         )
+        note = ef.correction_note()
+        if note:
+            line += f"\n  correction: {note}"
+            if ef.label_changed:
+                line += f"\n  original_label: {ef.original_label}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -157,7 +168,10 @@ async def ask(
     calendar_items = await fetch_calendar_life_context(
         db, person_record_id=ctx.active_record_id,
     )
-    fact_block = _format_context(facts)
+    from ..retrieval.effective import effective_facts
+    fact_block = _format_context(
+        await effective_facts(db, facts, person_record_id=ctx.active_record_id)
+    )
     calendar_block = format_calendar_context_block(calendar_items)
     context_block = fact_block + calendar_block
 

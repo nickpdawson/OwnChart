@@ -119,14 +119,29 @@ async def _check_db_and_migrations() -> tuple[str, str]:
     return "ok", migrations_state
 
 
+_STORAGE_SUBDIRS = ("evidence", "renders", "exports", "model_runs")
+
+
 def _check_storage() -> str:
-    """Evidence-data dir writable. Non-destructive — ``os.access`` on the
-    configured ``data_dir`` (the evidence vault lives under it)."""
+    """The directories the app writes under ``data_dir`` are writable.
+
+    Non-destructive ``os.access``. Probes the subdirectories, not the
+    root: on the deployed hosts ``/data`` itself is root-owned 0755 (the
+    bind-mount parent) while every subdirectory belongs to uid 1000, so
+    probing the root reported "degraded" on a healthy instance
+    (2026-11-10). A missing subdirectory is degraded too — the app would
+    fail on first write there.
+    """
     try:
         data_dir = get_settings().data_dir
-        if data_dir.exists() and os.access(data_dir, os.W_OK):
-            return "ok"
-        return "degraded"
+        if not data_dir.exists():
+            return "degraded"
+        for name in _STORAGE_SUBDIRS:
+            sub = data_dir / name
+            if not (sub.is_dir() and os.access(sub, os.W_OK)):
+                log.warning("readyz_storage_subdir_unwritable", path=str(sub))
+                return "degraded"
+        return "ok"
     except Exception as exc:  # noqa: BLE001
         log.warning("readyz_storage_check_failed", error=f"{type(exc).__name__}: {exc}")
         return "degraded"
