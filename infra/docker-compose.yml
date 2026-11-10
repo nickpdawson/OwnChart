@@ -14,6 +14,13 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    # Docker's default /dev/shm is 64 MB. Postgres parallel workers
+    # allocate dynamic shared memory there and fail with "could not
+    # resize shared memory segment ... No space left on device" under
+    # concurrent timeline + extraction queries (seen 2026-11-10 as a
+    # 500 on GET /api/timeline). 256 MB covers the default
+    # max_parallel_workers_per_gather=2 with headroom.
+    shm_size: 256m
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ownchart}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in infra/.env}
@@ -74,6 +81,12 @@ services:
       # across every Epic-on-FHIR organization the user authorizes.
       OWNCHART_EPIC_CLIENT_ID: ${OWNCHART_EPIC_CLIENT_ID:-}
       OWNCHART_EPIC_CLIENT_ID_SANDBOX: ${OWNCHART_EPIC_CLIENT_ID_SANDBOX:-}
+      # Optional. Epic issues refresh tokens only to confidential
+      # clients; set this (from a "frontend confidential client" Epic
+      # registration) and Epic connections renew themselves. Unset,
+      # they expire one hour after connecting and show "expired".
+      # Read by connectors.py::_client_secret_for("epic").
+      OWNCHART_EPIC_CLIENT_SECRET: ${OWNCHART_EPIC_CLIENT_SECRET:-}
       OWNCHART_ATHENA_CLIENT_ID: ${OWNCHART_ATHENA_CLIENT_ID:-}
       # ModMed: Drummond-certified FHIR R4, per-practice fhir_base.
       # Public client (PKCE), no secret needed. Read by

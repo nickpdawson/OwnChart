@@ -584,6 +584,8 @@ export type ConnectorSummary = {
     status: string;
     expires_at: string | null;
     last_synced_at: string | null;
+    last_error: string | null;
+    has_refresh_token: boolean;
     patient_display_name: string | null;
     cached_resource_counts: Record<string, number> | null;
   } | null;

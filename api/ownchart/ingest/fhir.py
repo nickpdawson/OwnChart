@@ -33,6 +33,21 @@ REQUEST_TIMEOUT_S = 30.0
 MAX_CONCURRENT_FHIR_REQUESTS = 5
 
 
+class FhirAuthError(RuntimeError):
+    """The FHIR server rejected the bearer token (HTTP 401).
+
+    Raised by fetch_patient_record when the token is dead, so the route
+    can mark the connection expired instead of persisting an empty
+    snapshot as a successful sync. Six connections sat in that state
+    for six months (2026-05 → 2026-11) because every failure here was
+    swallowed and the UI kept saying "connected".
+    """
+
+
+class FhirFetchError(RuntimeError):
+    """Nothing could be fetched and no 401 explains it (network, 5xx)."""
+
+
 # ---------------------------------------------------------------------------
 # Discovery + auth
 # ---------------------------------------------------------------------------
@@ -115,6 +130,21 @@ def build_authorize_url(
     return f"{authorize_endpoint}{sep}{urlencode(params)}"
 
 
+def _token_auth(client_id: str, client_secret: str | None) -> httpx.BasicAuth | None:
+    """Confidential-client auth for the token endpoint.
+
+    Epic issues refresh tokens to patient-facing apps ONLY when the
+    app authenticates as a confidential client (client secret or JWT);
+    a public PKCE client gets `offline_access` echoed in the granted
+    scope but no refresh_token. With a secret configured we send HTTP
+    Basic `client_id:client_secret` per RFC 6749 §2.3.1, which is what
+    Epic's docs specify for both the code exchange and the refresh.
+    """
+    if not client_secret:
+        return None
+    return httpx.BasicAuth(client_id, client_secret)
+
+
 async def exchange_code_for_token(
     *,
     token_endpoint: str,
@@ -122,6 +152,7 @@ async def exchange_code_for_token(
     code: str,
     redirect_uri: str,
     pkce_verifier: str,
+    client_secret: str | None = None,
 ) -> TokenResponse:
     body = {
         "grant_type": "authorization_code",
@@ -131,7 +162,12 @@ async def exchange_code_for_token(
         "code_verifier": pkce_verifier,
     }
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S) as c:
-        r = await c.post(token_endpoint, data=body, headers={"Accept": "application/json"})
+        r = await c.post(
+            token_endpoint,
+            data=body,
+            headers={"Accept": "application/json"},
+            auth=_token_auth(client_id, client_secret),
+        )
         if not r.is_success:
             raise RuntimeError(f"token exchange failed: HTTP {r.status_code} — {r.text[:300]}")
         raw = r.json()
@@ -143,6 +179,7 @@ async def refresh_access_token(
     token_endpoint: str,
     client_id: str,
     refresh_token: str,
+    client_secret: str | None = None,
 ) -> TokenResponse:
     body = {
         "grant_type": "refresh_token",
@@ -150,7 +187,12 @@ async def refresh_access_token(
         "client_id": client_id,
     }
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S) as c:
-        r = await c.post(token_endpoint, data=body, headers={"Accept": "application/json"})
+        r = await c.post(
+            token_endpoint,
+            data=body,
+            headers={"Accept": "application/json"},
+            auth=_token_auth(client_id, client_secret),
+        )
         if not r.is_success:
             raise RuntimeError(f"token refresh failed: HTTP {r.status_code} — {r.text[:300]}")
         raw = r.json()
@@ -254,6 +296,19 @@ class FhirSnapshot:
     fhir: dict[str, list[dict]] = field(default_factory=dict)  # resourceType -> [resource]
     error: str | None = None
     counts: dict[str, int] = field(default_factory=dict)
+    # Requests the server rejected with 401 — a dead or revoked token.
+    auth_failures: int = 0
+    # Other failed requests (non-2xx other than 403/404, transport
+    # errors), as short strings for last_error / logs.
+    fetch_failures: list[str] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return sum(self.counts.values())
+
+    def note_failure(self, what: str) -> None:
+        if len(self.fetch_failures) < 50:
+            self.fetch_failures.append(what)
 
     def add(self, resource: dict[str, Any]) -> None:
         rt = resource.get("resourceType")
@@ -275,13 +330,21 @@ async def _fetch_paginated(
     initial_url: str,
     *,
     max_pages: int = 50,
+    snap: FhirSnapshot | None = None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     url: str | None = initial_url
     pages = 0
     while url and pages < max_pages:
         r = await client.get(url, headers={"Accept": "application/fhir+json"})
+        if r.status_code == 401:
+            # Dead token. Let the caller decide — a single 401 with a
+            # working Patient read is a scope quirk; 401 everywhere is
+            # an expired session that must be surfaced, not swallowed.
+            raise FhirAuthError(f"HTTP 401 at {url[:120]}")
         if not r.is_success:
+            if snap is not None and r.status_code not in (403, 404):
+                snap.note_failure(f"HTTP {r.status_code} {url[:100]}")
             # 403 on a known-by-the-vendor-not-supported endpoint is
             # informational, not an error — don't flag it as a
             # warning that suggests a bug. The fetcher is deliberately
@@ -384,9 +447,14 @@ async def fetch_patient_record(
                 async with sem:
                     try:
                         r = await client.get(url)
-                        if r.is_success:
+                        if r.status_code == 401:
+                            snap.auth_failures += 1
+                        elif r.is_success:
                             snap.add(r.json())
+                        else:
+                            snap.note_failure(f"HTTP {r.status_code} Patient read")
                     except Exception as e:  # noqa: BLE001
+                        snap.note_failure(f"Patient read: {type(e).__name__}")
                         log.warning("fhir_patient_read_failed", error=str(e))
                 return
             params["patient"] = patient_fhir_id
@@ -394,13 +462,41 @@ async def fetch_patient_record(
             url = f"{base}/{rt}?{urlencode(params)}"
             async with sem:
                 try:
-                    resources = await _fetch_paginated(client, url)
+                    resources = await _fetch_paginated(client, url, snap=snap)
                     for r in resources:
                         snap.add(r)
+                except FhirAuthError:
+                    snap.auth_failures += 1
                 except Exception as e:  # noqa: BLE001
+                    snap.note_failure(f"{rt}: {type(e).__name__}")
                     log.warning("fhir_query_failed", resource=rt, label=q.get("label"), error=str(e))
 
         await asyncio.gather(*[run_query(q) for q in queries])
+
+        # Decide whether this snapshot is real before chasing references.
+        # A dead token yields 401 on every query; the old code logged
+        # each one at warning level and then returned an empty snapshot
+        # that the route persisted as a successful sync.
+        if snap.auth_failures and (snap.total == 0 or "Patient" not in snap.fhir):
+            log.warning(
+                "fhir_snapshot_unauthorized",
+                auth_failures=snap.auth_failures,
+                fetched=snap.total,
+            )
+            raise FhirAuthError(
+                f"{snap.auth_failures} of {len(queries)} requests were rejected "
+                "with HTTP 401 — the access token is expired or revoked"
+            )
+        if snap.auth_failures:
+            log.warning(
+                "fhir_snapshot_partial_unauthorized",
+                auth_failures=snap.auth_failures,
+                fetched=snap.total,
+            )
+        if snap.total == 0:
+            log.warning("fhir_snapshot_empty", failures=snap.fetch_failures[:10])
+            detail = "; ".join(snap.fetch_failures[:5]) or "no resources returned"
+            raise FhirFetchError(f"no resources could be fetched ({detail})")
 
         # Reference chasing — collect referenced resource ids, fetch.
         wanted: dict[str, set[str]] = {rt: set() for rt in REFERENCE_RESOURCE_TYPES}

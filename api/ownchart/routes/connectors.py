@@ -71,7 +71,9 @@ class ConnectorSummary(BaseModel):
     fhir_base: str
     enabled: bool
     has_client_id: bool
-    connection: dict | None  # {id, status, expires_at, last_synced_at, patient_display_name}
+    # {id, status, expires_at, last_synced_at, last_error, has_refresh_token,
+    #  patient_display_name, cached_resource_counts}
+    connection: dict | None
 
 
 class ConnectStartResponse(BaseModel):
@@ -117,6 +119,26 @@ def _client_id_env_for(ehr_vendor: str) -> str:
     return f"OWNCHART_{ehr_vendor.upper()}_CLIENT_ID"
 
 
+def _client_secret_env_for(ehr_vendor: str) -> str:
+    return f"OWNCHART_{ehr_vendor.upper()}_CLIENT_SECRET"
+
+
+def _client_secret_for(ehr_vendor: str | None) -> str | None:
+    """Optional confidential-client secret for the vendor's token endpoint.
+
+    Read from the environment at token time and never stored in the
+    DB. Epic only issues refresh tokens to confidential clients, so an
+    operator who wants Epic connections to outlive the one-hour access
+    token registers the app as a frontend confidential client, lets
+    the Epic on FHIR site generate a secret, and sets
+    OWNCHART_EPIC_CLIENT_SECRET. Without it, every Epic connection
+    needs a manual reconnect once the access token expires.
+    """
+    if not ehr_vendor:
+        return None
+    return os.environ.get(_client_secret_env_for(ehr_vendor)) or None
+
+
 # Per-vendor SMART scope defaults. Epic accepts the wildcard
 # `patient/*.read` and grants all approved resource scopes; Athena's
 # R4 SMART V1 catalog is more restrictive — wildcard fails Okta
@@ -154,6 +176,14 @@ _ATHENA_DEFAULT_SCOPES = (
     "patient/MedicationDispense.rs"
 )
 _DEFAULT_SCOPES = "openid fhirUser launch/patient patient/*.read"
+
+# Epic: the wildcard is fine, and offline_access is requested so a
+# confidential-client registration (OWNCHART_EPIC_CLIENT_SECRET set)
+# receives a refresh token. Epic accepts offline_access from a public
+# PKCE client too — it is echoed in the granted scope — but issues no
+# refresh_token in that case, so public-client connections still die
+# after the one-hour access token and surface as "expired".
+_EPIC_DEFAULT_SCOPES = "openid fhirUser launch/patient offline_access patient/*.read"
 
 # ModMed (Modernizing Medicine) — Drummond-certified FHIR R4 API,
 # per-practice fhir_base (NOT multi-tenant like Athena), specialty-
@@ -270,6 +300,8 @@ def _default_scopes_for(ehr_vendor: str | None) -> str:
         return _MODMED_DEFAULT_SCOPES
     if v == "cerner":
         return _CERNER_DEFAULT_SCOPES
+    if v == "epic":
+        return _EPIC_DEFAULT_SCOPES
     return _DEFAULT_SCOPES
 
 
@@ -329,6 +361,8 @@ async def list_connectors(
                         "status": link.status,
                         "expires_at": link.expires_at.isoformat() if link.expires_at else None,
                         "last_synced_at": link.last_synced_at.isoformat() if link.last_synced_at else None,
+                        "last_error": link.last_error,
+                        "has_refresh_token": bool(link.refresh_token_enc),
                         "patient_display_name": link.patient_display_name,
                         "cached_resource_counts": link.cached_resource_counts,
                     }
@@ -731,6 +765,7 @@ async def oauth_callback(
             code=code,
             redirect_uri=_redirect_uri(),
             pkce_verifier=sess.pkce_verifier,
+            client_secret=_client_secret_for(connector.ehr_vendor),
         )
     except Exception as e:  # noqa: BLE001
         log.warning("oauth_token_exchange_failed", connector=connector.slug, error=str(e))
@@ -1181,28 +1216,58 @@ async def sync_connection(
     now = datetime.now(timezone.utc)
     if conn.expires_at and conn.expires_at <= now + timedelta(seconds=30):
         refresh_token = decrypt_str(conn.refresh_token_enc)
-        if refresh_token and connector.token_endpoint and connector.client_id:
-            try:
-                tok = await fhir_ingest.refresh_access_token(
-                    token_endpoint=connector.token_endpoint,
-                    client_id=connector.client_id,
-                    refresh_token=refresh_token,
-                )
-                access_token = tok.access_token
-                conn.access_token_enc = encrypt(tok.access_token)
-                if tok.refresh_token:
-                    conn.refresh_token_enc = encrypt(tok.refresh_token)
-                conn.expires_at = (
-                    datetime.now(timezone.utc) + timedelta(seconds=tok.expires_in)
-                    if tok.expires_in
-                    else None
-                )
-                await db.commit()
-            except Exception as e:  # noqa: BLE001
-                conn.status = "expired"
-                conn.last_error = f"refresh failed: {e}"
-                await db.commit()
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Refresh failed; reconnect") from e
+        if not (refresh_token and connector.token_endpoint and connector.client_id):
+            # No refresh token: the provider issued a one-shot access
+            # token (Epic does this for public clients). Until
+            # 2026-11-10 this fell through and sent the dead token;
+            # every query 401'd, the fetcher swallowed it, and the
+            # connection stayed "connected" with an empty snapshot.
+            conn.status = "expired"
+            conn.last_error = (
+                "Access token expired and the provider issued no refresh "
+                "token. Reconnect to keep syncing."
+            )
+            await db.commit()
+            log.warning(
+                "connector_sync_expired_no_refresh",
+                connector=connector.slug,
+                connection_id=str(conn.id),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Your {connector.name} session expired. Reconnect to keep syncing.",
+            )
+        try:
+            tok = await fhir_ingest.refresh_access_token(
+                token_endpoint=connector.token_endpoint,
+                client_id=connector.client_id,
+                refresh_token=refresh_token,
+                client_secret=_client_secret_for(connector.ehr_vendor),
+            )
+            access_token = tok.access_token
+            conn.access_token_enc = encrypt(tok.access_token)
+            if tok.refresh_token:
+                conn.refresh_token_enc = encrypt(tok.refresh_token)
+            conn.expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=tok.expires_in)
+                if tok.expires_in
+                else None
+            )
+            await db.commit()
+        except Exception as e:  # noqa: BLE001
+            conn.status = "expired"
+            conn.last_error = f"refresh failed: {e}"
+            await db.commit()
+            log.warning(
+                "connector_sync_refresh_failed",
+                connector=connector.slug,
+                connection_id=str(conn.id),
+                error=str(e)[:300],
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Could not renew your {connector.name} session. Reconnect to keep syncing.",
+            ) from e
 
     if not conn.patient_fhir_id:
         raise HTTPException(
@@ -1210,12 +1275,46 @@ async def sync_connection(
             detail="No patient context on this connection. Re-connect to obtain launch/patient scope.",
         )
 
-    snap = await fhir_ingest.fetch_patient_record(
-        fhir_base=connector.fhir_base,
-        access_token=access_token,
-        patient_fhir_id=conn.patient_fhir_id,
-        ehr_vendor=connector.ehr_vendor,
-    )
+    try:
+        snap = await fhir_ingest.fetch_patient_record(
+            fhir_base=connector.fhir_base,
+            access_token=access_token,
+            patient_fhir_id=conn.patient_fhir_id,
+            ehr_vendor=connector.ehr_vendor,
+        )
+    except fhir_ingest.FhirAuthError as e:
+        # The token looked current (or there is no expires_at to go
+        # by) but the server rejected it: revoked at the portal, or
+        # the provider's session lifetime is shorter than advertised.
+        conn.status = "expired"
+        conn.last_error = f"{connector.name} rejected the access token: {e}"
+        await db.commit()
+        log.warning(
+            "connector_sync_unauthorized",
+            connector=connector.slug,
+            connection_id=str(conn.id),
+            error=str(e)[:300],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{connector.name} rejected OwnChart's access. Reconnect to keep syncing.",
+        ) from e
+    except fhir_ingest.FhirFetchError as e:
+        # Token fine, nothing came back: outage, network, 5xx. Keep the
+        # tokens, record the failure, do not write an empty snapshot.
+        conn.status = "error"
+        conn.last_error = f"sync failed: {e}"
+        await db.commit()
+        log.warning(
+            "connector_sync_fetch_failed",
+            connector=connector.slug,
+            connection_id=str(conn.id),
+            error=str(e)[:300],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not pull anything from {connector.name}: {e}",
+        ) from e
 
     # Persist the raw bundle as one SourceDocument (source_type='fhir_bundle').
     bundle_bytes = json.dumps(snap.fhir, sort_keys=True, default=str).encode("utf-8")
@@ -1421,6 +1520,10 @@ async def sync_connection(
 
     conn.last_synced_at = datetime.now(timezone.utc)
     conn.cached_resource_counts = {**snap.counts, "_attachments": attachment_count}
+    # A sync that reached here fetched real data: clear any earlier
+    # "error" state so the UI stops showing a stale failure.
+    conn.status = "connected"
+    conn.last_error = None
     await db.commit()
 
     log.info(

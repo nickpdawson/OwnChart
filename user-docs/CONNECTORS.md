@@ -90,6 +90,8 @@ After registration (and review, where applicable), the vendor's portal shows you
 
 Client IDs are public OAuth identifiers. They identify your app to the vendor; they are not authentication. With PKCE-only public clients, no secret exists. With confidential clients, the secret is what authenticates the token-exchange step.
 
+**Epic and refresh tokens.** Epic issues a refresh token to a patient-facing app only when the app authenticates as a confidential client. OwnChart requests `offline_access` from Epic by default, but as a public PKCE client it gets a one-hour access token and nothing to renew it with. When that hour is up the connection shows "Session expired" on the Connectors page and the user has to click Reconnect before the next sync. To let Epic connections renew on their own, register the app as a frontend confidential client, let the Epic on FHIR site generate the client secret, and set `OWNCHART_EPIC_CLIENT_SECRET` in `infra/.env`. OwnChart then sends HTTP Basic `client_id:client_secret` on the token exchange and the refresh, which is what Epic's OAuth 2.0 specification requires.
+
 ### 7. Wire OwnChart
 
 For each vendor, add three things:

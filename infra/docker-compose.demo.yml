@@ -24,6 +24,9 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
+    # See infra/docker-compose.yml: the 64 MB default /dev/shm starves
+    # parallel-query workers under load.
+    shm_size: 256m
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ownchart}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in infra/.env.demo}

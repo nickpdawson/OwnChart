@@ -76,11 +76,15 @@ export function ConnectorRow({
         let detail = "";
         try {
           const j = await r.json();
-          detail = j?.detail ? ` — ${j.detail}` : "";
+          detail = typeof j?.detail === "string" ? j.detail : "";
         } catch {
           /* ignore */
         }
-        setError(`Sync failed (HTTP ${r.status})${detail}`);
+        // 409 = the provider session is dead (expired or revoked).
+        // The server has already marked the connection, so refresh
+        // the row to swap "Sync now" for "Reconnect".
+        setError(detail || `Sync failed (HTTP ${r.status})`);
+        router.refresh();
         return;
       }
       const body = await r.json();
@@ -163,8 +167,22 @@ export function ConnectorRow({
     }
   }
 
-  const connected = c.connection && c.connection.status === "connected";
+  // Connection states (api/ownchart/models/provider_connection.py):
+  //   connected — tokens held, last sync fine
+  //   error     — tokens held, last sync pulled nothing (outage, 5xx)
+  //   expired   — the provider rejected or stopped renewing the token;
+  //               only a fresh OAuth round trip fixes it
+  //   revoked   — user disconnected; tokens wiped
+  const status = c.connection?.status ?? null;
+  const hasTokens = status === "connected" || status === "error";
+  const needsReconnect = status === "expired";
   const tokenCount = totalResources(c.connection?.cached_resource_counts ?? null);
+  const statusText: Record<string, string> = {
+    connected: "Connected",
+    error: "Last sync failed",
+    expired: "Session expired — reconnect to keep syncing",
+    revoked: "Disconnected",
+  };
 
   return (
     <li className="rounded-xl border border-muted/15 bg-surface p-4">
@@ -182,7 +200,7 @@ export function ConnectorRow({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-2">
-          {connected ? (
+          {hasTokens ? (
             <>
               <button
                 onClick={sync}
@@ -190,6 +208,23 @@ export function ConnectorRow({
                 className="inline-flex min-h-[44px] flex-1 items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm text-surface disabled:opacity-50 sm:flex-initial"
               >
                 {busy === "sync" ? "Syncing…" : "Sync now"}
+              </button>
+              <button
+                onClick={disconnect}
+                disabled={busy !== null}
+                className="inline-flex min-h-[44px] flex-1 items-center justify-center rounded-lg border border-muted/30 px-4 py-2.5 text-sm hover:bg-bg disabled:opacity-50 sm:flex-initial"
+              >
+                {busy === "disconnect" ? "…" : "Disconnect"}
+              </button>
+            </>
+          ) : needsReconnect ? (
+            <>
+              <button
+                onClick={startConnect}
+                disabled={busy !== null || !c.has_client_id || !c.enabled}
+                className="inline-flex min-h-[44px] flex-1 items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm text-surface disabled:opacity-50 sm:flex-initial"
+              >
+                {busy === "connect" ? "Opening…" : "Reconnect"}
               </button>
               <button
                 onClick={disconnect}
@@ -223,16 +258,21 @@ export function ConnectorRow({
         </div>
       </div>
 
-      {c.connection && (
+      {c.connection && status && (
         <p className="mt-3 text-xs text-muted">
-          Status:{" "}
-          <span className={connected ? "text-accent" : "text-caution"}>
-            {c.connection.status}
+          <span className={status === "connected" ? "text-accent" : "text-caution"}>
+            {statusText[status] ?? status}
           </span>
           {c.connection.patient_display_name ? ` · ${c.connection.patient_display_name}` : ""}
           {tokenCount > 0 ? ` · ${tokenCount} resources cached` : ""} · last sync{" "}
           {fmtDate(c.connection.last_synced_at)}
+          {hasTokens && !c.connection.has_refresh_token && c.connection.expires_at
+            ? ` · access expires ${fmtDate(c.connection.expires_at)} (no refresh token)`
+            : ""}
         </p>
+      )}
+      {c.connection?.last_error && status !== "connected" && (
+        <p className="mt-1 text-xs text-caution">{c.connection.last_error}</p>
       )}
 
       {error && <p className="mt-2 text-sm text-caution">{error}</p>}
