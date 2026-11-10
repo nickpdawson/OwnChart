@@ -852,10 +852,17 @@ async def add_user_message_and_reply(
                 }
     prompt = get_registry().get("general_ask")
     # Patient corrections govern the working record (audit item 5).
-    from ..retrieval.effective import effective_by_id, effective_facts
+    from ..retrieval.effective import (
+        effective_by_id,
+        effective_facts,
+        evidence_revision,
+    )
     effective = effective_by_id(
         await effective_facts(db, facts, person_record_id=conv_record_id)
     )
+    # Stored on the answer so the UI can mark it as written before a later
+    # correction or import changed the evidence.
+    revision = await evidence_revision(db, conv_record_id)
     fact_block = _evidence_block(facts, fact_source_meta, effective)
     calendar_block = format_calendar_context_block(calendar_items)
     wearable_block = format_wearable_summary_block(
@@ -991,6 +998,7 @@ async def add_user_message_and_reply(
         **(assistant_msg.structured_output or {}),
         "citations": accepted,
         "citation_audit": audit.as_dict(),
+        "evidence_revision": revision,
     }
     if audit.dropped:
         log.warning(

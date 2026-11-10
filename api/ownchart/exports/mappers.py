@@ -213,8 +213,11 @@ def human_readable_txt_mapper(snapshot: ExportSnapshot) -> bytes:
             for f in by_year[year]:
                 date_part = _fmt_date(f.date_start) if f.date_start else "—"
                 sig = f.significance or "-"
+                corrected = " (corrected by you" + (
+                    f"; record said: {f.original_label}" if getattr(f, "original_label", None) else ""
+                ) + ")" if getattr(f, "corrected", False) else ""
                 lines.append(
-                    f"    {date_part} [{f.fact_type}] {f.label} "
+                    f"    {date_part} [{f.fact_type}] {f.label}{corrected} "
                     f"(sig={sig}, review={f.review_state})"
                 )
     else:

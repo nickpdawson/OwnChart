@@ -29,12 +29,13 @@ exports can show both: "you corrected this" and "the source said".
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.extracted_fact import ExtractedFact
@@ -198,3 +199,26 @@ async def effective_facts(
 
 def effective_by_id(effs: Iterable[EffectiveFact]) -> dict[uuid.UUID, EffectiveFact]:
     return {e.id: e for e in effs}
+
+
+async def evidence_revision(db: AsyncSession, person_record_id: uuid.UUID) -> str:
+    """Opaque revision of a record's evidence.
+
+    Changes whenever a fact is added or updated or a correction lands.
+    Cache keys (Home insight) include it so a correction or import is not
+    hidden behind a day-long cache, and answers store it so the UI can
+    say "this was written before you corrected X".
+    """
+    facts = (await db.execute(
+        select(func.count(ExtractedFact.id), func.max(ExtractedFact.updated_at))
+        .where(ExtractedFact.person_record_id == person_record_id)
+    )).one()
+    assertions = (await db.execute(
+        select(func.count(UserAssertion.id), func.max(UserAssertion.created_at))
+        .where(UserAssertion.person_record_id == person_record_id)
+    )).one()
+    raw = (
+        f"{facts[0]}:{facts[1].isoformat() if facts[1] else ''}:"
+        f"{assertions[0]}:{assertions[1].isoformat() if assertions[1] else ''}"
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]

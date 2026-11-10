@@ -51,8 +51,18 @@ def available_providers() -> list[dict[str, object]]:
 _NO_PREFERENCE: frozenset[str] = frozenset({"", "auto"})
 
 
-def resolve(preferred: str | None = None) -> LlmProvider:
+def resolve(
+    preferred: str | None = None,
+    *,
+    extra_configured: frozenset[str] = frozenset(),
+) -> LlmProvider:
     """Pick the provider to call.
+
+    `extra_configured` names providers the acting user holds their own
+    API key for (BYOK). A provider counts as configured when the
+    deployment has a key OR the user does; before 2026-11-10 only the
+    deployment key counted, so Settings could show a user-only key as
+    configured while resolution went elsewhere.
 
     An explicit `preferred` is binding: if it is unknown (`local`,
     `gemini`, a typo) or known but unconfigured, raise ProviderUnavailable.
@@ -65,6 +75,9 @@ def resolve(preferred: str | None = None) -> LlmProvider:
       3. local_echo (development stub, so the stack stays exercisable
          without a vendor credential).
     """
+    def _configured(key: str, p: LlmProvider) -> bool:
+        return p.is_configured() or key in extra_configured
+
     if preferred and preferred not in _NO_PREFERENCE:
         p = _PROVIDERS.get(preferred)
         if p is None:
@@ -72,7 +85,7 @@ def resolve(preferred: str | None = None) -> LlmProvider:
                 f"AI provider {preferred!r} is not available on this OwnChart "
                 "instance. Choose a configured provider in Settings."
             )
-        if not p.is_configured():
+        if not _configured(preferred, p):
             raise ProviderUnavailable(
                 f"{p.label} is selected but has no API key configured. Add one "
                 "in Settings or choose another provider."
@@ -80,7 +93,7 @@ def resolve(preferred: str | None = None) -> LlmProvider:
         return p
     for key in _FALLBACK_ORDER:
         p = _PROVIDERS.get(key)
-        if p and p.is_configured():
+        if p and _configured(key, p):
             return p
     # Last resort: echo provider so the rest of the stack stays
     # exercisable in environments without any vendor credential.

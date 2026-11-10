@@ -26,6 +26,7 @@ YAML schema:
 
 from __future__ import annotations
 
+import hashlib
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,12 @@ class Prompt(BaseModel):
     system: str
     user_template: str = ""
     tools: list[dict[str, Any]] = Field(default_factory=list)
+    # Receipt fields (audit 2026-11-10, prompts section): PHILOSOPHY.md
+    # promises a prompt file hash on every model run, but ModelRun only
+    # carried `id@version`. The registry fills these from the file bytes
+    # so a receipt can prove which exact text was sent.
+    source_file: str | None = None
+    content_sha256: str | None = None
 
     @property
     def version_tag(self) -> str:
@@ -76,8 +83,8 @@ class PromptRegistry:
             # conflict siblings like `foo 2.yaml`.
             if path.name.startswith(".") or path.name.startswith("._"):
                 continue
-            with path.open("r", encoding="utf-8") as f:
-                raw = yaml.safe_load(f)
+            data = path.read_bytes()
+            raw = yaml.safe_load(data.decode("utf-8"))
             # Skip non-chat-prompt YAMLs that live in the same dir
             # (e.g. suggested_questions.v1.yaml is a question-template
             # config consumed by llm/suggested_questions.py, not a
@@ -86,14 +93,23 @@ class PromptRegistry:
             if not isinstance(raw, dict) or "model" not in raw or "system" not in raw:
                 continue
             try:
-                prompt = Prompt.model_validate(raw)
+                prompt = Prompt.model_validate({
+                    **raw,
+                    "source_file": path.name,
+                    "content_sha256": hashlib.sha256(data).hexdigest(),
+                })
             except Exception as e:  # noqa: BLE001
                 raise PromptError(f"Invalid prompt file {path}: {e}") from e
             key = f"{prompt.id}@{prompt.version}"
             if key in self._prompts:
                 raise PromptError(f"Duplicate prompt {key} in {path}")
             self._prompts[key] = prompt
-            self._prompts[prompt.id] = prompt  # also expose by latest id
+            # Expose by bare id = highest numeric version. Filename order
+            # ("v10" sorts before "v2") must not decide which prompt is
+            # live.
+            current = self._prompts.get(prompt.id)
+            if current is None or prompt.version > current.version:
+                self._prompts[prompt.id] = prompt
 
     def get(self, id_or_tag: str) -> Prompt:
         if id_or_tag not in self._prompts:

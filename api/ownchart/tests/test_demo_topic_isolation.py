@@ -127,4 +127,5 @@ def test_insight_key_same_visitor_same_key():
 def test_insight_key_none_is_base_shape():
     u, r = uuid.uuid4(), uuid.uuid4()
     k = _insight_cache_key(u, r, "2026-07-11")
-    assert k == (u, r, "2026-07-11", None)
+    # Trailing element is the evidence revision (empty when not supplied).
+    assert k == (u, r, "2026-07-11", None, "")

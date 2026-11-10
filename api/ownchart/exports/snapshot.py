@@ -190,6 +190,11 @@ class _SnapshotFact(BaseModel):
     description: str | None = None
     date_start: datetime | None = None
     date_end: datetime | None = None
+    # Patient corrections: `label`/dates above are the corrected values;
+    # the source's originals ride along when a correction changed them.
+    corrected: bool = False
+    original_label: str | None = None
+    original_date_start: datetime | None = None
     date_precision: str | None = None
     coded_concepts: dict[str, Any] | None = None
     confidence: int | None = None
@@ -368,6 +373,13 @@ async def build_export_snapshot(
         cal_sources = []
         cal_events = []
 
+    # Exports carry the patient's corrections as the working values and
+    # keep the source's original beside them (audit 2026-11-10, item 5).
+    from ..retrieval.effective import effective_by_id, effective_facts
+    effs = effective_by_id(
+        await effective_facts(db, facts, person_record_id=person_record_id)
+    )
+
     return ExportSnapshot(
         generated_at=(now or datetime.now(_tz.utc)),
         record=_SnapshotRecord(
@@ -395,10 +407,19 @@ async def build_export_snapshot(
             _SnapshotFact(
                 id=str(f.id),
                 fact_type=f.fact_type,
-                label=f.label,
-                description=f.description,
-                date_start=f.date_start,
-                date_end=f.date_end,
+                label=effs[f.id].label if f.id in effs else f.label,
+                description=effs[f.id].description if f.id in effs else f.description,
+                date_start=effs[f.id].date_start if f.id in effs else f.date_start,
+                date_end=effs[f.id].date_end if f.id in effs else f.date_end,
+                corrected=bool(f.id in effs and effs[f.id].corrected),
+                original_label=(
+                    effs[f.id].original_label
+                    if f.id in effs and effs[f.id].label_changed else None
+                ),
+                original_date_start=(
+                    effs[f.id].original_date_start
+                    if f.id in effs and effs[f.id].date_changed else None
+                ),
                 date_precision=f.date_precision,
                 coded_concepts=f.coded_concepts,
                 confidence=f.confidence,

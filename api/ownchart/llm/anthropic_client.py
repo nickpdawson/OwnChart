@@ -65,6 +65,51 @@ def _hash_payload(p: Any) -> str:
     return hashlib.sha256(json.dumps(p, sort_keys=True, default=str).encode()).hexdigest()
 
 
+async def _user_credential_providers(db: AsyncSession, user: User) -> frozenset[str]:
+    """Providers the user holds a live api_key credential for."""
+    rows = (await db.execute(
+        select(LlmProviderCredential.provider)
+        .where(LlmProviderCredential.user_id == user.id)
+        .where(LlmProviderCredential.auth_kind == "api_key")
+        .where(LlmProviderCredential.revoked_at.is_(None))
+    )).scalars().all()
+    return frozenset(str(r) for r in rows)
+
+
+# Provider exception text is not PHI-free: a 400 from a vendor can echo
+# the request, which carried record excerpts. Persist and log only the
+# exception class, an HTTP status when present, and a coarse hint; the
+# raw text goes to the debug log only.
+_ERROR_HINTS: tuple[tuple[str, str], ...] = (
+    ("rate", "rate_limited"),
+    ("overload", "overloaded"),
+    ("timeout", "timeout"),
+    ("timed out", "timeout"),
+    ("authentication", "authentication"),
+    ("invalid_api_key", "authentication"),
+    ("api key", "authentication"),
+    ("permission", "permission"),
+    ("not_found", "not_found"),
+    ("context", "context_length"),
+    ("too long", "context_length"),
+    ("invalid_request", "invalid_request"),
+    ("connect", "connection"),
+)
+
+
+def _safe_error(e: BaseException) -> str:
+    parts = [type(e).__name__]
+    status_code = getattr(e, "status_code", None)
+    if isinstance(status_code, int):
+        parts.append(f"http_{status_code}")
+    msg = str(e).lower()
+    for needle, hint in _ERROR_HINTS:
+        if needle in msg:
+            parts.append(hint)
+            break
+    return " ".join(parts)
+
+
 async def _resolve_user_api_key(
     db: AsyncSession, user: User, provider_key: str,
 ) -> tuple[str | None, uuid.UUID | None]:
@@ -163,7 +208,16 @@ async def call_with_tool(
     # Fail-closed: an explicit provider that is unknown or unconfigured
     # raises ProviderUnavailable here instead of quietly selecting a
     # different recipient. Only `auto`/None walks the fallback chain.
-    selected = resolve_provider(provider)
+    # A user's own key (BYOK) makes a provider configured for them even
+    # when the deployment has no key, so retry resolution with the set
+    # of providers they hold credentials for before giving up.
+    try:
+        selected = resolve_provider(provider)
+    except ProviderUnavailable:
+        byok_keys = await _user_credential_providers(db, user)
+        if not byok_keys:
+            raise
+        selected = resolve_provider(provider, extra_configured=byok_keys)
     # `local_echo` is the free, no-external-call fallback. Every other
     # provider makes a real, billed request — that's the line the
     # monthly ceiling and cost stamping care about.
@@ -219,15 +273,24 @@ async def call_with_tool(
             usage["stop_reason"] = stop_reason
         output_hash = _hash_payload({"tool_input": tool_input, "raw_text": raw_text})
     except ProviderUnavailable as e:
-        err = f"ProviderUnavailable: {e}"
+        err = _safe_error(e)
         usage = {"latency_ms": int((time.monotonic() - started) * 1000)}
         log.warning("llm_provider_unavailable", purpose=purpose,
                     provider=selected.key, error=err)
+        log.debug("llm_error_detail", purpose=purpose, detail=str(e)[:500])
     except Exception as e:  # noqa: BLE001
-        err = f"{type(e).__name__}: {e}"
+        err = _safe_error(e)
         usage = {"latency_ms": int((time.monotonic() - started) * 1000)}
         log.warning("llm_call_failed", purpose=purpose,
                     provider=selected.key, error=err)
+        log.debug("llm_error_detail", purpose=purpose, detail=str(e)[:500])
+
+    # Receipt: exactly which prompt text and which recipient. The
+    # version tag alone cannot prove the text; the file hash can.
+    usage["prompt_sha256"] = getattr(prompt, "content_sha256", None)
+    usage["prompt_file"] = getattr(prompt, "source_file", None)
+    usage["provider_key"] = selected.key
+    usage["requested_model"] = prompt.model
 
     # Stamp which credential was billed so cost can be attributed
     # per-user without exposing the key. Audit-only; doesn't change

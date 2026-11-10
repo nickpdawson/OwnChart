@@ -131,8 +131,13 @@ def _insight_cache_key(
     person_record_id: uuid.UUID,
     day_iso: str,
     demo_session_id: str | None = None,
+    revision: str = "",
 ) -> tuple:
     """Cache key for the daily Home insight.
+
+    ``revision`` is the record's evidence revision (retrieval/effective.py):
+    a correction or an import invalidates the cached insight the same day
+    instead of waiting for midnight UTC (audit 2026-11-10, retention notes).
 
     HIGH-8 / MED-13: in demo mode ``user_id`` + ``person_record_id`` are
     the SAME shared demo account for every visitor, so without the
@@ -142,7 +147,7 @@ def _insight_cache_key(
     Outside demo mode ``demo_session_id`` is None and the key is
     unchanged from the pre-fix (user, record, day) shape.
     """
-    return (user_id, person_record_id, day_iso, demo_session_id)
+    return (user_id, person_record_id, day_iso, demo_session_id, revision)
 
 
 @router.get("/ai-partner", response_model=HomeAiPartnerResponse)
@@ -481,8 +486,10 @@ async def get_home_ai_partner(
     # must NOT see the same cached body.
     # HIGH-8: also key by the demo visitor id so one visitor's insight
     # never renders for another on the shared demo account.
+    from ..retrieval.effective import evidence_revision
     key = _insight_cache_key(
         user.id, ctx.active_record_id, now.date().isoformat(), demo_sid,
+        revision=await evidence_revision(db, ctx.active_record_id),
     )
     if key in _INSIGHT_CACHE:
         out.insight = _INSIGHT_CACHE[key]
@@ -577,9 +584,11 @@ async def _build_home_insight(
     in another visitor's typed content on the shared demo account.
     """
     demo = get_settings().demo_mode
+    from ..retrieval.effective import evidence_revision
     key = _insight_cache_key(
         user.id, person_record_id, now.date().isoformat(),
         demo_session_id if demo else None,
+        revision=await evidence_revision(db, person_record_id),
     )
     if not force_refresh and key in _INSIGHT_CACHE:
         return _INSIGHT_CACHE[key]
