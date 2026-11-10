@@ -42,7 +42,10 @@ async def get_instance_info() -> InstanceInfo:
     smtp_enabled = is_smtp_configured()
     return InstanceInfo(
         demo_mode=s.demo_mode,
-        demo_allow_ingest=s.demo_mode and s.demo_allow_ingest,
+        # Always False since 2026-11-10: the middleware no longer has an
+        # ingest escape hatch, so reporting the env flag would advertise
+        # a write path that does not exist.
+        demo_allow_ingest=False,
         public_base_url=s.public_base_url,
         demo_user_email=s.demo_user_email if s.demo_mode else None,
         smtp_enabled=smtp_enabled,

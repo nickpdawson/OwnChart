@@ -63,6 +63,11 @@ fi
 
 echo "rsync repo to ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}"
 ssh "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p ${REMOTE_DIR}"
+# The api/worker run as uid 1000 and write under /data (= data-demo).
+# Create the subdirectories they need and hand them to that uid, or
+# /readyz reports storage degraded and any write (model-run receipts,
+# renders) fails on a root-owned mount. Postgres keeps its own dir.
+ssh "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p ${REMOTE_DIR}/data-demo/evidence ${REMOTE_DIR}/data-demo/renders ${REMOTE_DIR}/data-demo/exports ${REMOTE_DIR}/data-demo/model_runs ${REMOTE_DIR}/data-demo/directories && chown 1000:1000 ${REMOTE_DIR}/data-demo/evidence ${REMOTE_DIR}/data-demo/renders ${REMOTE_DIR}/data-demo/exports ${REMOTE_DIR}/data-demo/model_runs ${REMOTE_DIR}/data-demo/directories"
 rsync -az --delete \
   --exclude '.git' \
   --exclude 'node_modules' \

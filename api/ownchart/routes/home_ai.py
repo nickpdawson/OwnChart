@@ -690,10 +690,22 @@ async def _build_home_insight(
                 active_slugs.add(slug)
     active_topics = [t for t in topics_list if t.slug in active_slugs]
 
+    # Patient corrections govern what the model sees (audit item 5).
+    from ..retrieval.effective import effective_by_id, effective_facts
+    effective = effective_by_id(await effective_facts(
+        db, recent_major + recent_all, person_record_id=person_record_id,
+    ))
+
     def _fmt_fact(f: ExtractedFact) -> str:
-        d = f.date_start.date().isoformat() if f.date_start else "?"
+        ef = effective.get(f.id)
+        start = ef.date_start if ef is not None else f.date_start
+        d = start.date().isoformat() if start else "?"
         sig = f.significance or "background"
-        return f"  - {d} | id={f.id} | {sig} | {f.fact_type} | {(f.display_label or f.label)[:120]}"
+        label = ef.display_label if ef is not None else (f.display_label or f.label)
+        line = f"  - {d} | id={f.id} | {sig} | {f.fact_type} | {label[:120]}"
+        if ef is not None and ef.corrected:
+            line += " | corrected by the patient"
+        return line
 
     def _fmt_sync(row) -> str:
         conn, name, vendor = row

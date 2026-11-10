@@ -503,6 +503,20 @@ async def purge_exports_cron(ctx: dict[str, Any]) -> dict[str, Any]:
     return {"jobs_cleaned": cleaned}
 
 
+async def purge_demo_state_cron(ctx: dict[str, Any]) -> dict[str, int]:
+    """Hourly: drop demo visitors' conversations and saved events older
+    than 24 h. The startup-only sweep meant "delete when restarted", not
+    "retain at most 24 h" (audit 2026-11-10); a container that stays up
+    for months kept every visitor's chat. No-op outside demo mode.
+    """
+    from ..core.demo_data_seed import purge_stale_demo_state_if_needed
+    async with SessionLocal() as db:
+        purged = await purge_stale_demo_state_if_needed(db)
+    if any(purged.values()):
+        log.info("demo_state_purge_cron_ran", **purged)
+    return purged
+
+
 class WorkerSettings:
     """Arq config — `arq ownchart.workers.vision_extract_job.WorkerSettings`.
 
@@ -528,6 +542,9 @@ class WorkerSettings:
     # only `minute` set fires once per hour (arq matches any hour/day).
     cron_jobs = [
         cron(purge_exports_cron, minute=0, run_at_startup=False),
+        # Demo visitor-state retention runs on its own clock, not the
+        # container's restart schedule. Offset from the export purge.
+        cron(purge_demo_state_cron, minute=30, run_at_startup=False),
         # P1-7: refresh the worker liveness key every minute (unset time
         # fields ⇒ fires at second 0 of every minute) + immediately at
         # startup so /readyz sees a live worker as soon as it boots.
