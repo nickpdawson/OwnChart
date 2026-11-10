@@ -157,6 +157,9 @@ services:
       NODE_ENV: production
       NEXT_TELEMETRY_DISABLED: "1"
       OWNCHART_API_INTERNAL_URL: http://api:8000
+      # See infra/docker-compose.yml: bind all interfaces so the image
+      # healthcheck can reach the server.
+      HOSTNAME: "0.0.0.0"
     ports:
       # Public demo port — NPM forwards demo.ownchart.me here.
       - "0.0.0.0:9988:3000"

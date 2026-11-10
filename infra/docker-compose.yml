@@ -170,6 +170,11 @@ services:
       NODE_ENV: production
       NEXT_TELEMETRY_DISABLED: "1"
       OWNCHART_API_INTERNAL_URL: http://api:8000
+      # Next's standalone server binds to $HOSTNAME (the container id)
+      # when set, so the image healthcheck's localhost fetch never
+      # connected and every web container showed "unhealthy" since
+      # deploy. Bind all interfaces instead.
+      HOSTNAME: "0.0.0.0"
     ports:
       # ONLY public port. A reverse proxy (Nginx Proxy Manager, Caddy,
       # Traefik, etc.) should terminate TLS and forward here.

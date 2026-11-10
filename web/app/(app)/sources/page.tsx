@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Route } from "next";
-import { listSources } from "@/lib/api";
+import { getDiscover, listSources } from "@/lib/api";
+import { DiscoverCard } from "../discover/DiscoverCard";
 import { IngestTabs } from "./IngestTabs";
 
 export const dynamic = "force-dynamic";
@@ -19,33 +20,51 @@ function formatDate(iso: string | null): string {
 }
 
 export default async function SourcesPage() {
-  const sources = await listSources();
+  const [sources, coverage] = await Promise.all([
+    listSources(),
+    getDiscover().catch(() => null),
+  ]);
 
   return (
     <div className="max-w-5xl">
-      <p className="text-sm uppercase tracking-widest text-muted">Evidence vault</p>
-      <h1 className="mt-2 font-serif text-3xl">Sources</h1>
+      <p className="text-sm uppercase tracking-widest text-muted">Records</p>
+      <h1 className="mt-2 font-serif text-3xl">Originals</h1>
       <p className="mt-3 max-w-2xl text-muted">
-        Originals are preserved unchanged and content-addressed by SHA-256.
-        EXIF capture time is read when present. Thumbnails are generated for
-        the timeline; the original bytes never leave the vault unless you
-        explicitly export.
+        Every record you add is kept exactly as it arrived. You can open the
+        original behind any fact. Nothing leaves this instance unless you
+        export it.
       </p>
 
       <section className="mt-8">
-        <h2 className="font-serif text-xl">Ingest</h2>
+        <h2 className="font-serif text-xl">Add a record</h2>
         <p className="mt-1 text-sm text-muted">
-          Photo · PDF (faxes, scanned letters) · CCDA XML (clinical exports) · Note (you, in your own words).
+          A photo, a PDF (faxes, scanned letters), a clinical export (CCDA
+          XML), or a note in your own words.
         </p>
         <div className="mt-3">
           <IngestTabs />
         </div>
       </section>
 
+      {coverage && coverage.items.length > 0 && (
+        <section className="mt-12">
+          <h2 className="font-serif text-xl">Coverage</h2>
+          <p className="mt-1 text-sm text-muted">
+            Where your records are dense or thin, and what is waiting for
+            review. Counts of dated records, not a measure of importance.
+          </p>
+          <ul className="mt-4 space-y-4">
+            {coverage.items.map((item) => (
+              <DiscoverCard key={item.id} item={item} />
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className="mt-12">
-        <h2 className="font-serif text-xl">All sources ({sources.length})</h2>
+        <h2 className="font-serif text-xl">All records ({sources.length})</h2>
         {sources.length === 0 ? (
-          <p className="mt-3 text-muted">Nothing ingested yet.</p>
+          <p className="mt-3 text-muted">Nothing added yet.</p>
         ) : (
           <ul className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             {sources.map((s) => (

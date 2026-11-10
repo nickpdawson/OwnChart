@@ -936,7 +936,12 @@ export type ConvSummary = {
   created_at: string;
 };
 
-export type ConvDetail = ConvSummary & { messages: ConvMessage[] };
+export type ConvDetail = ConvSummary & {
+  messages: ConvMessage[];
+  // Current evidence revision of the record; compare with each assistant
+  // message's structured_output.evidence_revision.
+  evidence_revision?: string | null;
+};
 
 export type ProviderShape = {
   key: string;

@@ -96,6 +96,11 @@ class MessageOut(BaseModel):
 
 class ConversationDetail(ConversationSummary):
     messages: list[MessageOut]
+    # Current evidence revision of the record (retrieval/effective.py).
+    # Each assistant message stores the revision it was written against
+    # in structured_output.evidence_revision; a mismatch means the record
+    # changed (correction, import) after the answer was written.
+    evidence_revision: str | None = None
 
 
 class CreateRequest(BaseModel):
@@ -487,9 +492,15 @@ async def get_conversation_route(
         )).scalars().all())
         for c in cit_rows:
             cits_by_msg.setdefault(c.message_id, []).append(c)
+    from ..retrieval.effective import evidence_revision
+    current_revision = (
+        await evidence_revision(db, conv.person_record_id)
+        if conv.person_record_id is not None else None
+    )
     return ConversationDetail(
         **_summary(conv).model_dump(),
         messages=[_message_out(m, cits_by_msg.get(m.id, [])) for m in msg_rows],
+        evidence_revision=current_revision,
     )
 
 

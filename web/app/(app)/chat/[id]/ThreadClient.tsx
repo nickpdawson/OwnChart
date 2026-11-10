@@ -515,7 +515,7 @@ export function ThreadClient({
 
       <ol className="space-y-5">
         {messages.map((m) => (
-          <Bubble key={m.id} msg={m} />
+          <Bubble key={m.id} msg={m} currentRevision={thread.evidence_revision ?? null} />
         ))}
         {isPendingEi && !stuckPendingEi && <ThinkingBubble />}
         {isPendingEi && stuckPendingEi && (
@@ -649,8 +649,26 @@ function ThinkingBubble() {
   );
 }
 
-function Bubble({ msg }: { msg: ConvMessage }) {
+function Bubble({
+  msg,
+  currentRevision,
+}: {
+  msg: ConvMessage;
+  currentRevision: string | null;
+}) {
   const isUser = msg.role === "user";
+  // An assistant answer stores the record's evidence revision it was
+  // written against. If the record changed since (a correction, a new
+  // import), say so instead of letting old prose read as current.
+  const writtenAgainst =
+    typeof msg.structured_output?.evidence_revision === "string"
+      ? (msg.structured_output.evidence_revision as string)
+      : null;
+  const predatesChanges =
+    !isUser && writtenAgainst !== null && currentRevision !== null && writtenAgainst !== currentRevision;
+  const audit = msg.structured_output?.citation_audit as
+    | { accepted?: number; dropped?: number }
+    | undefined;
   return (
     <li
       className={
@@ -668,7 +686,20 @@ function Bubble({ msg }: { msg: ConvMessage }) {
         {" · "}
         {fmtTime(msg.created_at)}
       </p>
+      {predatesChanges && (
+        <p className="mt-2 rounded-md border border-caution/30 bg-caution/5 px-3 py-1.5 text-xs text-caution">
+          Written before later changes to your record (a correction or new
+          records). Ask again for an answer that reflects them.
+        </p>
+      )}
       <MessageBody content={msg.content} />
+      {audit && (audit.dropped ?? 0) > 0 && (
+        <p className="mt-2 text-xs text-muted">
+          {audit.dropped} citation{audit.dropped === 1 ? "" : "s"} the model offered could
+          not be matched to your records and {audit.dropped === 1 ? "was" : "were"} removed.
+          Treat sentences without evidence links as the model&apos;s reading, not your record.
+        </p>
+      )}
       {msg.citations.length > 0 && (
         <div className="mt-3">
           <p className="text-xs uppercase tracking-widest text-muted">
