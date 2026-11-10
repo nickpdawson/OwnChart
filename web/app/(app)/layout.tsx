@@ -9,33 +9,50 @@ import { FactContextSheet } from "./FactContextSheet";
 // provider or topic. "Your topics" below the static nav lists whatever
 // the user has actually created.
 //
-// Order reflects docs/06's IA: Timeline + Discover are the patient-
-// facing heart of the product, alongside Dossiers and Ask. Evidence
-// Vault, Connections, Review, and Audit are support systems and
-// drop below a small visual divider. Dossiers are *lenses* over the
-// global timeline, not the marquee — they sit after Discover.
-// Top-level nav. Order reflects docs/06's IA.
+// Four destinations organised around patient tasks (Beta 2, audit
+// 2026-11-10 item 8), replacing the twelve-entry list: Home, Ask,
+// My health (Topics, Timeline), Records (Originals, Connections,
+// Review). Chat and "Ask the records" were two doors to the same
+// workflow; /ask now redirects to /chat. Discover is no longer a
+// destination — its coverage observations belong under Records and
+// its contextual ones on Home/Topics (route still answers). Routes
+// are unchanged so saved links keep working.
 //
-// P0 fix (2026-05-23): the Audit log entry is gated to instance
-// admins because the underlying /api/audit/* routes 403 for any
-// other role; pre-fix the link was visible to everyone and clicking
-// it surfaced an unhandled Next.js error boundary (digest 865374892).
-// We filter the NAV based on `me.is_instance_admin` below.
-type NavItem = { href: Route; label: string; adminOnly?: boolean };
+// Audit log stays admin-only: the /api/audit/* routes 403 for other
+// roles (P0 fix 2026-05-23).
+type NavEntry = {
+  href: Route;
+  label: string;
+  adminOnly?: boolean;
+  children?: ReadonlyArray<{ href: Route; label: string }>;
+};
 
-const NAV: ReadonlyArray<NavItem> = [
+const NAV: ReadonlyArray<NavEntry> = [
   { href: "/dashboard", label: "Home" },
-  { href: "/chat", label: "Chat" },
-  { href: "/timeline", label: "Timeline" },
-  { href: "/discover", label: "Discover" },
-  { href: "/topics", label: "Dossiers" },
-  { href: "/ask", label: "Ask the records" },
-  { href: "/sources", label: "Evidence vault" },
-  { href: "/connectors", label: "EHR connections" },
-  { href: "/review", label: "Review inbox" },
+  { href: "/chat", label: "Ask" },
+  {
+    href: "/topics",
+    label: "My health",
+    children: [
+      { href: "/topics", label: "Topics" },
+      { href: "/timeline", label: "Timeline" },
+    ],
+  },
+  {
+    href: "/sources",
+    label: "Records",
+    children: [
+      { href: "/sources", label: "Originals" },
+      { href: "/connectors", label: "Connections" },
+      { href: "/review", label: "Review" },
+    ],
+  },
+] as const;
+
+const SECONDARY_NAV: ReadonlyArray<NavEntry> = [
   { href: "/audit", label: "Audit log", adminOnly: true },
-  { href: "/admin", label: "Admin", adminOnly: true },
   { href: "/settings", label: "Settings" },
+  { href: "/admin", label: "Admin", adminOnly: true },
 ] as const;
 
 export default async function AppLayout({
@@ -73,10 +90,12 @@ export default async function AppLayout({
   // Filter admin-only nav items unless the caller is the instance admin.
   const isAdmin = me.is_instance_admin === true;
   const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
+  const visibleSecondary = SECONDARY_NAV.filter((n) => !n.adminOnly || isAdmin);
 
   return (
     <AppShell
       nav={visibleNav}
+      secondaryNav={visibleSecondary}
       topics={topicLinks}
       activeRecord={me.active_record}
       memberships={memberships}

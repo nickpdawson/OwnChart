@@ -433,7 +433,7 @@ export function ThreadClient({
         <section className="rounded-xl border border-accent/30 bg-accent/5 p-4">
           <div className="flex items-baseline justify-between">
             <p className="text-xs uppercase tracking-widest text-accent">
-              Save as Dossier
+              Save as topic
             </p>
             <button
               type="button"
@@ -505,7 +505,7 @@ export function ThreadClient({
                   disabled={savingDossier || !dossierName.trim()}
                   className="rounded-md bg-accent px-3 py-1.5 text-sm text-surface disabled:opacity-50"
                 >
-                  {savingDossier ? "Saving…" : "Create dossier"}
+                  {savingDossier ? "Saving…" : "Create topic"}
                 </button>
               </div>
             </div>

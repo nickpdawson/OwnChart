@@ -19,6 +19,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 // Type-only imports — `import type` keeps the client bundle from
 // pulling api.ts's server-only `next/headers` dependency.
 import type { FactContext, FactContextAction } from "@/lib/api";
+import { useFocusTrap } from "@/lib/useFocusTrap";
 
 // Significance taxonomy is duplicated here as a client-safe constant.
 // The server-side source of truth is api/ownchart/canonical/significance.py
@@ -83,6 +84,7 @@ export function FactContextSheet() {
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const paneRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!factId) {
@@ -113,18 +115,9 @@ export function FactContextSheet() {
     };
   }, [factId]);
 
-  // Focus the close button when the sheet opens (a11y) and trap
-  // Escape to close.
-  useEffect(() => {
-    if (!factId) return;
-    closeRef.current?.focus();
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") close();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [factId]);
+  // Keyboard contract (focus in, Tab cycles inside, Escape closes,
+  // focus returns to the opener) — shared with the mobile drawer.
+  useFocusTrap(Boolean(factId), paneRef, close, closeRef);
 
   function close() {
     const params = new URLSearchParams(searchParams?.toString() ?? "");
@@ -200,7 +193,7 @@ export function FactContextSheet() {
         className="absolute inset-0 bg-black/40"
       />
       {/* Sidesheet pane. */}
-      <aside className="relative ml-auto h-full w-full max-w-xl overflow-y-auto bg-bg shadow-2xl">
+      <aside ref={paneRef} className="relative ml-auto h-full w-full max-w-xl overflow-y-auto bg-bg shadow-2xl">
         <div className="sticky top-0 z-10 flex items-baseline justify-between gap-3 border-b border-muted/15 bg-bg/95 px-6 py-4 backdrop-blur">
           <p className="text-[10px] uppercase tracking-widest text-muted">
             Fact context

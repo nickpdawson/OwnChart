@@ -67,8 +67,8 @@ export function SaveMenu({ conversationId, initialSavedTarget }: Props) {
           {pane === "menu" && "Save or attach this chat"}
           {pane === "new_event" && "Save as new Event"}
           {pane === "attach_event" && "Attach to existing Event"}
-          {pane === "new_dossier" && "Save as new Dossier"}
-          {pane === "attach_dossier" && "Attach to existing Dossier"}
+          {pane === "new_dossier" && "Save as new topic"}
+          {pane === "attach_dossier" && "Add to an existing topic"}
         </p>
         <button
           type="button"
@@ -98,13 +98,13 @@ export function SaveMenu({ conversationId, initialSavedTarget }: Props) {
             onClick={() => setPane("attach_event")}
           />
           <PaneButton
-            label="Save as new Dossier"
+            label="Save as new topic"
             blurb="A topic that accumulates over time — a body system, a chronic concern."
             onClick={() => setPane("new_dossier")}
           />
           <PaneButton
-            label="Attach to existing Dossier"
-            blurb="Add this chat to a Dossier you already saved."
+            label="Add to an existing topic"
+            blurb="Add this chat to a topic you already saved."
             onClick={() => setPane("attach_dossier")}
           />
         </div>
@@ -159,7 +159,7 @@ function SavedBanner({ target, onMoreActions }: { target: SavedTarget; onMoreAct
   const href = target.kind === "event"
     ? `/episode/${target.id}`
     : `/dossier/${target.slug}`;
-  const label = target.kind === "event" ? "Event" : "Dossier";
+  const label = target.kind === "event" ? "Event" : "Topic";
   const name = target.kind === "event" ? target.title : target.name;
   return (
     <section className="mt-2 rounded-xl border border-evidence/40 bg-evidence/5 p-3">
@@ -278,7 +278,7 @@ function NewEventPane({
       <p className="text-xs text-muted">
         <strong className="text-ink">Events are things that happened</strong> —
         a surgery, a marathon, a diagnosis, an injury, a trip. They are
-        bounded in time. Dossiers are long-running stories.
+        bounded in time. Topics are long-running stories.
       </p>
 
       <Field label="Title (required)">
@@ -501,13 +501,13 @@ function EmptyEventPickerHelp({ query }: { query: string }) {
     <div className="space-y-2 rounded-md border border-muted/15 bg-muted/5 p-3 text-sm">
       <p className="text-muted">
         No Events match. <strong className="text-ink">Events are things that happened</strong> —
-        a surgery, a marathon, a diagnosis. <strong className="text-ink">Dossiers</strong> are
+        a surgery, a marathon, a diagnosis. <strong className="text-ink">Topics</strong> are
         long-running stories (Right Knee, Hearing, Sleep). Pick the one that fits.
       </p>
       {candidates.length > 0 && (
         <div>
           <p className="text-xs uppercase tracking-widest text-muted">
-            Dossiers that match &ldquo;{query}&rdquo;
+            Topics that match &ldquo;{query}&rdquo;
           </p>
           <ul className="mt-1 space-y-1">
             {candidates.map((t) => (
@@ -545,7 +545,7 @@ function NewDossierPane({
 
   async function submit() {
     if (!name.trim()) {
-      onError("Dossier name is required.");
+      onError("Topic name is required.");
       return;
     }
     setSaving(true);
@@ -599,7 +599,7 @@ function NewDossierPane({
           type="button" onClick={submit} disabled={saving || !name.trim()}
           className="rounded-md bg-accent px-3 py-1.5 text-sm text-surface hover:opacity-90 disabled:opacity-50"
         >
-          {saving ? "Saving…" : "Create Dossier"}
+          {saving ? "Saving…" : "Create topic"}
         </button>
       </div>
     </div>
@@ -676,7 +676,7 @@ function AttachDossierPane({
       {loading && <p className="text-xs text-muted">Searching…</p>}
       {!loading && rows.length === 0 && (
         <p className="text-xs text-muted">
-          No Dossiers match. Create a new Dossier instead.
+          No topics match. Create a new topic instead.
         </p>
       )}
       <ul className="max-h-72 space-y-1 overflow-y-auto">

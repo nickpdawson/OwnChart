@@ -86,7 +86,7 @@ export function AskClient() {
         </label>
         <p className="text-xs text-muted">
           Your question opens a saved chat thread. From there you can
-          continue the conversation, save it as a Dossier, or promote
+          continue the conversation, save it as a topic, or promote
           a specific event to an Episode.
         </p>
         {error && <p className="text-sm text-caution">{error}</p>}

@@ -9,10 +9,14 @@
   --oc-bg: 250 249 246;        /* warm paper */
   --oc-surface: 255 255 255;
   --oc-ink: 28 30 34;          /* near-black, slightly cool */
-  --oc-muted: 110 116 128;
+  /* Light-mode text tokens sit at or above WCAG 2.2 AA (4.5:1) on both
+   * warm paper and white: muted 5.2 / 5.4, caution 5.3 / 5.0,
+   * evidence 4.6 / 4.9 (audit 2026-11-10: the old muted was 4.46 on
+   * paper and caution 4.05 on white). */
+  --oc-muted: 100 106 118;
   --oc-accent: 64 88 152;      /* slate blue — research, not alarm */
-  --oc-evidence: 132 117 78;   /* archive ochre */
-  --oc-caution: 178 110 56;    /* amber, never red */
+  --oc-evidence: 112 98 62;    /* archive ochre */
+  --oc-caution: 156 92 40;     /* amber, never red */
 
   --oc-font-sans: "Inter", "SF Pro Text";
   --oc-font-serif: "Source Serif 4", "Georgia";

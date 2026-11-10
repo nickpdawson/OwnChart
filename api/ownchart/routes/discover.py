@@ -44,6 +44,7 @@ from ..core.db import get_session
 from ..models.evidence_anchor import EvidenceAnchor
 from ..models.extracted_fact import ExtractedFact
 from ..models.source_document import SourceDocument
+from ..retrieval.topics import hidden_review_states
 from .timeline import WEARABLE_METHODS
 
 router = APIRouter()
@@ -113,6 +114,9 @@ async def _dense_periods(
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_provenance == "explicit")
         .where(ExtractedFact.extraction_method.notin_(WEARABLE_METHODS))
+        # Rejected / source-only / deferred rows are not "records" to the
+        # patient; every other surface already hides them.
+        .where(ExtractedFact.review_state.notin_(hidden_review_states()))
         .group_by("yr")
     )).all()
 
@@ -148,14 +152,15 @@ async def _dense_periods(
             DiscoverItem(
                 id=f"dense_period:{year}",
                 type="dense_period",
-                title=f"Dense care period: {year}",
+                title=f"Many dated records in {year}",
                 why_surfaced=(
-                    f"{n} clinical events in {year} — about {ratio:.1f}× your "
-                    f"typical year ({baseline:.0f} on average)."
+                    f"{n} dated records in {year}, about {ratio:.1f}× your "
+                    f"typical year ({baseline:.0f} on average). A count of "
+                    "records, not a measure of how important the year was."
                 ),
                 evidence_window=EvidenceWindow(start=yr, end=end_year),
                 signal_strength=strength,
-                suggested_action="Open the period to see what happened.",
+                suggested_action="Open the period to see what was recorded.",
                 # `#year-YYYY` lets the timeline page scroll the user
                 # to the right card without us shipping a focus-state
                 # query parameter (V1 deterministic UX — native browser
@@ -191,6 +196,7 @@ async def _long_gaps(
         .where(ExtractedFact.date_start.isnot(None))
         .where(ExtractedFact.date_provenance == "explicit")
         .where(ExtractedFact.extraction_method.notin_(WEARABLE_METHODS))
+        .where(ExtractedFact.review_state.notin_(hidden_review_states()))
         .order_by(ExtractedFact.date_start.asc())
     )).all()
     dates = [r[0] for r in rows]
@@ -212,11 +218,12 @@ async def _long_gaps(
                     id=f"long_gap:{ys}-{ms:02d}_{ye}-{me:02d}",
                     type="long_gap",
                     title=(
-                        f"No clinical events: {prev.strftime('%b %Y')} → "
+                        f"No dated records found: {prev.strftime('%b %Y')} → "
                         f"{d.strftime('%b %Y')}"
                     ),
                     why_surfaced=(
-                        f"{months:.0f}-month gap between adjacent dated facts."
+                        f"{months:.0f} months between dated records in OwnChart. "
+                        "Care may have happened that was never imported."
                     ),
                     evidence_window=EvidenceWindow(start=prev, end=d),
                     signal_strength=strength,

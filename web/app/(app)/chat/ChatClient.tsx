@@ -18,7 +18,7 @@ const SCOPE_LABEL: Record<string, string> = {
   whole_record: "Whole record",
   period: "Time period",
   source: "One source",
-  topic: "Dossier",
+  topic: "Topic",
   episode: "Event",
   fact: "Single fact",
 };

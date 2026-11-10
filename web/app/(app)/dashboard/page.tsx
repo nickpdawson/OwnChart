@@ -36,9 +36,9 @@ const STRENGTH_BADGE: Record<SignalStrength, string> = {
 };
 
 const STRENGTH_LABEL: Record<SignalStrength, string> = {
-  strong: "Strong",
-  moderate: "Moderate",
-  needs_review: "Review",
+  strong: "Many records",
+  moderate: "More than usual",
+  needs_review: "Needs a look",
 };
 
 // Race-promise helper: rejects after `ms` so a slow upstream doesn't

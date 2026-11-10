@@ -16,10 +16,13 @@ const STRENGTH_BADGE: Record<SignalStrength, string> = {
   needs_review: "bg-caution/15 text-caution",
 };
 
+// Labels say what is known, not how confident a heuristic feels. A
+// count of dated records is coverage, not clinical significance
+// (audit 2026-11-10, item 10; "significance over fact-count").
 const STRENGTH_LABEL: Record<SignalStrength, string> = {
-  strong: "Strong signal",
-  moderate: "Moderate signal",
-  needs_review: "Needs review",
+  strong: "Many dated records",
+  moderate: "More than usual",
+  needs_review: "Needs a look",
 };
 
 function fmtMonthYear(iso: string): string {
@@ -56,18 +59,20 @@ export default async function DiscoverPage() {
 
   return (
     <div className="max-w-4xl">
-      <p className="text-sm uppercase tracking-widest text-muted">Discover</p>
-      <h1 className="mt-2 font-serif text-3xl">What&apos;s worth noticing</h1>
+      <p className="text-sm uppercase tracking-widest text-muted">Records</p>
+      <h1 className="mt-2 font-serif text-3xl">Coverage of your records</h1>
       <p className="mt-2 max-w-2xl text-muted">
-        Deterministic observations across your records — dense periods, long
-        gaps, review backlogs. Statistical correlations and AI-narrated items
-        will appear in this same feed once they land.
+        Where your imported records are dense, where they are thin, and what
+        is waiting for review. These are counts of dated records in OwnChart.
+        A gap means no records were found for that period, not that nothing
+        happened.
       </p>
 
       {feed.items.length === 0 ? (
         <p className="mt-8 text-muted">
-          Nothing surfaced yet. Once you have at least three years of dated
-          events, dense periods and gaps will start to appear here.
+          No pattern to show. This comparison needs at least three years of
+          dated records with a clear baseline. It is not a statement about
+          your health history.
         </p>
       ) : (
         <ul className="mt-6 space-y-4">
