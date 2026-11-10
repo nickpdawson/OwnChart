@@ -153,6 +153,10 @@ jobs:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         with:
+          # The action's default Trivy (v0.65.0) release was removed
+          # upstream, so its installer failed and took the beta2.1 publish
+          # with it (2026-11-10). Pin a release that exists.
+          version: v0.76.2
           image-ref: ${{ matrix.image }}@${{ steps.build.outputs.digest }}
           format: table
           vuln-type: os,library
