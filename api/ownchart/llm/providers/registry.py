@@ -46,22 +46,38 @@ def available_providers() -> list[dict[str, object]]:
     return out
 
 
+# Setting values that mean "no preference". The `ai.default_provider`
+# setting stores "auto"; older callers pass None.
+_NO_PREFERENCE: frozenset[str] = frozenset({"", "auto"})
+
+
 def resolve(preferred: str | None = None) -> LlmProvider:
     """Pick the provider to call.
 
-    Resolution order:
-      1. `preferred` if given and configured.
-      2. anthropic if configured.
-      3. openai if configured.
-      4. local_echo (only if no other provider works — explicit log line).
+    An explicit `preferred` is binding: if it is unknown (`local`,
+    `gemini`, a typo) or known but unconfigured, raise ProviderUnavailable.
+    The 2026-11-10 audit showed `local` resolving to Anthropic through the
+    old fall-through, which turned a privacy choice into a cloud call.
 
-    Raises ProviderUnavailable if even local_echo is somehow missing.
+    With no preference (None or "auto"):
+      1. anthropic if configured.
+      2. openai if configured.
+      3. local_echo (development stub, so the stack stays exercisable
+         without a vendor credential).
     """
-    if preferred:
+    if preferred and preferred not in _NO_PREFERENCE:
         p = _PROVIDERS.get(preferred)
-        if p and p.is_configured():
-            return p
-        # Fall through — preferred was named but unavailable.
+        if p is None:
+            raise ProviderUnavailable(
+                f"AI provider {preferred!r} is not available on this OwnChart "
+                "instance. Choose a configured provider in Settings."
+            )
+        if not p.is_configured():
+            raise ProviderUnavailable(
+                f"{p.label} is selected but has no API key configured. Add one "
+                "in Settings or choose another provider."
+            )
+        return p
     for key in _FALLBACK_ORDER:
         p = _PROVIDERS.get(key)
         if p and p.is_configured():

@@ -35,6 +35,7 @@ from ..models.llm_provider_credential import LlmProviderCredential
 from ..models.model_run import ModelRun
 from ..models.user import User
 from .budget import enforce_monthly_ceiling
+from .egress import authorize_egress
 from .pricing import estimate_cost_usd
 from .prompts import Prompt
 from .providers import (
@@ -134,6 +135,15 @@ async def call_with_tool(
     checked. Every completed run is stamped with the acting `user_id`,
     `person_record_id`, and an `estimated_cost_usd` derived from usage.
     """
+    # Policy first, before anything is rendered or resolved: disabled
+    # account, no PHI consent, AI turned off, or no active membership on
+    # the record in scope all stop here. Raises LlmEgressDenied. This is
+    # the single egress boundary; callers may pre-check for a friendlier
+    # UI but must not rely on their own checks.
+    await authorize_egress(
+        db, user, person_record_id=person_record_id, purpose=purpose,
+    )
+
     rendered_user = prompt.render(**user_vars)
 
     content: list[dict[str, Any]] = []
@@ -150,6 +160,9 @@ async def call_with_tool(
         )
     content.append({"type": "text", "text": rendered_user})
 
+    # Fail-closed: an explicit provider that is unknown or unconfigured
+    # raises ProviderUnavailable here instead of quietly selecting a
+    # different recipient. Only `auto`/None walks the fallback chain.
     selected = resolve_provider(provider)
     # `local_echo` is the free, no-external-call fallback. Every other
     # provider makes a real, billed request — that's the line the

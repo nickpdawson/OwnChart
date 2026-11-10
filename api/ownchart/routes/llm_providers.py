@@ -49,7 +49,11 @@ router = APIRouter()
 log = get_logger("ownchart.routes.llm_providers")
 
 
-SUPPORTED_PROVIDERS: tuple[str, ...] = ("anthropic", "openai", "gemini", "local", "azure_openai")
+# Only providers with a real adapter in llm/providers/registry.py. The
+# audit (2026-11-10) found credential rows accepted for gemini / local /
+# azure_openai, which made Settings show them as configured while every
+# request went to Anthropic. A name here must be callable.
+SUPPORTED_PROVIDERS: tuple[str, ...] = ("anthropic", "openai")
 SUPPORTED_AUTH_KINDS: tuple[str, ...] = ("api_key", "oauth", "local_endpoint")
 
 

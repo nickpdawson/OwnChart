@@ -40,6 +40,15 @@ from .prompts import get_registry
 log = get_logger("ownchart.llm.sensemaking")
 
 
+def topics_for_record_stmt(person_record_id: uuid.UUID):
+    """Topics visible to source sensemaking: the source's record only.
+
+    Kept as a separate statement builder so a test can assert the record
+    filter is present without a database.
+    """
+    return select(Topic).where(Topic.person_record_id == person_record_id)
+
+
 _FHIR_ID_LABEL_RE = re.compile(
     r"^(Encounter|MedicationRequest|MedicationDispense|MedicationStatement|"
     r"Procedure|Condition|Observation|DiagnosticReport|AllergyIntolerance|"
@@ -178,7 +187,12 @@ async def summarize_source(
     date_min = min((f.date_start for f in dated), default=None)
     date_max = max((f.date_start for f in dated), default=None)
 
-    topics = list((await db.execute(select(Topic))).scalars().all())
+    # Record-scoped: the audit (2026-11-10) found this read every topic
+    # in the instance and matched other records' private topic names
+    # against this record's facts, then sent those names to the model.
+    topics = list((await db.execute(
+        topics_for_record_stmt(src.person_record_id)
+    )).scalars().all())
     topic_lines = []
     for t in topics:
         matched = sum(1 for f in facts if _fact_matches_topic(f, t))

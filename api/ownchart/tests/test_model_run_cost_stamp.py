@@ -79,7 +79,17 @@ def _install(monkeypatch, *, provider_key: str, usage: dict):
     monkeypatch.setattr(ac, "resolve_provider",
                         lambda pref=None: _fake_provider(provider_key, usage))
     monkeypatch.setattr(ac, "enforce_monthly_ceiling", _enforce)
+    _allow_egress(monkeypatch)
     return calls
+
+
+def _allow_egress(monkeypatch):
+    # The egress policy (consent / AI-off / membership) has its own suite
+    # in test_llm_egress_policy.py; the scripted session here answers None
+    # to every query, which the membership check would read as revoked.
+    async def _ok(db, user, **k):
+        return None
+    monkeypatch.setattr(ac, "authorize_egress", _ok)
 
 
 async def _run(session, user, prompt, *, record_id=None):
@@ -150,6 +160,7 @@ async def test_over_budget_refusal_writes_no_run(monkeypatch):
     monkeypatch.setattr(ac, "resolve_provider",
                         lambda pref=None: _fake_provider("anthropic", {"input_tokens": 1}))
     monkeypatch.setattr(ac, "enforce_monthly_ceiling", _enforce)
+    _allow_egress(monkeypatch)
 
     session = _FakeSession()
     with pytest.raises(MonthlyBudgetExceeded):

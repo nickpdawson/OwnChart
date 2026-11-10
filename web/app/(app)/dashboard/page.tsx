@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { DemoTour } from "./DemoTour";
 import { InsightCard } from "./InsightCard";
+import { AiConsentNotice } from "../AiConsentNotice";
 import {
   getDashboardStats,
   getDiscover,
@@ -175,7 +176,11 @@ export default async function DashboardPage() {
 
       <DemoTour demoMode={isDemo} />
 
-      <InsightCard initial={partner?.insight ?? null} />
+      {me && !me.phi_consent_granted ? (
+        <AiConsentNotice feature="The daily insight on Home" />
+      ) : (
+        <InsightCard initial={partner?.insight ?? null} />
+      )}
 
       {/* --- Continue exploring ----------------------------------------- */}
       {stats && stats.topics.length > 0 && (

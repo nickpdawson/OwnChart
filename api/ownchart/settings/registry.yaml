@@ -28,14 +28,16 @@ settings:
   - key: ai.default_provider
     label: Default AI provider
     description: |
-      Which LLM provider should answer your conversations by default.
-      Settings → Providers lets you add API keys. Local-only forces
-      every call onto a self-hosted endpoint with no external requests.
+      Which AI provider answers your conversations by default. Auto uses
+      the first configured provider. Choosing a provider is binding: if
+      it has no API key, requests fail with a clear message instead of
+      going to a different provider. A self-hosted local model is not
+      available yet.
     section: privacy_ai
     scope: user
     storage: database
     type: enum
-    choices: [anthropic, openai, gemini, local, auto]
+    choices: [auto, anthropic, openai]
     default: auto
     ui_writable: true
     file_writable: false

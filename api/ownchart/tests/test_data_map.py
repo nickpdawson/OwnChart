@@ -134,7 +134,9 @@ def test_preferred_provider_key_maps_setting():
     assert preferred_provider_key("") is None
     assert preferred_provider_key("anthropic") == "anthropic"
     assert preferred_provider_key("OpenAI") == "openai"
-    assert preferred_provider_key("local") == "local_echo"
+    # "local" is passed through so resolve() fails closed on it; it must
+    # never be rewritten to the local_echo development stub.
+    assert preferred_provider_key("local") == "local"
 
 
 def test_retention_statements_truthful():

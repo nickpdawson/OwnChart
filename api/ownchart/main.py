@@ -18,6 +18,8 @@ from .core.demo_data_seed import (
 )
 from .core.demo_calendar_seed import seed_demo_calendar_if_needed
 from .core.demo_seed import seed_demo_user_if_needed
+from .llm.egress import LlmEgressDenied
+from .llm.providers.base import ProviderUnavailable
 from .routes import (
     account,
     admin,
@@ -121,20 +123,12 @@ _DEMO_WRITE_ALLOWED_PREFIXES: tuple[str, ...] = (
     "/api/facts/significance-backfill",  # admin task; user-scoped
 )
 
-# Extra writes permitted ONLY when demo_mode + demo_allow_ingest are
-# both True. Used by the operator to SMART-on-FHIR connect a sandbox
-# account or upload sample data through the standard UI flow. Banner
-# stays visible so users still know it's a demo.
-_DEMO_INGEST_ALLOWED_PREFIXES: tuple[str, ...] = (
-    "/api/connectors",
-    "/api/sources",
-    "/api/healthkit",
-    "/api/auto-export",
-    "/api/facts",
-    "/api/topics",
-    "/api/settings",
-    "/api/llm-providers",
-)
+# There is deliberately no ingest escape hatch here. Until 2026-11-10
+# `OWNCHART_DEMO_ALLOW_INGEST=true` opened sources, connectors, facts,
+# topics, settings and LLM-provider writes to anyone holding the
+# published demo credentials, into the shared sample record. The public
+# demo cannot safely accept visitors' records. Operator seeding goes
+# through OWNCHART_DEMO_BUNDLE_PATH at startup instead.
 _DEMO_BLOCKED_METHODS: frozenset[str] = frozenset({"POST", "PATCH", "PUT", "DELETE"})
 
 
@@ -145,10 +139,6 @@ async def _demo_readonly_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     if any(path.startswith(p) for p in _DEMO_WRITE_ALLOWED_PREFIXES):
-        return await call_next(request)
-    if settings.demo_allow_ingest and any(
-        path.startswith(p) for p in _DEMO_INGEST_ALLOWED_PREFIXES
-    ):
         return await call_next(request)
     return JSONResponse(
         status_code=403,
@@ -240,6 +230,33 @@ async def _structured_error_handler(request: Request, exc: Exception) -> JSONRes
     if audit:
         body["upload_audit"] = audit
     return JSONResponse(status_code=500, content=body)
+
+
+# AI egress refusals (llm/egress.py) and fail-closed provider selection
+# (llm/providers/registry.py) surface as structured errors the web and
+# iOS clients can act on: 412 keeps the pre-existing consent contract
+# (`{"error": "phi_consent_required"}`), everything else is 403, and an
+# unavailable provider is 503 so the client shows "not available" rather
+# than a server error.
+@app.exception_handler(LlmEgressDenied)
+async def _llm_egress_denied_handler(
+    request: Request, exc: LlmEgressDenied,
+) -> JSONResponse:
+    status_code = 412 if exc.code == "phi_consent_required" else 403
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": {"error": exc.code, "message": exc.message}},
+    )
+
+
+@app.exception_handler(ProviderUnavailable)
+async def _provider_unavailable_handler(
+    request: Request, exc: ProviderUnavailable,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": {"error": "ai_provider_unavailable", "message": str(exc)}},
+    )
 
 
 # Same correlation for FastAPI's HTTPException path — without this,

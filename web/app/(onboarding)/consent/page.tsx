@@ -30,7 +30,7 @@ export default function ConsentPage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-2xl flex-col justify-center px-6 py-16">
       <p className="text-sm uppercase tracking-widest text-muted">Before we begin</p>
-      <h1 className="mt-3 font-serif text-3xl">Global LLM consent</h1>
+      <h1 className="mt-3 font-serif text-3xl">Let an AI provider read your records?</h1>
 
       <div className="mt-8 space-y-4 text-base leading-relaxed">
         <p>
@@ -47,15 +47,16 @@ export default function ConsentPage() {
           <li>your questions and the retrieved evidence excerpts.</li>
         </ul>
         <p>
-          The provider receives this under <strong>your</strong> API key. OwnChart
-          itself does not send telemetry to third parties. The provider&apos;s retention,
-          legal, and security terms are between you and them — review them for your
-          deployment.
+          Requests go out under the API key configured for this OwnChart
+          instance: your own key if you added one under Settings → Providers,
+          otherwise the key the operator of this instance supplied. OwnChart
+          itself sends no telemetry to third parties. The provider&apos;s
+          retention, legal and security terms apply to whatever is sent.
         </p>
         <p className="text-sm text-muted">
-          You can disable LLM use at any time. Without consent, OwnChart still
-          works — it just won&apos;t run extraction, summarization, or natural-language
-          answering.
+          You can turn this off at any time in Settings. Without it, OwnChart
+          still stores, shows, lets you correct and export your records. It
+          will not run extraction, summaries or natural-language answers.
         </p>
       </div>
 
@@ -67,14 +68,14 @@ export default function ConsentPage() {
           onClick={() => setConsent(true)}
           className="rounded-lg bg-accent px-5 py-3 text-surface disabled:opacity-50"
         >
-          I understand — enable LLM features
+          Enable AI features
         </button>
         <button
           disabled={busy}
           onClick={() => setConsent(false)}
           className="rounded-lg border border-muted/30 px-5 py-3 disabled:opacity-50"
         >
-          Continue without LLM features
+          Continue without AI
         </button>
       </div>
     </main>

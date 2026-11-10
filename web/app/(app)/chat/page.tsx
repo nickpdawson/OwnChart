@@ -1,4 +1,5 @@
-import { getHomeAiPartner, listConversations, listProviders } from "@/lib/api";
+import { getHomeAiPartner, getMe, listConversations, listProviders } from "@/lib/api";
+import { AiConsentNotice } from "../AiConsentNotice";
 import { ChatClient } from "./ChatClient";
 
 export const dynamic = "force-dynamic";
@@ -8,11 +9,13 @@ export const dynamic = "force-dynamic";
 // provider override. Individual threads live at /chat/[id].
 
 export default async function ChatPage() {
-  const [conversations, providers, partner] = await Promise.all([
+  const [conversations, providers, partner, me] = await Promise.all([
     listConversations().catch(() => []),
     listProviders().catch(() => []),
     getHomeAiPartner().catch(() => null),
+    getMe().catch(() => null),
   ]);
+  const aiEnabled = me?.phi_consent_granted === true;
 
   return (
     <div className="max-w-5xl">
@@ -24,6 +27,11 @@ export default async function ChatPage() {
         type your own below.
       </p>
 
+      {!aiEnabled && (
+        <div className="mt-6">
+          <AiConsentNotice feature="Chat" />
+        </div>
+      )}
       <ChatClient
         initialConversations={conversations}
         providers={providers}

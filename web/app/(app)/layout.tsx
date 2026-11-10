@@ -45,7 +45,11 @@ export default async function AppLayout({
 }) {
   const me = await getMe();
   if (!me) redirect("/login");
-  if (!me.phi_consent_granted) redirect("/consent");
+  // No consent redirect here. Declining AI consent used to bounce the
+  // user back to /consent from every page, so "Continue without LLM
+  // features" was a loop. Records, corrections, organization and export
+  // work without a model; the AI surfaces show an enable-AI notice and
+  // the API refuses egress (llm/egress.py) if anything slips through.
 
   // Beta 1 Section B (M02) — recovery routing for the multi-tenant
   // surfaces. The PM A-5 contract is that the session stays valid

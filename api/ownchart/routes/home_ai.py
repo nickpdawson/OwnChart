@@ -484,7 +484,11 @@ async def get_home_ai_partner(
     )
     if key in _INSIGHT_CACHE:
         out.insight = _INSIGHT_CACHE[key]
-    else:
+    elif user.phi_consent_granted:
+        # Only schedule model work for a consenting user. The hard stop
+        # is `authorize_egress` inside call_with_tool (it also checks
+        # AI-off and membership at execution time); this pre-check just
+        # avoids queueing work that would be refused.
         background_tasks.add_task(
             _background_build_home_insight,
             user_id=user.id,

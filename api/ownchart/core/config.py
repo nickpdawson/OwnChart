@@ -111,13 +111,12 @@ class Settings(BaseSettings):
     # into real PHI accounts.
     demo_user_email: str = Field(default="demo@ownchart.me")
     demo_user_password: SecretStr = Field(default=SecretStr("MYHEALTHdata"))
-    # Temporary escape hatch: when demo_mode AND demo_allow_ingest are
-    # both True, the read-only middleware widens its allowlist to
-    # permit ingestion endpoints (/api/connectors, /api/sources,
-    # /api/healthkit, /api/auto-export). Use this when the operator
-    # wants to SMART-on-FHIR connect a sandbox account and ingest
-    # synthetic data through the standard UI flow. The "Demo" banner
-    # stays visible while it's on so users still know it's a demo.
+    # Inert since 2026-11-10. It used to widen the demo write allowlist
+    # to ingestion, settings and provider endpoints for anyone holding
+    # the published demo credentials (audit item 2). The field stays so
+    # existing .env.demo files still parse; /api/instance/info reports
+    # it, and the middleware ignores it. Operator seeding goes through
+    # OWNCHART_DEMO_BUNDLE_PATH.
     demo_allow_ingest: bool = Field(default=False)
 
     # --- Auth rate limiting (HIGH-7 — Lapland tenant launch gate) -------

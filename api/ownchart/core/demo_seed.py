@@ -32,11 +32,21 @@ async def seed_demo_user_if_needed(db: AsyncSession) -> bool:
         select(User).where(User.email == email)
     )).scalar_one_or_none()
     if existing is not None:
+        # The public persona must never hold instance authority. The
+        # first user on a fresh DB is promoted to instance admin, and on
+        # demo.ownchart.me that first user was this account — the audit
+        # found the published credentials signed in as an admin. Demote
+        # on every startup so a manual promotion cannot persist either.
+        if existing.is_instance_admin:
+            existing.is_instance_admin = False
+            await db.commit()
+            log.warning("demo_user_demoted_from_instance_admin", email=email)
         return False
     user = User(
         email=email,
         password_hash=hash_password(s.demo_user_password.get_secret_value()),
         phi_consent_granted=True,
+        is_instance_admin=False,
     )
     db.add(user)
     await db.commit()

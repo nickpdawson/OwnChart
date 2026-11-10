@@ -76,19 +76,18 @@ HEALTHKIT_EXTRACTION_METHOD = "native_healthkit"
 def preferred_provider_key(raw_setting: object) -> str | None:
     """Map the ``ai.default_provider`` setting to a ``resolve()`` arg.
 
-    The setting choices are ``[anthropic, openai, gemini, local, auto]``.
     ``auto`` (and unset) → ``None`` so the registry picks the first
-    configured provider. ``local`` → the registry's ``local_echo`` key.
-    Everything else passes through verbatim. Pure — no DB, no import
-    side effects.
+    configured provider. Everything else passes through verbatim, so a
+    stored ``local`` or ``gemini`` reaches ``resolve()`` and fails closed
+    there (no adapter) instead of being quietly rewritten to the
+    ``local_echo`` development stub, which is not a local model. Pure —
+    no DB, no import side effects.
     """
     if raw_setting is None:
         return None
     val = str(raw_setting).strip().lower()
     if val in ("", "auto"):
         return None
-    if val == "local":
-        return "local_echo"
     return val
 
 
