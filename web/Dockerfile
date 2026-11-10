@@ -22,6 +22,14 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000
 
+# The runtime runs `node server.js` only. The base image bundles npm,
+# npx and corepack with their own dependency tree (pacote, sigstore,
+# ip-address, brace-expansion …) that the release scan flags as HIGH
+# and that nothing here uses. Drop them: smaller image, fewer findings
+# that are not ours to fix.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
 # node:22 base image already has user `node` at uid 1000.
 # We reuse it so files written into the bind-mounted /data are owned by
 # administrator on the Maverick host (also uid 1000) — no chown dance needed.
