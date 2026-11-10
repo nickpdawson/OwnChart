@@ -27,6 +27,7 @@ YAML schema:
 from __future__ import annotations
 
 import hashlib
+import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,9 @@ from pydantic import BaseModel, Field
 
 class PromptError(RuntimeError):
     pass
+
+
+SHARED_CONTRACT_TOKEN = "{{shared_contract}}"
 
 
 class Prompt(BaseModel):
@@ -73,9 +77,30 @@ class PromptRegistry:
         self._prompts: dict[str, Prompt] = {}
         self._load()
 
+    def _shared_contract(self) -> str:
+        """Highest-versioned `shared/contract.v<N>.md`, or "" when absent.
+
+        Prompts opt in with the literal token `{{shared_contract}}` in
+        their `system` text (audit 2026-11-10, item 12: one short shared
+        contract for ownership, corrections, evidence classes, scope and
+        untrusted content; task prompts compose from it).
+        """
+        shared = self.prompts_dir / "shared"
+        best: tuple[int, Path] | None = None
+        if shared.exists():
+            for p in shared.glob("contract.v*.md"):
+                try:
+                    n = int(p.stem.split(".v", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                if best is None or n > best[0]:
+                    best = (n, p)
+        return best[1].read_text(encoding="utf-8").strip() if best else ""
+
     def _load(self) -> None:
         if not self.prompts_dir.exists():
             return
+        contract = self._shared_contract()
         for path in sorted(self.prompts_dir.glob("*.yaml")):
             # Skip macOS AppleDouble sidecars (`._foo.yaml`) and any dotfile
             # that sneaks in via tar from a macOS dev machine — they're not
@@ -92,11 +117,32 @@ class PromptRegistry:
             # and `system`; anything else is a different schema.
             if not isinstance(raw, dict) or "model" not in raw or "system" not in raw:
                 continue
+            system_text = str(raw.get("system") or "")
+            if SHARED_CONTRACT_TOKEN in system_text:
+                if not contract:
+                    raise PromptError(
+                        f"{path.name} includes {SHARED_CONTRACT_TOKEN} but no "
+                        "prompts/shared/contract.v*.md exists"
+                    )
+                system_text = system_text.replace(SHARED_CONTRACT_TOKEN, contract)
+            composed = {
+                "system": system_text,
+                "user_template": raw.get("user_template") or "",
+                "tools": raw.get("tools") or [],
+                "model": raw.get("model"),
+            }
+            # Hash the COMPOSED prompt (shared contract already inlined),
+            # not the file bytes: the receipt must identify the text that
+            # was actually sent.
+            composed_hash = hashlib.sha256(
+                json.dumps(composed, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
             try:
                 prompt = Prompt.model_validate({
                     **raw,
+                    "system": system_text,
                     "source_file": path.name,
-                    "content_sha256": hashlib.sha256(data).hexdigest(),
+                    "content_sha256": composed_hash,
                 })
             except Exception as e:  # noqa: BLE001
                 raise PromptError(f"Invalid prompt file {path}: {e}") from e

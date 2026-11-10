@@ -594,9 +594,10 @@ def test_ask_query_prompt_v2_exists_and_is_latest():
     latest = reg.get("ask_query")
     assert v1.version == 1
     assert v2.version == 2
-    # The bare id resolves to the latest by file-sort order; v2
-    # comes after v1 alphabetically so v2 wins.
-    assert latest.version == 2
+    # The bare id resolves to the highest numeric version (v3 since
+    # Beta 2 composes the shared contract on top of v2).
+    assert latest.version >= 3
+    assert reg.get("ask_query@3").version == 3
 
 
 def test_ask_query_v2_forbids_self_labeled_honesty():

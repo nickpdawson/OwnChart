@@ -847,9 +847,10 @@ def test_general_ask_v5_is_latest_version():
     from ownchart.llm import get_registry
     get_registry.cache_clear()
     reg = get_registry()
-    for i in (1, 2, 3, 4, 5):
+    for i in (1, 2, 3, 4, 5, 6):
         assert reg.get(f"general_ask@{i}").version == i
-    assert reg.get("general_ask").version == 5
+    # v6 (Beta 2) composes the shared contract on top of v5's rules.
+    assert reg.get("general_ask").version == 6
 
 
 def test_general_ask_v5_declares_pathology_interpretation_section():
