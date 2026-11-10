@@ -177,9 +177,9 @@ Full privacy commitment: [PRIVACY.md](./PRIVACY.md) (or <https://www.ownchart.me
 
 ---
 
-## Current Beta 1 capabilities
+## Current beta capabilities
 
-_As of OwnChart v0.1.0-beta1 (2026-05-26). For the canonical
+_As of OwnChart v0.1.0-beta2 (2026-11-10). For the canonical
 shipped-vs-roadmap split, see
 [user-docs/SHIPPED_VS_ROADMAP.md](./user-docs/SHIPPED_VS_ROADMAP.md)._
 
