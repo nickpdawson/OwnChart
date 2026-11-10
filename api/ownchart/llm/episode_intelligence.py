@@ -43,6 +43,31 @@ from .prompts import get_registry
 log = get_logger("ownchart.llm.episode_intelligence")
 
 
+def uuid_strings_in(payload: object) -> set[uuid.UUID]:
+    """Every UUID-shaped string anywhere in a JSON-like payload.
+
+    The planner payload is the complete evidence the model saw, so this
+    is the set of ids an Episode Intelligence answer may cite.
+    """
+    found: set[uuid.UUID] = set()
+
+    def _walk(v: object) -> None:
+        if isinstance(v, dict):
+            for x in v.values():
+                _walk(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                _walk(x)
+        elif isinstance(v, str) and len(v) == 36:
+            try:
+                found.add(uuid.UUID(v))
+            except ValueError:
+                return
+
+    _walk(payload)
+    return found
+
+
 class EpisodeIntelligenceError(RuntimeError):
     pass
 
@@ -389,26 +414,33 @@ async def run_episode_intelligence(
     db.add(a_msg)
     await db.flush()
 
-    # Persist citations.
-    for ord_, c in enumerate(structured.get("citations") or []):
-        ctype = c.get("citation_type")
-        sid = c.get("subject_id")
-        if not ctype or not sid:
-            continue
-        try:
-            subject_id = uuid.UUID(str(sid))
-        except (TypeError, ValueError):
-            continue
+    # Persist citations — only ones that name evidence the planner
+    # actually put in front of the model (audit 2026-11-10, item 7: this
+    # path used to insert any well-formed UUID). The planner payload is
+    # the complete evidence set, so every UUID in it is citable; ids from
+    # anywhere else are dropped and counted on the message.
+    from .citations import filter_citations
+    shown = uuid_strings_in(planner_payload)
+    accepted, audit = filter_citations(
+        structured.get("citations") or [],
+        fact_ids=shown, source_ids=shown, anchor_ids=shown,
+    )
+    for ord_, c in enumerate(accepted):
         db.add(ConversationCitation(
             message_id=a_msg.id,
-            citation_type=ctype,
-            subject_id=subject_id,
+            citation_type=c["citation_type"],
+            subject_id=uuid.UUID(c["subject_id"]),
             claim_label=c.get("claim_label"),
             excerpt=c.get("excerpt"),
             note=c.get("note"),
             ordinal=ord_,
             created_at=datetime.now(timezone.utc),
         ))
+    a_msg.structured_output = {
+        **(structured or {}),
+        "citations": accepted,
+        "citation_audit": audit.as_dict(),
+    }
 
     # Persist a SensemakingCandidate so the user can "Save as Episode."
     # Defend the anchor UUID parse — historically a malformed anchor
